@@ -1,0 +1,200 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 220 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 30% 12%;
+
+    --primary: 220 70% 35%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 25% 93%;
+    --secondary-foreground: 220 30% 20%;
+
+    --muted: 210 20% 95%;
+    --muted-foreground: 220 10% 46%;
+
+    --accent: 200 80% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 220 70% 35%;
+
+    --radius: 0.625rem;
+
+    --sidebar-background: 220 30% 12%;
+    --sidebar-foreground: 210 20% 80%;
+    --sidebar-primary: 200 80% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 25% 18%;
+    --sidebar-accent-foreground: 210 20% 90%;
+    --sidebar-border: 220 25% 20%;
+    --sidebar-ring: 200 80% 55%;
+
+    /* Custom tokens */
+    --success: 152 60% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 200 80% 45%;
+    --info-foreground: 0 0% 100%;
+
+    --timetable-header: 220 70% 35%;
+    --timetable-header-foreground: 0 0% 100%;
+    --timetable-cell: 0 0% 100%;
+    --timetable-cell-hover: 210 25% 96%;
+    --timetable-break: 38 90% 94%;
+    --timetable-break-foreground: 38 70% 30%;
+    --timetable-lunch: 200 70% 93%;
+    --timetable-lunch-foreground: 200 60% 30%;
+    --timetable-lab: 280 50% 95%;
+    --timetable-lab-foreground: 280 40% 35%;
+    --timetable-border: 214 20% 85%;
+
+    --gradient-primary: linear-gradient(135deg, hsl(220 70% 35%), hsl(200 80% 45%));
+    --shadow-card: 0 1px 3px 0 hsl(220 30% 12% / 0.06), 0 1px 2px -1px hsl(220 30% 12% / 0.06);
+    --shadow-elevated: 0 4px 12px -2px hsl(220 30% 12% / 0.08), 0 2px 6px -2px hsl(220 30% 12% / 0.06);
+  }
+
+  .dark {
+    --background: 222 30% 8%;
+    --foreground: 210 20% 92%;
+    --card: 222 25% 12%;
+    --card-foreground: 210 20% 92%;
+    --popover: 222 25% 12%;
+    --popover-foreground: 210 20% 92%;
+    --primary: 200 80% 55%;
+    --primary-foreground: 220 30% 8%;
+    --secondary: 220 25% 18%;
+    --secondary-foreground: 210 20% 90%;
+    --muted: 220 20% 16%;
+    --muted-foreground: 215 15% 55%;
+    --accent: 200 80% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 20% 20%;
+    --input: 220 20% 20%;
+    --ring: 200 80% 55%;
+    --sidebar-background: 222 35% 6%;
+    --sidebar-foreground: 210 15% 70%;
+    --sidebar-primary: 200 80% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 222 25% 12%;
+    --sidebar-accent-foreground: 210 15% 85%;
+    --sidebar-border: 222 20% 14%;
+    --sidebar-ring: 200 80% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  .timetable-grid {
+    @apply w-full border-collapse;
+  }
+  .timetable-grid th {
+    background: hsl(var(--timetable-header));
+    color: hsl(var(--timetable-header-foreground));
+    @apply px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-center border border-border;
+  }
+  .timetable-grid th.break-header {
+    background: hsl(var(--timetable-break));
+    color: hsl(var(--timetable-break-foreground));
+  }
+  .timetable-grid th.lunch-header {
+    background: hsl(var(--timetable-lunch));
+    color: hsl(var(--timetable-lunch-foreground));
+  }
+  .timetable-grid td {
+    background: hsl(var(--timetable-cell));
+    @apply px-3 py-2.5 text-sm text-center border border-border transition-colors;
+  }
+  .timetable-grid td:hover {
+    background: hsl(var(--timetable-cell-hover));
+  }
+  .timetable-grid .break-cell {
+    background: hsl(var(--timetable-break));
+    color: hsl(var(--timetable-break-foreground));
+  }
+  .timetable-grid .lunch-cell {
+    background: hsl(var(--timetable-lunch));
+    color: hsl(var(--timetable-lunch-foreground));
+  }
+  .timetable-grid .break-row td {
+    background: hsl(var(--timetable-break));
+    color: hsl(var(--timetable-break-foreground));
+    @apply font-semibold italic;
+  }
+  .timetable-grid .lunch-row td {
+    background: hsl(var(--timetable-lunch));
+    color: hsl(var(--timetable-lunch-foreground));
+    @apply font-semibold italic;
+  }
+  .timetable-grid .lab-cell {
+    background: hsl(var(--timetable-lab));
+    color: hsl(var(--timetable-lab-foreground));
+  }
+
+  .stat-card {
+    @apply rounded-xl p-5 transition-all duration-200;
+    background: hsl(var(--card));
+    box-shadow: var(--shadow-card);
+  }
+  .stat-card:hover {
+    box-shadow: var(--shadow-elevated);
+    transform: translateY(-1px);
+  }
+
+  .page-header {
+    @apply mb-6;
+  }
+  .page-header h1 {
+    @apply text-2xl font-bold tracking-tight;
+  }
+  .page-header p {
+    @apply text-sm text-muted-foreground mt-1;
+  }
+}
+
+/* Print styles */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 1cm;
+  }
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .print\\:hidden {
+    display: none !important;
+  }
+  .timetable-grid th,
+  .timetable-grid td {
+    border: 1px solid #333 !important;
+    padding: 6px 8px !important;
+  }
+}
