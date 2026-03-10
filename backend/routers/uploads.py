@@ -167,6 +167,144 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
 
 
 def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
+    # --- Detect Faculty Workload Export Format ---
+    is_workload = False
+    faculty_name = ""
+    
+    for row in rows[:15]:
+        for k, v in row.items():
+            if str(k).startswith("__orig_"):
+                continue
+            k_upper = str(row.get(f"__orig_{k}", k)).upper()
+            v_upper = str(v).upper() if v is not None else ""
+            if "FACULTY WORKLOAD :" in k_upper:
+                is_workload = True
+                faculty_name = row.get(f"__orig_{k}", str(k)).split(":", 1)[1].strip()
+                break
+            if "FACULTY WORKLOAD :" in v_upper:
+                is_workload = True
+                faculty_name = str(v).split(":", 1)[1].strip()
+                break
+        if is_workload:
+            break
+
+    if is_workload:
+        import math
+        
+        normalized_workload: list[dict] = []
+        # Find which keys correspond to 'DAY', '1', '2' etc.
+        periods_row = None
+        for row in rows:
+            vals = [str(x).upper().strip() for k, x in row.items() if not str(k).startswith('__orig_') and x is not None and not (isinstance(x, float) and math.isnan(x))]
+            if "DAY" in vals and "1" in vals and "2" in vals:
+                periods_row = row
+                break
+                
+        if periods_row:
+            col_to_period = {}
+            day_col_key = None
+            for k, v in periods_row.items():
+                if str(k).startswith('__orig_') or v is None or (isinstance(v, float) and math.isnan(v)):
+                    continue
+                v_str = str(v).upper().strip()
+                if v_str == "DAY":
+                    day_col_key = k
+                elif v_str in ["1", "2", "3", "4", "5", "6", "7"]:
+                    col_to_period[k] = int(v_str)
+                    
+            VALID_DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"]
+            
+            for row in rows:
+                if day_col_key not in row:
+                    continue
+                day_val_raw = row[day_col_key]
+                if day_val_raw is None or (isinstance(day_val_raw, float) and math.isnan(day_val_raw)):
+                    continue
+                day_val = str(day_val_raw).upper().strip()
+                
+                if day_val in VALID_DAYS:
+                    for col_key, p_num in col_to_period.items():
+                        cell_val = row.get(col_key)
+                        is_empty = cell_val is None or (isinstance(cell_val, float) and math.isnan(cell_val)) or str(cell_val).strip() == ""
+                        if is_empty:
+                            normalized_workload.append({
+                                "faculty_id": faculty_name,
+                                "faculty_name": faculty_name,
+                                "day": day_val,
+                                "period": p_num,
+                                "year": "",
+                                "section": "",
+                                "subject": "",
+                            })
+                            
+            if normalized_workload:
+                return normalized_workload
+            else:
+                raise _validation_error(
+                    "Faculty workload format detected, but no available periods found (or faculty is fully occupied)",
+                    []
+                )
+
+    # --- End Detect Faculty Workload Export Format ---
+
+    # --- Detect New Day-Grid Template (Manual Entry format) ---
+    is_day_grid = False
+    if rows:
+        first_row_keys = [str(k).upper() for k in rows[0].keys() if not str(k).startswith("__orig_")]
+        if "MONDAY" in first_row_keys and "TUESDAY" in first_row_keys:
+            is_day_grid = True
+
+    if is_day_grid:
+        normalized_grid: list[dict] = []
+        VALID_DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]
+        for row in rows:
+            faculty_id = ""
+            for k, v in row.items():
+                if str(k).startswith("__orig_"):
+                    continue
+                k_upper = str(k).upper().strip()
+                if k_upper in ["FACULTY ID", "ID ASSIGNED", "FACULTY NAME", "NAME", "FACULTY", "ID"]:
+                    faculty_id = _to_text(v)
+                    break
+            
+            if not faculty_id:
+                continue
+
+            for k, v in row.items():
+                if str(k).startswith("__orig_"):
+                    continue
+                k_upper = str(k).upper().strip()
+                if k_upper in VALID_DAYS:
+                    periods_raw = _to_text(v)
+                    if not periods_raw:
+                        continue
+                    
+                    parts = [p.strip() for p in periods_raw.split(",")]
+                    for p in parts:
+                        if not p:
+                            continue
+                        try:
+                            period_num = int(float(p))
+                            normalized_grid.append({
+                                "faculty_id": faculty_id,
+                                "faculty_name": faculty_id,
+                                "day": k_upper[:3],
+                                "period": period_num,
+                                "year": "",
+                                "section": "",
+                                "subject": ""
+                            })
+                        except ValueError:
+                            pass
+        
+        if not normalized_grid:
+            raise _validation_error(
+                "Day-grid format detected but no valid periods were found",
+                []
+            )
+        return normalized_grid
+    # --- End Detect Day-Grid Template ---
+
     normalized: list[dict] = []
     for row in rows:
         faculty_id = _to_text(row.get("faculty_id")) or _to_text(row.get("id assigned"))
@@ -247,9 +385,6 @@ async def upload_faculty_id_map(file: UploadFile = File(...)):
     rows = _normalize_faculty_id_rows(dataframe_rows(dataframe))
     cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/faculty-id-map")
     scope_key = _scope_key_global()
-    if store.get_scoped_mapping("faculty_id_map", scope_key):
-        raise _conflict_error("Faculty ID mapping has already been uploaded", [{"scope": "global"}])
-
     file_id = store.next_file_id("fmap")
     payload = {
         "id": file_id,
@@ -259,9 +394,7 @@ async def upload_faculty_id_map(file: UploadFile = File(...)):
         "sourceFile": cloudinary_file,
     }
     store.save_file_map(file_id, payload)
-    created = store.save_scoped_mapping("faculty_id_map", scope_key, payload, allow_overwrite=True)
-    if not created:
-        raise _conflict_error("Faculty ID mapping has already been uploaded", [{"scope": "global"}])
+    store.save_scoped_mapping("faculty_id_map", scope_key, payload, allow_overwrite=True)
     return UploadResponse(
         fileId=file_id,
         fileName=file.filename,

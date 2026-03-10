@@ -195,11 +195,14 @@ def _build_requirements(request_data: GenerateTimetableRequest, store: MemorySto
         return section_batch == batch_scope
 
     for batch_scope, rows in subject_faculty_rows_by_batch.items():
-        # Preferred path: keep only rows explicitly matching the requested year.
-        # Fallback: if none match (common when uploaded sheets use a different year label),
-        # use all rows from the scoped mapping payload.
-        matching_rows = [row for row in rows if normalize_year(str(row.get("year", ""))) == request_data.year]
-        candidate_rows = matching_rows if matching_rows else rows
+        # Only use rows that explicitly match the requested year.
+        # The scoped store already isolates by year; this filters any stray rows
+        # in files that contain mixed-year data.
+        candidate_rows = [row for row in rows if normalize_year(str(row.get("year", ""))) == request_data.year]
+        if not candidate_rows:
+            # If no rows match after normalization, allow all rows from this scoped payload
+            # (handles cases where year column is blank or uses an unusual format).
+            candidate_rows = rows
         for row in candidate_rows:
             section = str(row.get("section", "")).strip()
             subject = _normalize_subject(str(row.get("subject", "")))
@@ -254,7 +257,7 @@ def _build_requirements(request_data: GenerateTimetableRequest, store: MemorySto
     if not any(subject_to_hours_by_batch.values()):
         raise _validation_error("No subject hours configuration found to generate timetable", [])
 
-    shared_map: dict[str, set[str]] = {}
+    shared_map: dict[str, list[set[str]]] = {}
     
     # Load from document upload first (global)
     shared_payload = store.get_scoped_mapping("shared_classes", "global")
@@ -265,21 +268,23 @@ def _build_requirements(request_data: GenerateTimetableRequest, store: MemorySto
                 sections = {s.strip() for s in row.get("sections", []) if s.strip()}
                 subject = _normalize_subject(str(row.get("subject", "")))
                 if subject and sections:
-                    shared_map.setdefault(subject, set()).update(sections)
+                    shared_map.setdefault(subject, []).append(sections)
 
     # Merge with manual request data
     for shared in request_data.sharedClasses:
         if shared.year != request_data.year:
             continue
         sections = {sec.strip() for sec in shared.sections if sec.strip()}
-        sections.add(request_data.section)
+        # Do NOT auto-add request_data.section – trust the user's section list exactly.
+        # The section will be included naturally via section_subject_faculty below.
         subject = _normalize_subject(shared.subject)
         if subject and sections:
-            shared_map.setdefault(subject, set()).update(sections)
+            shared_map.setdefault(subject, []).append(sections)
 
     merged: dict[tuple[str, str, tuple[str, ...]], Requirement] = {}
 
-    all_sections = sorted(set(section_subject_faculty.keys()) | {request_data.section} | set(section_batch_map.keys()))
+    shared_sections = {sec for groups in shared_map.values() for group in groups for sec in group}
+    all_sections = sorted(set(section_subject_faculty.keys()) | {request_data.section} | set(section_batch_map.keys()) | shared_sections)
 
     def resolve_hours_for_section(section: str, subject: str) -> tuple[int, int] | None:
         section_batch = section_batch_map.get(section, "ALL")
@@ -296,8 +301,11 @@ def _build_requirements(request_data: GenerateTimetableRequest, store: MemorySto
                 continue
             hours, continuous = hours_info
             target = [section]
-            if subject in shared_map and section in shared_map[subject]:
-                target = sorted(shared_map[subject])
+            if subject in shared_map:
+                for group in shared_map[subject]:
+                    if section in group:
+                        target = sorted(group)
+                        break
 
             key = (subject, faculty, tuple(target))
             current = merged.get(key)
@@ -376,10 +384,15 @@ def _build_faculty_availability(
     faculty_id_to_name: dict[str, str],
     faculties: set[str],
 ) -> dict[str, dict[str, set[int]]]:
-    availability = {
+    availability: dict[str, dict[str, set[int]]] = {
         faculty: {day: set(PERIODS) for day in DAYS}
         for faculty in faculties
     }
+
+    # Track which (faculty, day) pairs have been first-seen in upload doc.
+    # First time we see a faculty on a day, we clear that day's default so
+    # only explicitly listed periods are allowed.
+    doc_seen: set[tuple[str, str]] = set()
 
     # Load from document upload first (global)
     avail_payload = store.get_scoped_mapping("faculty_availability", "global")
@@ -389,36 +402,35 @@ def _build_faculty_availability(
             faculty_key = _resolve_faculty(faculty_id, faculty_id_to_name)
             if not faculty_key:
                 continue
-            
+
             day = str(row.get("day", "")).strip()
             normalized_day = next((d for d in DAYS if d.lower().startswith(day.lower()[:3])), None)
             if not normalized_day:
                 continue
-                
+
             period = int(row.get("period", 0))
-            if period in PERIODS:
-                # If we have any entries for a faculty on a day, we start from an empty set 
-                # for that specific faculty-day combo to allow ONLY specified periods.
-                if faculty_key not in availability:
-                    availability[faculty_key] = {d: set(PERIODS) for d in DAYS}
-                
-                # Special logic: the first time we see a specific faculty-day in the doc,
-                # we clear the default "all periods" set.
-                if "__doc_started" not in availability[faculty_key].get(f"{normalized_day}_meta", set()):
-                    availability[faculty_key][normalized_day] = set()
-                    availability[faculty_key].setdefault(f"{normalized_day}_meta", set()).add("__doc_started")
-                
-                availability[faculty_key][normalized_day].add(period)
+            if period not in PERIODS:
+                continue
+
+            if faculty_key not in availability:
+                availability[faculty_key] = {day_k: set(PERIODS) for day_k in DAYS}
+
+            pair = (faculty_key, normalized_day)
+            if pair not in doc_seen:
+                # First time this faculty appears for this day: restrict to listed periods only
+                availability[faculty_key][normalized_day] = set()
+                doc_seen.add(pair)
+
+            availability[faculty_key][normalized_day].add(period)
 
     # Merge with manual request data
     for entry in request_data.facultyAvailability:
         faculty_key = _resolve_faculty(entry.facultyId, faculty_id_to_name)
         if not faculty_key:
             continue
-        
-        # Manual entry overrides or initializes
+
         if faculty_key not in availability:
-            availability[faculty_key] = {d: set(PERIODS) for d in DAYS}
+            availability[faculty_key] = {day_k: set(PERIODS) for day_k in DAYS}
 
         for raw_day, periods in entry.availablePeriodsByDay.items():
             day = str(raw_day).strip()
@@ -426,8 +438,7 @@ def _build_faculty_availability(
             if not normalized_day:
                 continue
             allowed = {int(p) for p in periods if int(p) in PERIODS}
-            if allowed:
-                availability[faculty_key][normalized_day] = allowed
+            availability[faculty_key][normalized_day] = allowed
 
     return availability
 
@@ -562,6 +573,34 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     all_faculties = {req.faculty for req in requirements}
     faculty_availability = _build_faculty_availability(request_data, store, faculty_id_to_name, all_faculties)
 
+    # Fast-fail Pre-Checks to prevent algorithmic timeouts on unsolvable constraints
+    section_hours: dict[str, int] = {}
+    faculty_hours: dict[str, int] = {fac: 0 for fac in all_faculties}
+    
+    for task in tasks:
+        faculty_hours[task.faculty] = faculty_hours.get(task.faculty, 0) + task.block
+        for sec in task.target_sections:
+            section_hours[sec] = section_hours.get(sec, 0) + task.block
+            
+    MAX_HOURS = len(DAYS) * len(PERIODS)
+    for sec, hours in section_hours.items():
+        if hours > MAX_HOURS:
+            raise _validation_error(
+                f"Section {sec} has {hours} hours assigned, exceeding the maximum of {MAX_HOURS} periods per week.",
+                [{"section": sec, "requestedHours": hours, "maxHours": MAX_HOURS}]
+            )
+
+    existing_occupancy = store.get_global_faculty_occupancy()
+    for fac, hours in faculty_hours.items():
+        busy_slots = len(existing_occupancy.get(fac, set()))
+        avail_slots = sum(len(periods) for periods in faculty_availability.get(fac, {}).values())
+        max_possible = avail_slots - busy_slots
+        if hours > max_possible:
+            raise _validation_error(
+                f"Faculty '{fac}' is assigned {hours} hour(s) but only has {max_possible} available slot(s) remaining.",
+                [{"faculty": fac, "assignedHours": hours, "availableSlots": max_possible}]
+            )
+
     attempt_count = 200
     best_payload = None
     # Dense real-world sheets often need deeper search; keep bounded to avoid hanging.
@@ -576,7 +615,6 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             for sec in sections
         }
 
-        existing_occupancy = store.get_global_faculty_occupancy()
         faculty_busy: dict[str, set[tuple[str, int]]] = {
             faculty: slots.copy() for faculty, slots in existing_occupancy.items()
         }

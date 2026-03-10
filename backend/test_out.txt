@@ -1,0 +1,2 @@
+✅ Shared Class Constraint (Math in A & B) PASSED
+✅ Faculty Availability Constraint (Physics F002) PASSED

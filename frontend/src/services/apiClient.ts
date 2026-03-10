@@ -116,9 +116,16 @@ async function apiRequest<T>(path: string, method: HttpMethod, body?: unknown): 
     let details: any[] = [];
     try {
       const errorData = await response.json();
-      if (errorData.detail) {
-        message = errorData.detail.message || message;
-        details = errorData.detail.details || [];
+      if (errorData.message) {
+        message = errorData.message;
+        details = errorData.details || [];
+      } else if (errorData.detail) {
+        if (typeof errorData.detail === "string") {
+          message = errorData.detail;
+        } else {
+          message = errorData.detail.message || message;
+          details = errorData.detail.details || [];
+        }
       }
     } catch (e) {
       // Not JSON, fallback to text
@@ -134,9 +141,16 @@ async function parseResponseError(response: Response, method: string, path: stri
   let details: Record<string, unknown>[] = [];
   try {
     const errorData = await response.json();
-    if (errorData.detail) {
-      message = errorData.detail.message || message;
-      details = errorData.detail.details || [];
+    if (errorData.message) {
+      message = errorData.message;
+      details = errorData.details || [];
+    } else if (errorData.detail) {
+      if (typeof errorData.detail === "string") {
+        message = errorData.detail;
+      } else {
+        message = errorData.detail.message || message;
+        details = errorData.detail.details || [];
+      }
     }
   } catch (e) {
     // fallback to status text

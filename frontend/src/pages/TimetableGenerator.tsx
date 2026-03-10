@@ -660,6 +660,167 @@ const TimetableGenerator = () => {
     }
   };
 
+  const handleGenerateAll = async () => {
+    const allYears = getYearOptions(academicConfig);
+    if (allYears.length < 2) {
+      await handleGenerate();
+      return;
+    }
+
+    setGenerating(true);
+    let firstTimetableId: string | null = null;
+    let successCount = 0;
+    const errors: string[] = [];
+
+    const cleanedShared = sharedClasses
+      .map((entry) => ({
+        year: entry.year,
+        sections: entry.sections.map((s) => s.trim()).filter(Boolean),
+        subject: entry.subject.trim(),
+      }))
+      .filter((entry) => entry.subject && entry.sections.length > 0);
+
+    const facultyAvailability = facultyAvailabilityInputs
+      .map((entry) => ({
+        facultyId: entry.facultyId.trim(),
+        availablePeriodsByDay: DAYS.reduce<Record<string, number[]>>(
+          (acc, day) => {
+            acc[day] = toPeriodList(entry.availablePeriodsByDay[day] ?? "");
+            return acc;
+          },
+          {},
+        ),
+      }))
+      .filter((entry) => entry.facultyId);
+
+    try {
+      for (const year of allYears) {
+        const yearSections = getSectionOptionsForYear(academicConfig, year);
+        if (yearSections.length === 0) continue;
+
+        if (inputMode === "file") {
+          let yearMappingStatus;
+          try {
+            yearMappingStatus = await getMappingStatus(year);
+          } catch {
+            errors.push(`${year}: Could not check mapping status`);
+            continue;
+          }
+
+          const yearStructure = getYearStructure(academicConfig, year);
+          const hasCreamGeneral = yearStructure.hasCreamGeneral;
+          const hasRequiredPeriodMaps = hasCreamGeneral
+            ? Boolean(
+                yearMappingStatus.creamSubjectPeriodsMapUploaded &&
+                  yearMappingStatus.generalSubjectPeriodsMapUploaded,
+              )
+            : Boolean(yearMappingStatus.subjectPeriodsMapUploaded);
+          const hasRequiredSubjectFacultyMaps = hasCreamGeneral
+            ? Boolean(
+                yearMappingStatus.creamSubjectFacultyMapUploaded &&
+                  yearMappingStatus.generalSubjectFacultyMapUploaded,
+              )
+            : Boolean(yearMappingStatus.subjectFacultyMapUploaded);
+
+          if (
+            !yearMappingStatus.facultyIdMapUploaded ||
+            !hasRequiredSubjectFacultyMaps ||
+            !hasRequiredPeriodMaps
+          ) {
+            errors.push(`${year}: Required mappings not uploaded — skipped`);
+            continue;
+          }
+        }
+
+        const primarySection = yearSections[0];
+        // Use flushSync pattern to ensure the debounce for yearConfigs is applied immediately for the active year
+        const currentYearConfig = {
+          subjects: [...subjects],
+          labs: [...labs],
+          subjectHours: [...subjectHours],
+        };
+        const yearConfig = year === selectedYear ? currentYearConfig : (yearConfigs[year] ?? {
+          subjects: [],
+          labs: [],
+          subjectHours: [],
+        });
+
+        const payload = {
+          year,
+          section: primarySection,
+          sectionBatchMap: getSectionBatchMapForYear(academicConfig, year),
+          subjects:
+            inputMode === "manual"
+              ? yearConfig.subjects.filter(
+                  (s) => s.subject.trim() && s.faculty.trim(),
+                )
+              : [],
+          labs:
+            inputMode === "manual"
+              ? yearConfig.labs.filter(
+                  (l) => l.lab.trim() && l.faculty.length > 0,
+                )
+              : [],
+          sharedClasses: cleanedShared,
+          subjectHours:
+            inputMode === "manual"
+              ? yearConfig.subjectHours.filter(
+                  (h) => h.subject.trim() && h.hours > 0,
+                )
+              : [],
+          facultyAvailability,
+          mappingFileIds: inputMode === "file" ? undefined : undefined,
+        };
+
+        if (inputMode === "manual" && payload.subjects.length === 0 && payload.labs.length === 0) {
+          errors.push(`${year}: No subjects or labs configured`);
+          continue;
+        }
+
+        try {
+          const response = await generateTimetable(payload);
+          if (!firstTimetableId) {
+            firstTimetableId = response.timetableId;
+          }
+          successCount++;
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          errors.push(`${year}: ${msg}`);
+        }
+      }
+    } finally {
+      setGenerating(false);
+    }
+
+    if (successCount > 0) {
+      if (errors.length > 0) {
+        toast.warning(
+          `Generated ${successCount} year(s). Issues: ${errors.join("; ")}`,
+          { duration: 8000 },
+        );
+      } else {
+        toast.success(
+          `Timetables generated for all ${successCount} year(s) successfully.`,
+        );
+      }
+      if (firstTimetableId) {
+        localStorage.setItem("latestTimetableId", firstTimetableId);
+        navigate(
+          `/timetables?timetableId=${encodeURIComponent(firstTimetableId)}`,
+        );
+      }
+    } else {
+      toast.error(
+        errors.length > 0
+          ? `Generation failed for all years: ${errors.join("; ")}`
+          : "No years could be generated. Please check your uploads.",
+        { duration: 8000 },
+      );
+    }
+  };
+
+
+
   return (
     <DashboardLayout>
       <div className="page-header">
@@ -1671,7 +1832,18 @@ const TimetableGenerator = () => {
             </Tabs>
           )}
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-3">
+            {getYearOptions(academicConfig).length > 1 && (
+              <Button
+                onClick={handleGenerateAll}
+                size="lg"
+                variant="outline"
+                className="gap-2"
+              >
+                <Wand2 className="h-4 w-4" />
+                Generate All Years
+              </Button>
+            )}
             <Button onClick={handleGenerate} size="lg" className="gap-2">
               <Wand2 className="h-4 w-4" />
               Generate Timetable

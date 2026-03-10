@@ -155,9 +155,8 @@ async def faculty_availability_template():
     return _template_response(
         "faculty-availability-template.xlsx",
         [
-            {"id assigned": "F001", "faculty name": "faculty-1", "day": "Monday", "period": 1, "year": "", "section": "", "subject": ""},
-            {"id assigned": "F001", "faculty name": "faculty-1", "day": "Monday", "period": 4, "year": "", "section": "", "subject": ""},
-            {"id assigned": "F002", "faculty name": "faculty-2", "day": "Tuesday", "period": 6, "year": "", "section": "", "subject": ""},
+            {"Faculty ID": "F001", "Monday": "1, 2, 3", "Tuesday": "4, 5", "Wednesday": "", "Thursday": "", "Friday": "1, 2", "Saturday": ""},
+            {"Faculty ID": "F002", "Monday": "", "Tuesday": "1, 2, 3, 4", "Wednesday": "5, 6, 7", "Thursday": "", "Friday": "", "Saturday": "1"},
         ],
     )
 
