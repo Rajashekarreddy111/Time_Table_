@@ -125,6 +125,9 @@ const TimetableGenerator = () => {
       }, {}),
     },
   ]);
+  const [facultyIdMapping, setFacultyIdMapping] = useState<{ facultyId: string; facultyName: string }[]>([
+    { facultyId: "", facultyName: "" },
+  ]);
 
   const [facultyIdFile, setFacultyIdFile] = useState<File | null>(null);
   const [subjectFacultyFile, setSubjectFacultyFile] = useState<File | null>(
@@ -283,6 +286,14 @@ const TimetableGenerator = () => {
     setFacultyAvailabilityInputs(
       facultyAvailabilityInputs.filter((_, idx) => idx !== i),
     );
+  };
+
+  const addFacultyIdMapping = () => {
+    setFacultyIdMapping([...facultyIdMapping, { facultyId: "", facultyName: "" }]);
+  };
+
+  const removeFacultyIdMapping = (i: number) => {
+    setFacultyIdMapping(facultyIdMapping.filter((_, idx) => idx !== i));
   };
 
   const updateAcademicConfig = (next: AcademicConfig) => {
@@ -580,9 +591,9 @@ const TimetableGenerator = () => {
       const hasHours = subjectHours.some(
         (h) => h.subject.trim() && h.hours > 0,
       );
-      if (!hasSubjects || !hasHours) {
+      if (!hasSubjects && !hasHours && facultyIdMapping.every(f => !f.facultyId)) {
         toast.error(
-          "Enter at least one valid subject/faculty and hours config.",
+          "Enter at least one valid manual entry configuration.",
         );
         return;
       }
@@ -613,36 +624,21 @@ const TimetableGenerator = () => {
       year: selectedYear,
       section: selectedSection,
       sectionBatchMap: getSectionBatchMapForYear(academicConfig, selectedYear),
-      subjects:
-        inputMode === "manual"
-          ? subjects.filter((s) => s.subject.trim() && s.faculty.trim())
-          : [],
-      labs:
-        inputMode === "manual"
-          ? labs.filter((l) => l.lab.trim() && l.faculty.length > 0)
-          : [],
+      subjects: subjects.filter((s) => s.subject.trim() && s.faculty.trim()),
+      labs: labs.filter((l) => l.lab.trim() && l.faculty.length > 0),
       sharedClasses: cleanedShared,
-      subjectHours:
-        inputMode === "manual"
-          ? subjectHours.filter((h) => h.subject.trim() && h.hours > 0)
-          : [],
+      subjectHours: subjectHours.filter((h) => h.subject.trim() && h.hours > 0),
       facultyAvailability,
-      mappingFileIds:
-        inputMode === "file"
-          ? {
-              facultyIdMap: mappingFileIds.facultyIdMap || undefined,
-              subjectFacultyMap: mappingFileIds.subjectFacultyMap || undefined,
-              subjectFacultyMapCream:
-                mappingFileIds.subjectFacultyMapCream || undefined,
-              subjectFacultyMapGeneral:
-                mappingFileIds.subjectFacultyMapGeneral || undefined,
-              subjectPeriodsMap: mappingFileIds.subjectPeriodsMap || undefined,
-              subjectPeriodsMapCream:
-                mappingFileIds.subjectPeriodsMapCream || undefined,
-              subjectPeriodsMapGeneral:
-                mappingFileIds.subjectPeriodsMapGeneral || undefined,
-            }
-          : undefined,
+      facultyIdNameMapping: facultyIdMapping.filter(f => f.facultyId.trim() && f.facultyName.trim()),
+      mappingFileIds: {
+          facultyIdMap: mappingFileIds.facultyIdMap || undefined,
+          subjectFacultyMap: mappingFileIds.subjectFacultyMap || undefined,
+          subjectFacultyMapCream: mappingFileIds.subjectFacultyMapCream || undefined,
+          subjectFacultyMapGeneral: mappingFileIds.subjectFacultyMapGeneral || undefined,
+          subjectPeriodsMap: mappingFileIds.subjectPeriodsMap || undefined,
+          subjectPeriodsMapCream: mappingFileIds.subjectPeriodsMapCream || undefined,
+          subjectPeriodsMapGeneral: mappingFileIds.subjectPeriodsMapGeneral || undefined,
+        },
     };
 
     setGenerating(true);
@@ -749,31 +745,17 @@ const TimetableGenerator = () => {
           year,
           section: primarySection,
           sectionBatchMap: getSectionBatchMapForYear(academicConfig, year),
-          subjects:
-            inputMode === "manual"
-              ? yearConfig.subjects.filter(
-                  (s) => s.subject.trim() && s.faculty.trim(),
-                )
-              : [],
-          labs:
-            inputMode === "manual"
-              ? yearConfig.labs.filter(
-                  (l) => l.lab.trim() && l.faculty.length > 0,
-                )
-              : [],
+          subjects: yearConfig.subjects.filter((s) => s.subject.trim() && s.faculty.trim()),
+          labs: yearConfig.labs.filter((l) => l.lab.trim() && l.faculty.length > 0),
           sharedClasses: cleanedShared,
-          subjectHours:
-            inputMode === "manual"
-              ? yearConfig.subjectHours.filter(
-                  (h) => h.subject.trim() && h.hours > 0,
-                )
-              : [],
+          subjectHours: yearConfig.subjectHours.filter((h) => h.subject.trim() && h.hours > 0),
           facultyAvailability,
-          mappingFileIds: inputMode === "file" ? undefined : undefined,
+          facultyIdNameMapping: facultyIdMapping.filter(f => f.facultyId.trim() && f.facultyName.trim()),
+          mappingFileIds: undefined,
         };
 
-        if (inputMode === "manual" && payload.subjects.length === 0 && payload.labs.length === 0) {
-          errors.push(`${year}: No subjects or labs configured`);
+        if (inputMode === "manual" && payload.subjects.length === 0 && payload.labs.length === 0 && payload.facultyIdNameMapping.length === 0) {
+          errors.push(`${year}: No configurations found`);
           continue;
         }
 
@@ -1612,13 +1594,13 @@ const TimetableGenerator = () => {
             </div>
           )}
 
-          {inputMode === "manual" && (
-            <Tabs defaultValue="subjects" className="w-full">
-              <TabsList className="bg-muted w-full justify-start">
-                <TabsTrigger value="subjects">Subjects and Faculty</TabsTrigger>
-                <TabsTrigger value="labs">Labs</TabsTrigger>
-                <TabsTrigger value="hours">Hours Config</TabsTrigger>
-              </TabsList>
+          <Tabs defaultValue="subjects" className="w-full mt-6">
+            <TabsList className="bg-muted w-full justify-start overflow-x-auto">
+              <TabsTrigger value="subjects">Subjects and Faculty</TabsTrigger>
+              <TabsTrigger value="labs">Labs</TabsTrigger>
+              <TabsTrigger value="hours">Hours Config</TabsTrigger>
+              <TabsTrigger value="facultyId">Faculty ID Mapping</TabsTrigger>
+            </TabsList>
 
               <TabsContent
                 value="subjects"
@@ -1829,8 +1811,65 @@ const TimetableGenerator = () => {
                   </table>
                 </div>
               </TabsContent>
+
+              <TabsContent
+                value="facultyId"
+                className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Manual Faculty ID Mapping
+                  </h3>
+                  <Button variant="outline" size="sm" onClick={addFacultyIdMapping}>
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Mapping
+                  </Button>
+                </div>
+                <div className="space-y-3">
+                  {facultyIdMapping.map((f, i) => (
+                    <div key={i} className="flex gap-3 items-end">
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">
+                          Faculty ID
+                        </Label>
+                        <Input
+                          placeholder="F-001"
+                          value={f.facultyId}
+                          onChange={(e) => {
+                            const copy = [...facultyIdMapping];
+                            copy[i].facultyId = e.target.value;
+                            setFacultyIdMapping(copy);
+                          }}
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">
+                          Faculty Name
+                        </Label>
+                        <Input
+                          placeholder="John Doe"
+                          value={f.facultyName}
+                          onChange={(e) => {
+                            const copy = [...facultyIdMapping];
+                            copy[i].facultyName = e.target.value;
+                            setFacultyIdMapping(copy);
+                          }}
+                        />
+                      </div>
+                      {facultyIdMapping.length > 1 && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => removeFacultyIdMapping(i)}
+                          className="text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </TabsContent>
             </Tabs>
-          )}
 
           <div className="flex justify-end gap-3">
             {getYearOptions(academicConfig).length > 1 && (

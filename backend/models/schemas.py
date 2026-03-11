@@ -66,6 +66,11 @@ class FacultyWeeklyAvailabilityEntry(BaseModel):
     availablePeriodsByDay: dict[str, list[int]] = Field(default_factory=dict)
 
 
+class FacultyIdNameMapEntry(BaseModel):
+    facultyId: str
+    facultyName: str
+
+
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
@@ -77,6 +82,7 @@ class GenerateTimetableRequest(BaseModel):
     batchSubjectHours: dict[str, list[SubjectHoursEntry]] = Field(default_factory=dict)
     mappingFileIds: MappingFileIds | None = None
     facultyAvailability: list[FacultyWeeklyAvailabilityEntry] = Field(default_factory=list)
+    facultyIdNameMapping: list[FacultyIdNameMapEntry] = Field(default_factory=list)
 
 
 class GenerateTimetableResponse(BaseModel):

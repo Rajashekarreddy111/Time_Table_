@@ -88,6 +88,13 @@ def _extract_mappings(request_data: GenerateTimetableRequest, store: MemoryStore
             if faculty_id and faculty_name:
                 faculty_id_to_name[faculty_id] = faculty_name
 
+    for entry in request_data.facultyIdNameMapping:
+        faculty_id = entry.facultyId.strip()
+        faculty_name = entry.facultyName.strip()
+        if faculty_id and faculty_name:
+            faculty_id_to_name[faculty_id] = faculty_name
+
+
     if mapping_ids and mapping_ids.subjectFacultyMap:
         subject_faculty_payload = store.get_file_map(mapping_ids.subjectFacultyMap)
         if not subject_faculty_payload:
