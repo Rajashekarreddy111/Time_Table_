@@ -29,6 +29,23 @@ class FacultyAvailabilityResponse(BaseModel):
     faculty: list[str]
 
 
+class BulkFacultyAvailabilityItem(FacultyAvailabilityResponse):
+    date: str
+    facultyRequired: int
+
+
+class BulkFacultyAvailabilityResponse(BaseModel):
+    results: list[BulkFacultyAvailabilityItem]
+
+
+class BulkFacultyAvailabilityRequest(BaseModel):
+    availabilityFileId: str
+    queryFileId: str
+    ignoredYears: list[str] = Field(default_factory=list)
+    ignoredSections: list[str] = Field(default_factory=list)
+    facultyIdMapFileId: str | None = None
+
+
 class SubjectEntry(BaseModel):
     subject: str
     faculty: str

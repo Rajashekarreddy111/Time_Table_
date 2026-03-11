@@ -316,7 +316,7 @@ const TimetableGenerator = () => {
     ) => AcademicConfig["years"][number],
   ) => {
     const next: AcademicConfig = {
-      yearCount: academicConfig.yearCount,
+      activeYears: academicConfig.activeYears,
       years: academicConfig.years.map((year) => ({ ...year })),
     };
     if (!next.years[yearIndex]) {
@@ -822,36 +822,55 @@ const TimetableGenerator = () => {
             </h2>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
               <div className="lg:col-span-1">
-                <Label className="text-xs text-muted-foreground">
-                  Number of Years
+                <Label className="text-xs text-muted-foreground mb-2 block">
+                  Active Years
                 </Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={academicConfig.yearCount}
-                  onFocus={(e) => e.currentTarget.select()}
-                  onChange={(e) => {
-                    const yearCount = Math.max(
-                      1,
-                      Math.min(20, parseInt(e.target.value, 10) || 1),
+                <div className="flex flex-col gap-2 bg-muted/20 p-3 rounded-md border border-border/60">
+                  {["1st Year", "2nd Year", "3rd Year", "4th Year"].map((yearStr) => {
+                    const isActive = academicConfig.activeYears.includes(yearStr);
+                    return (
+                      <label key={yearStr} className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="rounded border-primary text-primary focus:ring-primary h-4 w-4"
+                          checked={isActive}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            let nextActive = [...academicConfig.activeYears];
+                            let nextYears = [...academicConfig.years];
+                            
+                            if (checked && !isActive) {
+                              nextActive.push(yearStr);
+                              // Sort to keep "1st, 2nd, 3rd" order roughly
+                              nextActive.sort();
+                              // Add a default config for the new year
+                              nextYears.push({
+                                hasCreamGeneral: false,
+                                sectionCount: 4,
+                                creamSectionCount: 0,
+                                generalSectionCount: 0,
+                              });
+                            } else if (!checked && isActive) {
+                              const removeIdx = nextActive.indexOf(yearStr);
+                              if (removeIdx > -1) {
+                                nextActive.splice(removeIdx, 1);
+                                nextYears.splice(removeIdx, 1);
+                              }
+                            }
+                            // Ensure at least one year is active
+                            if (nextActive.length === 0) {
+                              nextActive = ["1st Year"];
+                              nextYears = [{ hasCreamGeneral: false, sectionCount: 4, creamSectionCount: 0, generalSectionCount: 0 }];
+                            }
+                            
+                            updateAcademicConfig({ activeYears: nextActive, years: nextYears });
+                          }}
+                        />
+                        {yearStr}
+                      </label>
                     );
-                    const nextYears = Array.from(
-                      { length: yearCount },
-                      (_, idx) => {
-                        return (
-                          academicConfig.years[idx] ?? {
-                            hasCreamGeneral: false,
-                            sectionCount: 4,
-                            creamSectionCount: 0,
-                            generalSectionCount: 0,
-                          }
-                        );
-                      },
-                    );
-                    updateAcademicConfig({ yearCount, years: nextYears });
-                  }}
-                />
+                  })}
+                </div>
               </div>
               <div className="lg:col-span-2">
                 <Label className="text-xs text-muted-foreground">

@@ -10,8 +10,10 @@ import { PERIODS, DAYS } from "@/data/mockData";
 import { toast } from "sonner";
 import { API_BASE_URL } from "@/services/apiClient";
 import {
-  getFacultyAvailability,
+  getBulkFacultyAvailability,
   uploadFacultyAvailability,
+  uploadFacultyAvailabilityQuery,
+  BulkFacultyAvailabilityItem
 } from "@/services/apiClient";
 import { getAllSectionKeys, readAcademicConfig } from "@/lib/academicConfig";
 
@@ -36,29 +38,15 @@ type AvailabilityResults = {
 };
 
 const FacultyAvailability = () => {
-  const [date, setDate] = useState("");
-  const [selectedPeriods, setSelectedPeriods] = useState<number[]>([]);
-  const [numFaculty, setNumFaculty] = useState(3);
   const [ignoredYears, setIgnoredYears] = useState<string[]>([]);
   const [ignoredSections, setIgnoredSections] = useState<string[]>([]);
   const [availabilityFile, setAvailabilityFile] = useState<File | null>(null);
   const [availabilityFileId, setAvailabilityFileId] = useState<string>("");
-  const [results, setResults] = useState<AvailabilityResults | null>(null);
+  const [queryFile, setQueryFile] = useState<File | null>(null);
+  const [queryFileId, setQueryFileId] = useState<string>("");
+  const [results, setResults] = useState<BulkFacultyAvailabilityItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const templateBase = `${API_BASE_URL}/templates`;
-
-  const dayOfWeek = useMemo(() => {
-    if (!date) return "";
-    const d = new Date(date);
-    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    return days[d.getDay()] || "";
-  }, [date]);
-
-  const togglePeriod = (p: number) => {
-    setSelectedPeriods((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p],
-    );
-  };
 
   const toggleIgnoreYear = (year: string) => {
     setIgnoredYears((prev) =>
@@ -73,32 +61,67 @@ const FacultyAvailability = () => {
   };
 
   const handleSearch = async () => {
-    if (!date || selectedPeriods.length === 0 || !availabilityFileId) {
-      toast.error("Please upload workload file, select date and at least one period");
-      return;
-    }
-
-    if (!DAYS.includes(dayOfWeek as (typeof DAYS)[number])) {
-      toast.error("Selected date is a Sunday - no classes scheduled.");
+    if (!availabilityFileId || !queryFileId) {
+      toast.error("Please upload both workload and query files.");
       return;
     }
 
     try {
       setSearching(true);
-      const response = await getFacultyAvailability({
-        date,
-        periods: selectedPeriods,
-        facultyRequired: numFaculty,
+      const response = await getBulkFacultyAvailability({
+        availabilityFileId,
+        queryFileId,
         ignoredYears,
         ignoredSections,
-        availabilityFileId,
       });
-      setResults(response);
+      setResults(response.results);
+      toast.success("Availability report generated.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to fetch availability");
     } finally {
       setSearching(false);
     }
+  };
+
+  const handleQueryUpload = async (file: File) => {
+    setQueryFile(file);
+    try {
+      const response = await uploadFacultyAvailabilityQuery(file);
+      setQueryFileId(response.fileId);
+      toast.success(`Uploaded "${file.name}" successfully.`);
+    } catch (error) {
+      setQueryFileId("");
+      toast.error(error instanceof Error ? error.message : "Query upload failed");
+    }
+  };
+
+  const handleDownloadCsv = () => {
+    if (!results || results.length === 0) return;
+    
+    const headers = ["Date", "Day", "Periods", "Faculty Required", "Available Faculty Found", "Available Faculty Names"];
+    const rows = results.map(r => {
+      const periodsStr = r.periods.map(p => `P${p.period}`).join(", ");
+      const facStr = r.faculty.join(" | ");
+      return [
+        r.date || "",
+        r.day || "",
+        `"${periodsStr}"`,
+        r.facultyRequired,
+        r.faculty.length,
+        `"${facStr}"`
+      ].join(",");
+    });
+    
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", "faculty_availability_report.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleAvailabilityUpload = async (file: File) => {
@@ -113,15 +136,11 @@ const FacultyAvailability = () => {
     }
   };
 
-  const formattedDate = date
-    ? new Date(date).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" })
-    : "";
-
   return (
     <DashboardLayout>
       <div className="page-header">
-        <h1>Faculty Availability Finder</h1>
-        <p>Find faculty who are free across all selected periods</p>
+        <h1>Faculty Availability Bulk Finder</h1>
+        <p>Find faculty who are free based on a list of dates and periods</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -158,48 +177,32 @@ const FacultyAvailability = () => {
             </div>
 
             <div>
-              <Label className="text-xs text-muted-foreground">Select Date</Label>
-              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              {dayOfWeek && (
-                <p className="text-xs text-primary mt-1 flex items-center gap-1">
-                  <CalendarDays className="h-3 w-3" />
-                  {dayOfWeek}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Select Period(s)</Label>
-              <div className="flex flex-wrap gap-2">
-                {actualPeriods.map((p) => (
-                  <button
-                    key={p.period}
-                    onClick={() => togglePeriod(p.period)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                      selectedPeriods.includes(p.period)
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-card text-foreground border-border hover:border-primary/50"
-                    }`}
-                  >
-                    P{p.period} ({p.time})
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <Label className="text-xs text-muted-foreground">Number of Faculty Required</Label>
-              <Input
-                type="number"
-                min={1}
-                max={20}
-                value={numFaculty}
-                onChange={(e) => setNumFaculty(parseInt(e.target.value, 10) || 1)}
+              <Label className="text-xs text-muted-foreground mb-2 block">Availability Query Upload</Label>
+              <FileUpload
+                file={queryFile}
+                onFileSelect={handleQueryUpload}
+                onClear={() => {
+                  setQueryFile(null);
+                  setQueryFileId("");
+                }}
+                accept=".xlsx,.xls,.csv"
+                label="Upload query file"
+                description="Upload file with Date, Number of Faculty Required, and Periods (XLSX/CSV)"
+                icon={<CalendarDays className="h-9 w-9 text-primary" />}
+                templateLinks={[
+                  {
+                    label: "Query Template",
+                    href: `${templateBase}/faculty-availability-query`,
+                  },
+                ]}
               />
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {queryFileId ? `Query ID: ${queryFileId}` : "Upload query file containing the dates and periods to search."}
+              </p>
             </div>
 
-            <Button onClick={handleSearch} className="w-full gap-2" disabled={searching || !availabilityFileId}>
-              <Search className="h-4 w-4" /> {searching ? "Finding..." : "Find Available Faculty"}
+            <Button onClick={handleSearch} className="w-full gap-2" disabled={searching || !availabilityFileId || !queryFileId}>
+              <Search className="h-4 w-4" /> {searching ? "Generating Report..." : "Generate Availability Report"}
             </Button>
           </div>
 
@@ -244,23 +247,20 @@ const FacultyAvailability = () => {
         <div>
           {results ? (
             <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
-              <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-                <Users className="h-4 w-4 text-primary" /> Common Availability Results
-              </h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <Users className="h-4 w-4 text-primary" /> Report Generated ({results.length} rows)
+                </h3>
+                <Button onClick={handleDownloadCsv} size="sm" variant="secondary" className="gap-2">
+                  Download CSV
+                </Button>
+              </div>
 
               <div className="bg-muted/50 rounded-lg p-4 mb-5 space-y-1">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Date:</span>
-                  <span className="font-medium text-foreground">{formattedDate}</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Day:</span>
-                  <span className="font-medium text-foreground">{results.day}</span>
-                </div>
-                {(ignoredYears.length > 0 || ignoredSections.length > 0) && (
+                {(ignoredYears.length > 0 || ignoredSections.length > 0) ? (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Ignoring:</span>
-                    <span className="font-medium text-foreground text-right">
+                    <span className="font-medium text-foreground text-right flex-1 ml-4 truncate">
                       {[
                         ...ignoredYears,
                         ...ignoredSections.map((s) => {
@@ -270,44 +270,50 @@ const FacultyAvailability = () => {
                       ].join(", ")}
                     </span>
                   </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No ignore constraints active.</p>
                 )}
               </div>
 
-              <div className="mb-5">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  Selected Periods
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {results.periods.map((pr) => (
-                    <span key={pr.period} className="bg-primary/10 text-primary text-xs font-semibold px-2.5 py-1 rounded-md">
-                      P{pr.period} ({pr.time})
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {results.faculty.length > 0 ? (
-                <div className="space-y-2">
-                  {results.faculty.map((f, i) => (
-                    <div key={f} className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 border border-border">
-                      <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <span className="text-xs font-bold text-primary">{i + 1}</span>
+              <div className="mb-5 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                {results.slice(0, 10).map((r, i) => (
+                  <div key={i} className="mb-4 pb-4 border-b border-border last:border-0 last:mb-0 last:pb-0">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="font-medium text-sm text-foreground">
+                        {r.date} <span className="text-muted-foreground text-xs font-normal">({r.day})</span>
                       </div>
-                      <span className="text-sm font-medium text-foreground">{f}</span>
+                      <div className="text-xs font-medium bg-primary/10 text-primary px-2 py-0.5 rounded">
+                        Required: {r.facultyRequired}
+                      </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  No faculty are free for all selected periods.
-                </p>
-              )}
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {r.periods.map(p => (
+                         <span key={p.period} className="text-[10px] font-semibold bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
+                           P{p.period} ({p.time})
+                         </span>
+                      ))}
+                    </div>
+                    {r.faculty.length > 0 ? (
+                      <p className="text-xs text-foreground mt-1">
+                        <span className="font-semibold text-primary">{r.faculty.length} found:</span> {r.faculty.join(", ")}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">No faculty available.</p>
+                    )}
+                  </div>
+                ))}
+                {results.length > 10 && (
+                  <p className="text-xs text-muted-foreground text-center pt-2">
+                    ...and {results.length - 10} more rows. Download CSV to see full report.
+                  </p>
+                )}
+              </div>
             </div>
           ) : (
             <div className="bg-card rounded-xl p-12 shadow-sm flex flex-col items-center justify-center text-center border border-border/60">
               <Users className="h-12 w-12 text-muted-foreground/30 mb-4" />
               <p className="text-sm text-muted-foreground">
-                Select a date and periods to find faculty free across all selected slots
+                Upload your workload file and a query file to generate a bulk report.
               </p>
             </div>
           )}

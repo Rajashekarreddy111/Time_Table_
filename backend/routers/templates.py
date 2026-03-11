@@ -180,3 +180,14 @@ async def shared_classes_template():
             {"year": "2nd Year", "sections": "A, D", "subject": "Data Structures"},
         ],
     )
+
+@router.get("/templates/faculty-availability-query")
+async def faculty_availability_query_template():
+    return _template_response(
+        "faculty-availability-query-template.xlsx",
+        [
+            {"Date": "2024-03-20", "Number of Faculty Required": 1, "Periods": "1, 2, 3"},
+            {"Date": "2024-03-21", "Number of Faculty Required": 2, "Periods": "4, 5"},
+            {"Date": "Monday", "Number of Faculty Required": 1, "Periods": "1, 6"},
+        ],
+    )

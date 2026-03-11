@@ -18,6 +18,23 @@ export interface FacultyAvailabilityResponse {
   faculty: string[];
 }
 
+export interface BulkFacultyAvailabilityItem extends FacultyAvailabilityResponse {
+  date: string;
+  facultyRequired: number;
+}
+
+export interface BulkFacultyAvailabilityRequest {
+  availabilityFileId: string;
+  queryFileId: string;
+  ignoredYears: string[];
+  ignoredSections: string[];
+  facultyIdMapFileId?: string;
+}
+
+export interface BulkFacultyAvailabilityResponse {
+  results: BulkFacultyAvailabilityItem[];
+}
+
 export interface UploadResponse {
   fileId: string;
   fileName: string;
@@ -262,6 +279,27 @@ export async function uploadSharedClasses(file: File): Promise<UploadResponse> {
 
 export function getFacultyAvailability(payload: FacultyAvailabilityRequest) {
   return apiRequest<FacultyAvailabilityResponse>("/faculty/availability", "POST", payload);
+}
+
+export function getBulkFacultyAvailability(payload: BulkFacultyAvailabilityRequest) {
+  return apiRequest<BulkFacultyAvailabilityResponse>("/faculty/availability/bulk", "POST", payload);
+}
+
+export async function uploadFacultyAvailabilityQuery(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/faculty-availability-query";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
 }
 
 export function generateTimetable(payload: GenerateTimetableRequest) {

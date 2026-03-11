@@ -153,3 +153,83 @@ def get_available_faculty_for_all_periods(
         "periods": [{"period": p, "time": PERIOD_TIME[p]} for p in selected_periods],
         "faculty": sorted(common_available)[: max(1, faculty_required)],
     }
+
+
+def get_bulk_available_faculty(
+    store: MemoryStore,
+    availability_file_id: str,
+    query_file_id: str,
+    ignored_years: list[str],
+    ignored_sections: list[str],
+    faculty_id_map_file_id: str | None,
+) -> dict:
+    if not availability_file_id:
+        raise _validation_error("availabilityFileId is required", [])
+    if not query_file_id:
+        raise _validation_error("queryFileId is required", [])
+
+    query_payload = store.get_file_map(query_file_id)
+    if not query_payload:
+        raise _validation_error("Invalid queryFileId", [])
+        
+    query_rows = query_payload.get("rows", [])
+    if not query_rows:
+        raise _validation_error("Query file is empty", [])
+
+    faculty_name_map = _build_faculty_name_map(store, faculty_id_map_file_id)
+    schedules = _build_schedules_from_upload(store, availability_file_id, faculty_name_map)
+    faculty_names = list(schedules.keys())
+    occupancy_details = store.get_global_faculty_occupancy_details()
+
+    results = []
+
+    for row in query_rows:
+        date_value = row.get("date")
+        faculty_required = row.get("facultyRequired", 1)
+        periods = row.get("periods", [])
+
+        if not periods:
+            continue
+            
+        try:
+            day_name = datetime.strptime(date_value, "%Y-%m-%d").strftime("%A")
+        except ValueError:
+            try:
+                from dateutil import parser
+                day_name = parser.parse(date_value).strftime("%A")
+            except Exception:
+                continue
+
+        if day_name not in DAYS:
+            continue
+
+        selected_periods = sorted({p for p in periods if p in PERIOD_TIME})
+        if not selected_periods:
+            continue
+
+        common_available: set[str] = set(faculty_names)
+
+        for period in selected_periods:
+            period_available: set[str] = set()
+            for faculty in faculty_names:
+                class_info = schedules.get(faculty, {}).get(day_name, {}).get(period)
+                if class_info is None or _is_ignored(class_info, ignored_years, ignored_sections):
+                    period_available.add(faculty)
+            common_available &= period_available
+
+        for item in occupancy_details:
+            if item.get("day") == day_name and item.get("period") in selected_periods:
+                faculty = str(item.get("faculty", "")).strip()
+                if faculty in common_available:
+                    if not _is_ignored(item, ignored_years, ignored_sections):
+                        common_available.discard(faculty)
+
+        results.append({
+            "date": date_value,
+            "day": day_name,
+            "periods": [{"period": p, "time": PERIOD_TIME[p]} for p in selected_periods],
+            "faculty": sorted(common_available)[: max(1, faculty_required)],
+            "facultyRequired": faculty_required
+        })
+
+    return {"results": results}

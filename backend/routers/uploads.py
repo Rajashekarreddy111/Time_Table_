@@ -346,6 +346,44 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
+    import re
+    normalized: list[dict] = []
+    for row in rows:
+        date_raw = _to_text(row.get("date"))
+        required_raw = _to_text(row.get("number of faculty required")) or _to_text(row.get("faculty required"))
+        periods_raw = _to_text(row.get("periods")) or _to_text(row.get("select period(s)")) or _to_text(row.get("period"))
+        
+        if not date_raw:
+            continue
+            
+        try:
+            required = int(float(required_raw)) if required_raw else 1
+        except ValueError:
+            required = 1
+            
+        periods = []
+        if periods_raw:
+            for p in periods_raw.split(","):
+                match = re.search(r'\d+', p.strip())
+                if match:
+                    periods.append(int(match.group()))
+                    
+        normalized.append({
+            "date": date_raw,
+            "facultyRequired": required,
+            "periods": periods
+        })
+        
+    if not normalized:
+        raise _validation_error(
+            "Required columns are missing or file is empty",
+            [{"expectedColumns": ["Date", "Number of Faculty Required", "Periods/Select Period(s)"],
+              "receivedColumns": list(rows[0].keys()) if rows else []}],
+        )
+    return normalized
+
+
 def _scope_key_global() -> str:
     return "global"
 
@@ -558,6 +596,38 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
         fileName=file.filename,
         rowsParsed=len(merged_rows),
         message="Faculty availability file uploaded successfully",
+    )
+
+
+@router.post("/uploads/faculty-availability-query", response_model=UploadResponse)
+async def upload_faculty_availability_query(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls", ".csv"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_faculty_availability_query_rows(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/faculty-availability-query")
+
+    file_id = store.next_file_id("fquery")
+    store.save_file_map(
+        file_id,
+        {
+            "id": file_id,
+            "fileName": file.filename,
+            "rowsParsed": len(rows),
+            "rows": rows,
+            "sourceFile": cloudinary_file,
+        },
+    )
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(rows),
+        message="Faculty availability query uploaded successfully",
     )
 
 
