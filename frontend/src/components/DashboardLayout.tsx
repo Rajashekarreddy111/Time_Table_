@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Navbar } from "@/components/Navbar";
+import { Navbar } from "@/components/Navbar/Navbar";
 
 export function DashboardLayout({ children }: { children: ReactNode }) {
   return (

@@ -27,7 +27,7 @@ import {
   SharedClassEntry,
   SubjectHours,
 } from "@/data/mockData";
-import { LoadingSpinner } from "@/components/LoadingSpinner";
+import { LoadingSpinner } from "@/components/Loader/LoadingSpinner";
 import { FileUpload } from "@/components/FileUpload";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
