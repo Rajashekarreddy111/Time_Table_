@@ -39,8 +39,11 @@ export type SubjectHours = {
 
 export type TimetableCell = {
   subject: string;
+  subjectName?: string;
   faculty?: string;
+  facultyName?: string;
   isLab?: boolean;
+  sharedSections?: string[];
 };
 
 export type SectionTimetable = {

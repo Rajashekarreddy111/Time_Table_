@@ -1,4 +1,4 @@
-import { GraduationCap, Calendar, Users, LayoutDashboard, Clock, RotateCcw } from "lucide-react";
+import { GraduationCap, Calendar, Users, LayoutDashboard, Clock, RotateCcw, FileText } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
 import {
@@ -33,6 +33,7 @@ const navItems = [
   { title: "Timetable Generator", url: "/generator", icon: Calendar },
   { title: "View Timetables", url: "/timetables", icon: GraduationCap },
   { title: "Faculty Workload", url: "/workload", icon: Clock },
+  { title: "Generated Outputs", url: "/outputs", icon: FileText },
   { title: "Faculty Availability", url: "/availability", icon: Users },
 ];
 

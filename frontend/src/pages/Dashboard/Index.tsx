@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Calendar, Users, GraduationCap, Clock, ArrowRight } from "lucide-react";
+import { Calendar, Users, GraduationCap, Clock, ArrowRight, FileText } from "lucide-react";
 import { Link } from "react-router-dom";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { listTimetables, type TimetableRecord } from "@/services/apiClient";
@@ -12,6 +12,7 @@ const quickLinks = [
   { title: "Generate Timetable", desc: "Create new timetable with constraints", url: "/generator", icon: Calendar },
   { title: "View Timetables", desc: "Browse generated timetables", url: "/timetables", icon: GraduationCap },
   { title: "Faculty Workload", desc: "View faculty schedules", url: "/workload", icon: Clock },
+  { title: "Generated Outputs", desc: "Open shared and violation reports", url: "/outputs", icon: FileText },
   { title: "Find Availability", desc: "Find free faculty for a period", url: "/availability", icon: Users },
 ];
 
@@ -34,21 +35,23 @@ const Dashboard = () => {
     const config = readAcademicConfig();
     const totalSections = getAllSectionKeys(config).length;
     const timetableCount = records.length;
-    const latest = records[0];
     const allFaculty = new Set<string>();
     let totalAssignments = 0;
     
     records.forEach(r => {
-      if (r.facultyWorkloads) {
-        Object.keys(r.facultyWorkloads).forEach(name => allFaculty.add(name));
-      }
-      if (r.grid) {
-        Object.values(r.grid).forEach(daySlots => {
-          daySlots.forEach(slot => {
-            if (slot) totalAssignments++;
+      const grids = r.allGrids ?? { [r.section]: r.grid };
+      Object.values(grids).forEach((grid) => {
+        Object.values(grid).forEach((daySlots) => {
+          daySlots.forEach((slot) => {
+            if (!slot) return;
+            totalAssignments++;
+            const facultyName = slot.facultyName ?? slot.faculty;
+            if (facultyName) {
+              allFaculty.add(facultyName);
+            }
           });
         });
-      }
+      });
     });
 
     return [

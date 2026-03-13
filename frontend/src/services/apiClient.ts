@@ -123,22 +123,66 @@ export interface GenerateTimetableResponse {
   message: string;
 }
 
+export interface GeneratedWorkbookFile {
+  fileName: string;
+  contentType: string;
+  contentBase64: string;
+}
+
 export interface TimetableRecord {
   id: string;
   year: string;
   section: string;
   grid: Record<
     string,
-    ({ subject: string; faculty?: string; isLab?: boolean } | null)[]
+    ({ subject: string; subjectName?: string; faculty?: string; facultyName?: string; isLab?: boolean; sharedSections?: string[] } | null)[]
   >;
   allGrids?: Record<
     string,
     Record<
       string,
-      ({ subject: string; faculty?: string; isLab?: boolean } | null)[]
+      ({ subject: string; subjectName?: string; faculty?: string; facultyName?: string; isLab?: boolean; sharedSections?: string[] } | null)[]
     >
   >;
   facultyWorkloads?: Record<string, Record<string, (string | null)[]>>;
+  generatedFiles?: {
+    sectionTimetables?: GeneratedWorkbookFile;
+    facultyWorkload?: GeneratedWorkbookFile;
+    sharedClassesReport?: GeneratedWorkbookFile;
+    constraintViolationReport?: GeneratedWorkbookFile;
+  };
+  sharedClasses?: Array<{
+    year: string;
+    subject_id: string;
+    subject_name?: string;
+    faculty_id: string;
+    faculty_name?: string;
+    sections: string[];
+    day: string;
+    periods: number[];
+    venue?: string;
+    isLab?: boolean;
+    shared?: boolean;
+  }>;
+  constraintViolations?: Array<{
+    year: string;
+    sections: string[];
+    subject_id: string;
+    subject_name?: string;
+    faculty_id: string;
+    faculty_name?: string;
+    constraint: string;
+    detail: string;
+  }>;
+  unscheduledSubjects?: Array<{
+    year: string;
+    sections: string[];
+    subject_id: string;
+    subject_name?: string;
+    faculty_id: string;
+    faculty_name?: string;
+    detail: string;
+  }>;
   source?: unknown;
 }
 

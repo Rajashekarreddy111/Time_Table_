@@ -11,7 +11,8 @@ import * as XLSX from "xlsx";
 import { buildLegend, DISPLAY_DAYS, getCellByPeriod } from "@/lib/timetableFormat";
 import { listTimetables, type TimetableRecord, deleteTimetable } from "@/services/apiClient";
 import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import type { GeneratedWorkbookFile } from "@/services/apiClient";
 
 const TOTAL_COLUMNS = 10;
 
@@ -59,15 +60,15 @@ function buildTimetableWorksheet(timetable: SectionTimetable) {
     data.push(
       padRow([
         day.shortVertical,
-        p1?.subject ? codeBySubject.get(p1.subject) ?? p1.subject : "",
-        p2?.subject ? codeBySubject.get(p2.subject) ?? p2.subject : "",
+        (p1?.subjectName ?? p1?.subject) ? codeBySubject.get(p1?.subjectName ?? p1?.subject ?? "") ?? (p1?.subjectName ?? p1?.subject ?? "") : "",
+        (p2?.subjectName ?? p2?.subject) ? codeBySubject.get(p2?.subjectName ?? p2?.subject ?? "") ?? (p2?.subjectName ?? p2?.subject ?? "") : "",
         dayIdx === 0 ? "BREAK" : "",
-        p3?.subject ? codeBySubject.get(p3.subject) ?? p3.subject : "",
-        p4?.subject ? codeBySubject.get(p4.subject) ?? p4.subject : "",
+        (p3?.subjectName ?? p3?.subject) ? codeBySubject.get(p3?.subjectName ?? p3?.subject ?? "") ?? (p3?.subjectName ?? p3?.subject ?? "") : "",
+        (p4?.subjectName ?? p4?.subject) ? codeBySubject.get(p4?.subjectName ?? p4?.subject ?? "") ?? (p4?.subjectName ?? p4?.subject ?? "") : "",
         dayIdx === 0 ? "LUNCH" : "",
-        p5?.subject ? codeBySubject.get(p5.subject) ?? p5.subject : "",
-        p6?.subject ? codeBySubject.get(p6.subject) ?? p6.subject : "",
-        p7?.subject ? codeBySubject.get(p7.subject) ?? p7.subject : "",
+        (p5?.subjectName ?? p5?.subject) ? codeBySubject.get(p5?.subjectName ?? p5?.subject ?? "") ?? (p5?.subjectName ?? p5?.subject ?? "") : "",
+        (p6?.subjectName ?? p6?.subject) ? codeBySubject.get(p6?.subjectName ?? p6?.subject ?? "") ?? (p6?.subjectName ?? p6?.subject ?? "") : "",
+        (p7?.subjectName ?? p7?.subject) ? codeBySubject.get(p7?.subjectName ?? p7?.subject ?? "") ?? (p7?.subjectName ?? p7?.subject ?? "") : "",
       ]),
     );
   });
@@ -155,6 +156,20 @@ function extractSectionTimetables(records: TimetableRecord[]): SectionTimetable[
   return items;
 }
 
+function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
+  const binary = atob(file.contentBase64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: file.contentType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 const TimetableViewer = () => {
   const [searchParams] = useSearchParams();
   const timetableId = searchParams.get("timetableId");
@@ -205,6 +220,10 @@ const TimetableViewer = () => {
   }, [availableSections, selectedSection]);
 
   const timetable = allTimetables.find((item) => item.year === selectedYear && item.section === selectedSection);
+  const activeRecord = records.find((record) =>
+    (record.year === selectedYear && record.section === selectedSection) ||
+    Boolean(record.allGrids && record.allGrids[selectedSection]),
+  );
 
   const handleExportExcel = () => {
     if (!timetable) return;
@@ -233,12 +252,8 @@ const TimetableViewer = () => {
   const handlePrint = () => window.print();
 
   const handleDelete = async () => {
-    // Find the original record ID
-    const record = records.find(r => 
-      (r.year === selectedYear && r.section === selectedSection) || 
-      (r.allGrids && r.allGrids[selectedSection])
-    );
-    
+    const record = activeRecord;
+
     if (!record) return;
 
     if (!confirm("Are you sure you want to delete this timetable?")) return;
@@ -312,6 +327,41 @@ const TimetableViewer = () => {
             <Button variant="outline" size="sm" onClick={handleExportAllTimetables} className="gap-1.5">
               <Download className="h-3.5 w-3.5" /> Download All Timetables
             </Button>
+            {activeRecord && (
+              <Button variant="outline" size="sm" asChild className="gap-1.5">
+                <Link to={`/outputs?timetableId=${encodeURIComponent(activeRecord.id)}`}>Open Outputs Page</Link>
+              </Button>
+            )}
+            {activeRecord?.generatedFiles?.facultyWorkload && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.facultyWorkload!)}
+                className="gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" /> Faculty Workload
+              </Button>
+            )}
+            {activeRecord?.generatedFiles?.sharedClassesReport && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sharedClassesReport!)}
+                className="gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" /> Shared Class Report
+              </Button>
+            )}
+            {activeRecord?.generatedFiles?.constraintViolationReport && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.constraintViolationReport!)}
+                className="gap-1.5"
+              >
+                <Download className="h-3.5 w-3.5" /> Constraint Report
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handlePrint} className="gap-1.5">
               <Printer className="h-3.5 w-3.5" /> Print
             </Button>
@@ -324,17 +374,67 @@ const TimetableViewer = () => {
 
       <div className="bg-card rounded-xl p-6 shadow-sm print:shadow-none print:p-0">
         {timetable ? (
-          <TimetableGrid
-            grid={timetable.grid}
-            header={{
-              college: ACADEMIC_METADATA.COLLEGE_NAME,
-              department: ACADEMIC_METADATA.DEPARTMENT_NAME,
-              year: toAcademicYear(new Date()),
-              semester: ACADEMIC_METADATA.SEMESTER,
-              section: toClassLine(selectedYear, selectedSection),
-              room: selectedSection,
-            }}
-          />
+          <div className="space-y-4">
+            {activeRecord && (
+              <div className="rounded-xl border border-border/70 bg-muted/20 p-4 print:hidden">
+                <h3 className="text-sm font-semibold text-foreground mb-2">Generated Outputs</h3>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {activeRecord.generatedFiles?.sectionTimetables && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sectionTimetables!)}
+                      className="gap-1.5"
+                    >
+                      <Download className="h-3.5 w-3.5" /> section_timetables.xlsx
+                    </Button>
+                  )}
+                  {activeRecord.generatedFiles?.facultyWorkload && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.facultyWorkload!)}
+                      className="gap-1.5"
+                    >
+                      <Download className="h-3.5 w-3.5" /> faculty_workload.xlsx
+                    </Button>
+                  )}
+                  {activeRecord.generatedFiles?.sharedClassesReport && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sharedClassesReport!)}
+                      className="gap-1.5"
+                    >
+                      <Download className="h-3.5 w-3.5" /> shared_classes_report.xlsx
+                    </Button>
+                  )}
+                  {activeRecord.generatedFiles?.constraintViolationReport && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.constraintViolationReport!)}
+                      className="gap-1.5"
+                    >
+                      <Download className="h-3.5 w-3.5" /> constraint_violation_report.xlsx
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <TimetableGrid
+              grid={timetable.grid}
+              header={{
+                college: ACADEMIC_METADATA.COLLEGE_NAME,
+                department: ACADEMIC_METADATA.DEPARTMENT_NAME,
+                year: toAcademicYear(new Date()),
+                semester: ACADEMIC_METADATA.SEMESTER,
+                section: toClassLine(selectedYear, selectedSection),
+                room: selectedSection,
+              }}
+            />
+          </div>
         ) : (
           <div className="text-center py-16">
             <p className="text-muted-foreground">No timetable generated for {selectedYear} - Section {selectedSection}.</p>

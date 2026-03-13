@@ -93,6 +93,33 @@ def _normalize_main_timetable_config(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+def _validate_main_timetable_section_totals(rows: list[dict]) -> None:
+    totals: dict[tuple[str, str], int] = {}
+    for row in rows:
+        year = normalize_year(_to_text(row.get("year")))
+        section = _to_text(row.get("section")).upper()
+        hours = row.get("hours", 0)
+        if not year or not section:
+            continue
+        totals[(year, section)] = totals.get((year, section), 0) + int(hours or 0)
+
+    violations = []
+    for (year, section), total in sorted(totals.items()):
+        if total != 42:
+            violations.append(
+                {
+                    "year": year,
+                    "section": section,
+                    "hours": total,
+                    "expected": 42,
+                    "detail": f"Year {year} Section {section} -> {total} hours (Expected: 42)",
+                }
+            )
+
+    if violations:
+        raise _validation_error("Validation Error: Main config section totals must equal 42.", violations)
+
+
 def _normalize_lab_timetable(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
@@ -523,6 +550,7 @@ async def upload_main_timetable_config(
     file_bytes = read_upload_bytes(file)
     dataframe = parse_tabular_upload(file.filename, file_bytes)
     rows = _normalize_main_timetable_config(dataframe_rows(dataframe))
+    _validate_main_timetable_section_totals(rows)
     cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/main-timetable")
     
     scope_key = _scope_key_global()

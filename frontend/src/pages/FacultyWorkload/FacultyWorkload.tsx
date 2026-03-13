@@ -155,46 +155,52 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
 function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[] {
   const mergedWorkloads: Record<string, Record<string, (FacultyScheduleEntry[] | null)[]>> = {};
 
-  records.forEach((record) => {
-    const year = record.year;
-    const raw = record.facultyWorkloads ?? {};
-
-    for (const [name, dayMap] of Object.entries(raw)) {
-      if (!mergedWorkloads[name]) {
-        mergedWorkloads[name] = {};
-        for (const day of DISPLAY_DAYS) {
-          mergedWorkloads[name][day.full] = Array.from({ length: 7 }, () => null);
-        }
-      }
-
+  const ensureFacultySchedule = (facultyName: string) => {
+    if (!mergedWorkloads[facultyName]) {
+      mergedWorkloads[facultyName] = {};
       for (const day of DISPLAY_DAYS) {
-        const slots = dayMap[day.full] ?? [];
-        slots.forEach((value, idx) => {
-          if (value && idx < 7) {
-            const rawText = String(value);
-            const splitIndex = rawText.indexOf(" ");
-            let entry: FacultyScheduleEntry;
-            if (splitIndex <= 0) {
-              entry = { subject: rawText, year, section: "" };
-            } else {
-              const section = rawText.slice(0, splitIndex).trim();
-              const subject = rawText.slice(splitIndex + 1).trim();
-              entry = { subject, year, section };
-            }
+        mergedWorkloads[facultyName][day.full] = Array.from({ length: 7 }, () => null);
+      }
+    }
+    return mergedWorkloads[facultyName];
+  };
 
-            if (!mergedWorkloads[name][day.full][idx]) {
-              mergedWorkloads[name][day.full][idx] = [entry];
-            } else {
-              // Push to existing array for conflict detection
-              const existingArray = mergedWorkloads[name][day.full][idx];
-              if (existingArray) {
-                // Check if it's already there to avoid duplicates from potential data issues
-                const isDuplicate = existingArray.some(e => e.subject === entry.subject && e.section === entry.section && e.year === entry.year);
-                if (!isDuplicate) {
-                  existingArray.push(entry);
-                }
-              }
-            }
+  records.forEach((record) => {
+    const grids = record.allGrids ?? { [record.section]: record.grid };
+
+    for (const [section, grid] of Object.entries(grids)) {
+      for (const day of DISPLAY_DAYS) {
+        const cells = grid[day.full] ?? [];
+        cells.forEach((cell, idx) => {
+          if (!cell || idx >= 7) return;
+
+          const facultyName = cell.facultyName ?? cell.faculty;
+          const subjectName = cell.subjectName ?? cell.subject;
+          if (!facultyName || !subjectName) return;
+
+          const sections = cell.sharedSections?.length ? cell.sharedSections.join(",") : section;
+          const entry: FacultyScheduleEntry = {
+            subject: subjectName,
+            year: record.year,
+            section: sections,
+          };
+
+          const facultySchedule = ensureFacultySchedule(facultyName);
+          if (!facultySchedule[day.full][idx]) {
+            facultySchedule[day.full][idx] = [entry];
+            return;
+          }
+
+          const existingArray = facultySchedule[day.full][idx];
+          if (!existingArray) return;
+          const isDuplicate = existingArray.some(
+            (existing) =>
+              existing.subject === entry.subject &&
+              existing.section === entry.section &&
+              existing.year === entry.year,
+          );
+          if (!isDuplicate) {
+            existingArray.push(entry);
           }
         });
       }

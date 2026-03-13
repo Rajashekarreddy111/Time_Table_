@@ -68,7 +68,7 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
                 const cell = getCellByPeriod(grid, day.full, period);
                 return (
                   <td key={`${day.full}-p-${period}`} className={cell?.isLab ? "lab-cell" : ""}>
-                    <div className="font-semibold text-[11px] leading-tight">{cell?.subject ?? ""}</div>
+                    <div className="font-semibold text-[11px] leading-tight">{cell?.subjectName ?? cell?.subject ?? ""}</div>
                   </td>
                 );
               })}
@@ -83,7 +83,7 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
                 const cell = getCellByPeriod(grid, day.full, period);
                 return (
                   <td key={`${day.full}-p-${period}`} className={cell?.isLab ? "lab-cell" : ""}>
-                    <div className="font-semibold text-[11px] leading-tight">{cell?.subject ?? ""}</div>
+                    <div className="font-semibold text-[11px] leading-tight">{cell?.subjectName ?? cell?.subject ?? ""}</div>
                   </td>
                 );
               })}
@@ -98,7 +98,7 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
                 const cell = getCellByPeriod(grid, day.full, period);
                 return (
                   <td key={`${day.full}-p-${period}`} className={cell?.isLab ? "lab-cell" : ""}>
-                    <div className="font-semibold text-[11px] leading-tight">{cell?.subject ?? ""}</div>
+                    <div className="font-semibold text-[11px] leading-tight">{cell?.subjectName ?? cell?.subject ?? ""}</div>
                   </td>
                 );
               })}

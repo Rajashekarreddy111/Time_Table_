@@ -4,6 +4,7 @@ import TimetableGenerator from "@/pages/TimetableGenerator/TimetableGenerator";
 import TimetableViewer from "@/pages/TimetableViewer/TimetableViewer";
 import FacultyWorkload from "@/pages/FacultyWorkload/FacultyWorkload";
 import FacultyAvailability from "@/pages/FacultyAvailability/FacultyAvailability";
+import GeneratedOutputs from "@/pages/GeneratedOutputs/GeneratedOutputs";
 import NotFound from "@/pages/NotFound/NotFound";
 
 export function AppRoutes() {
@@ -13,6 +14,7 @@ export function AppRoutes() {
       <Route path="/generator" element={<TimetableGenerator />} />
       <Route path="/timetables" element={<TimetableViewer />} />
       <Route path="/workload" element={<FacultyWorkload />} />
+      <Route path="/outputs" element={<GeneratedOutputs />} />
       <Route path="/availability" element={<FacultyAvailability />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
