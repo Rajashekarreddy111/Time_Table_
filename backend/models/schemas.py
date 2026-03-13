@@ -62,6 +62,16 @@ class SharedClassEntry(BaseModel):
     subject: str
 
 
+class ManualEntryMode(BaseModel):
+    year: str
+    section: str
+    subjectId: str
+    facultyId: str
+    noOfHours: int
+    continuousHours: int
+    compulsoryContinuousHours: int
+
+
 class SubjectHoursEntry(BaseModel):
     subject: str
     hours: int
@@ -70,12 +80,10 @@ class SubjectHoursEntry(BaseModel):
 
 class MappingFileIds(BaseModel):
     facultyIdMap: str | None = None
-    subjectFacultyMap: str | None = None
-    subjectFacultyMapCream: str | None = None
-    subjectFacultyMapGeneral: str | None = None
-    subjectPeriodsMap: str | None = None
-    subjectPeriodsMapCream: str | None = None
-    subjectPeriodsMapGeneral: str | None = None
+    mainTimetableConfig: str | None = None
+    labTimetableConfig: str | None = None
+    subjectIdMapping: str | None = None
+    subjectContinuousRules: str | None = None
 
 
 class FacultyWeeklyAvailabilityEntry(BaseModel):
@@ -88,18 +96,39 @@ class FacultyIdNameMapEntry(BaseModel):
     facultyName: str
 
 
+class SubjectIdNameMapEntry(BaseModel):
+    subjectId: str
+    subjectName: str
+
+
+class SubjectContinuousRuleEntry(BaseModel):
+    subjectId: str
+    compulsoryContinuousHours: int
+
+
+class ManualLabEntry(BaseModel):
+    year: str
+    section: str
+    subjectId: str
+    day: int
+    hours: list[int] = Field(default_factory=list)
+    venue: str = ""
+
+
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
-    sectionBatchMap: dict[str, str] = Field(default_factory=dict)
+    manualEntries: list[ManualEntryMode] = Field(default_factory=list)
     subjects: list[SubjectEntry] = Field(default_factory=list)
     labs: list[LabEntry] = Field(default_factory=list)
     sharedClasses: list[SharedClassEntry] = Field(default_factory=list)
     subjectHours: list[SubjectHoursEntry] = Field(default_factory=list)
-    batchSubjectHours: dict[str, list[SubjectHoursEntry]] = Field(default_factory=dict)
     mappingFileIds: MappingFileIds | None = None
     facultyAvailability: list[FacultyWeeklyAvailabilityEntry] = Field(default_factory=list)
     facultyIdNameMapping: list[FacultyIdNameMapEntry] = Field(default_factory=list)
+    subjectIdNameMapping: list[SubjectIdNameMapEntry] = Field(default_factory=list)
+    subjectContinuousRules: list[SubjectContinuousRuleEntry] = Field(default_factory=list)
+    manualLabEntries: list[ManualLabEntry] = Field(default_factory=list)
 
 
 class GenerateTimetableResponse(BaseModel):

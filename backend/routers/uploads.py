@@ -1,6 +1,8 @@
+from io import BytesIO
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+import openpyxl
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from models.schemas import UploadResponse
 from services.cloudinary_storage import upload_source_file
@@ -52,91 +54,96 @@ def _normalize_faculty_id_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
-def _normalize_subject_period_rows(rows: list[dict]) -> list[dict]:
-    normalized: list[dict] = []
-    for row in rows:
-        subject = _to_text(row.get("subject")) or _to_text(row.get("subject/lab"))
-        hours = _to_text(row.get("hours")) or _to_text(row.get("number of hours"))
-        continuous = _to_text(row.get("continuous_hours")) or _to_text(row.get("continuous hours that can be allocated"))
-        if not subject:
-            continue
-        try:
-            hours_value = int(float(hours))
-            continuous_value = int(float(continuous))
-        except ValueError:
-            raise _validation_error(
-                "Invalid hours values in subject periods map",
-                [{"subject": subject, "hours": hours, "continuous_hours": continuous}],
-            )
-        normalized.append(
-            {
-                "subject": subject,
-                "hours": hours_value,
-                "continuous_hours": continuous_value,
-            }
-        )
-    if not normalized:
-        raise _validation_error(
-            "Required columns are missing",
-            [{
-                "expectedAnyOf": [["subject", "hours", "continuous_hours"], ["subject/lab", "number of hours", "continuous hours that can be allocated"]],
-                "receivedColumns": list(rows[0].keys()) if rows else [],
-            }],
-        )
-    return normalized
-
-
-def _normalize_subject_faculty_rows(rows: list[dict]) -> list[dict]:
+def _normalize_main_timetable_config(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
         year = normalize_year(_to_text(row.get("year")))
-        section = _to_text(row.get("section")) or _to_text(row.get("section/subject"))
-        if not year or not section:
+        subject_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
+        if not year or not subject_id:
             continue
-
-        # Existing row-wise format: year, section, subject, faculty_id
-        subject = _to_text(row.get("subject"))
-        faculty_id = _to_text(row.get("faculty_id"))
-        if subject and faculty_id:
-            normalized.append(
-                {
-                    "year": year,
-                    "section": section,
-                    "subject": subject,
-                    "faculty_id": faculty_id.split(",")[0].strip(),
-                }
-            )
-            continue
-
-        # Matrix-like format: year, section/subject, subject-1, subject-2, lab-1...
-        for key, value in row.items():
-            key_text = _to_text(key).lower()
-            if key_text in {"year", "section", "section/subject"} or key_text.startswith("__orig_"):
-                continue
-            faculty_value = _to_text(value)
-            if not faculty_value:
-                continue
-            # Use original column name for subject to preserve case
-            orig_key = row.get(f"__orig_{key}", key)
-            normalized.append(
-                {
-                    "year": year,
-                    "section": section,
-                    "subject": _to_text(orig_key),
-                    "faculty_id": faculty_value.split(",")[0].strip(),
-                }
-            )
-
+        
+        sections_found = set()
+        for k in row.keys():
+            k_str = str(k).lower()
+            if k_str.endswith("_hours") and not k_str.startswith("__orig_") and "continuous" not in k_str:
+                sec = k_str.replace("_hours", "").upper()
+                sections_found.add(sec)
+                
+        for sec in sections_found:
+            hours = _to_text(row.get(f"{sec.lower()}_hours"))
+            faculty = _to_text(row.get(f"{sec.lower()}_faculty_id")) or _to_text(row.get(f"{sec.lower()}_faculty-id"))
+            continuous = _to_text(row.get(f"{sec.lower()}_continuous_hours")) 
+            
+            if hours and str(hours).strip() != '0':
+                try:
+                    h_val = int(float(hours))
+                    c_val = int(float(continuous)) if continuous else 1
+                    normalized.append({
+                        "year": year,
+                        "subject_id": subject_id,
+                        "section": sec,
+                        "hours": h_val,
+                        "faculty_id": faculty,
+                        "continuous_hours": c_val
+                    })
+                except ValueError:
+                    pass
     if not normalized:
-        raise _validation_error(
-            "Required columns are missing",
-            [{
-                "expectedAnyOf": [["year", "section", "subject", "faculty_id"], ["year", "section/subject", "subject-*", "lab-*"]],
-                "receivedColumns": list(rows[0].keys()) if rows else [],
-            }],
-        )
+        raise _validation_error("Required columns missing or no data found in main timetable config", [])
     return normalized
 
+
+def _normalize_lab_timetable(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows:
+        year = normalize_year(_to_text(row.get("year")))
+        section = _to_text(row.get("section"))
+        subject_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
+        day = _to_text(row.get("day"))
+        hours = _to_text(row.get("hours"))
+        venue = _to_text(row.get("venue"))
+        
+        if not year or not section or not subject_id or not day or not hours:
+            continue
+            
+        try:
+            day_val = int(float(day))
+            hours_list = [int(float(h.strip())) for h in hours.split(",") if h.strip()]
+            normalized.append({
+                "year": year,
+                "section": section,
+                "subject_id": subject_id,
+                "day": day_val,
+                "hours": hours_list,
+                "venue": venue
+            })
+        except ValueError:
+            pass
+    return normalized
+
+
+def _normalize_subject_id_mapping(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows:
+        sub_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
+        name = _to_text(row.get("subject_name")) or _to_text(row.get("subject name")) or _to_text(row.get("subject"))
+        if sub_id and name:
+            normalized.append({"subject_id": sub_id, "subject_name": name})
+    return normalized
+
+
+def _normalize_continuous_rules(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows:
+        sub_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
+        compulsory = _to_text(row.get("compulsory_continuous_hours")) or _to_text(row.get("continuous"))
+        if sub_id and compulsory:
+            try:
+                c_val = int(float(compulsory))
+                normalized.append({"subject_id": sub_id, "compulsory_continuous_hours": c_val})
+            except ValueError:
+                pass
+    return normalized
 
 def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
@@ -346,6 +353,71 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
+    workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    normalized_rows: list[dict] = []
+    valid_days = {"MON", "TUE", "WED", "THU", "FRI", "SAT"}
+
+    for worksheet in workbook.worksheets:
+        sheet_rows = list(worksheet.iter_rows(values_only=True))
+        if not sheet_rows:
+            continue
+
+        faculty_name = ""
+        for row in sheet_rows[:12]:
+            for value in row:
+                text = _to_text(value)
+                if "FACULTY WORKLOAD" in text.upper():
+                    faculty_name = text.split(":", 1)[1].strip() if ":" in text else text
+                    break
+            if faculty_name:
+                break
+
+        periods_row_index = -1
+        day_column_index = -1
+        column_to_period: dict[int, int] = {}
+        for row_index, row in enumerate(sheet_rows):
+            values = [_to_text(value).upper() for value in row]
+            if "DAY" not in values or "1" not in values or "2" not in values:
+                continue
+            periods_row_index = row_index
+            for column_index, value in enumerate(values):
+                if value == "DAY":
+                    day_column_index = column_index
+                elif value in {"1", "2", "3", "4", "5", "6", "7"}:
+                    column_to_period[column_index] = int(value)
+            break
+
+        if periods_row_index == -1 or day_column_index == -1 or not column_to_period:
+            continue
+
+        for row in sheet_rows[periods_row_index + 1:]:
+            if day_column_index >= len(row):
+                continue
+
+            day_value = _to_text(row[day_column_index]).upper()
+            if day_value not in valid_days:
+                continue
+
+            for column_index, period in column_to_period.items():
+                cell_value = row[column_index] if column_index < len(row) else None
+                if _to_text(cell_value):
+                    continue
+                normalized_rows.append(
+                    {
+                        "faculty_id": faculty_name or worksheet.title.strip(),
+                        "faculty_name": faculty_name or worksheet.title.strip(),
+                        "day": day_value,
+                        "period": period,
+                        "year": "",
+                        "section": "",
+                        "subject": "",
+                    }
+                )
+
+    return normalized_rows
+
+
 def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
     import re
     normalized: list[dict] = []
@@ -441,102 +513,78 @@ async def upload_faculty_id_map(file: UploadFile = File(...)):
     )
 
 
-@router.post("/uploads/subject-faculty-map", response_model=UploadResponse)
-async def upload_subject_faculty_map(
-    year: str = Form(...),
-    batchType: str | None = Form(default=None),
-    section: str | None = Form(default=None),
-    file: UploadFile = File(...),
+@router.post("/uploads/main-timetable-config", response_model=UploadResponse)
+async def upload_main_timetable_config(
+    file: UploadFile = File(...)
 ):
     if not file.filename:
         raise _validation_error("File name is required", [])
-    year = normalize_year(year.strip())
-    print(f"DEBUG: Uploading subject-faculty map for year='{year}', batchType='{batchType}'")
-    if not year:
-        raise _validation_error("Year is required for subject-faculty map", [])
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".xlsx", ".xls", ".csv"}:
-        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
-
+    
     file_bytes = read_upload_bytes(file)
     dataframe = parse_tabular_upload(file.filename, file_bytes)
-    rows = _normalize_subject_faculty_rows(dataframe_rows(dataframe))
-    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/subject-faculty-map")
-    normalized_batch_type = _normalize_batch_type(batchType)
-    scope_key = _scope_key_year_batch(year, normalized_batch_type)
-
-    file_id = store.next_file_id("sfmap")
+    rows = _normalize_main_timetable_config(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/main-timetable")
+    
+    scope_key = _scope_key_global()
+    file_id = store.next_file_id("maincfg")
     payload = {
         "id": file_id,
         "fileName": file.filename,
         "rowsParsed": len(rows),
         "rows": rows,
-        "year": year,
-        "batchType": normalized_batch_type,
         "sourceFile": cloudinary_file,
     }
     store.save_file_map(file_id, payload)
-    created = store.save_scoped_mapping("subject_faculty_map", scope_key, payload, allow_overwrite=True)
-    if not created:
-        raise _conflict_error(
-            "Subject-faculty mapping already exists for this year/batch",
-            [{"year": year, "batchType": normalized_batch_type}],
-        )
-    print(f"DEBUG: Successfully saved subject-faculty map (file_id={file_id}) for {year}")
+    store.save_scoped_mapping("main_timetable_config", scope_key, payload, allow_overwrite=True)
+    
     return UploadResponse(
         fileId=file_id,
         fileName=file.filename,
         rowsParsed=len(rows),
-        message=f"Subject faculty map uploaded successfully for {year} ({normalized_batch_type})",
+        message="Main timetable config uploaded successfully",
     )
 
-
-@router.post("/uploads/subject-periods-map", response_model=UploadResponse)
-async def upload_subject_periods_map(
-    year: str = Form(...),
-    batchType: str | None = Form(default=None),
-    file: UploadFile = File(...),
+@router.post("/uploads/lab-timetable", response_model=UploadResponse)
+async def upload_lab_timetable(
+    file: UploadFile = File(...)
 ):
-    if not file.filename:
-        raise _validation_error("File name is required", [])
-    year = normalize_year(year.strip())
-    if not year:
-        raise _validation_error("Year is required for subject-periods map", [])
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in {".xlsx", ".xls", ".csv"}:
-        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
-
     file_bytes = read_upload_bytes(file)
     dataframe = parse_tabular_upload(file.filename, file_bytes)
-    rows = _normalize_subject_period_rows(dataframe_rows(dataframe))
-    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/subject-periods-map")
-    normalized_batch_type = _normalize_batch_type(batchType)
-    scope_key = _scope_key_year_batch(year, normalized_batch_type)
-
-    file_id = store.next_file_id("spmap")
-    payload = {
-        "id": file_id,
-        "fileName": file.filename,
-        "rowsParsed": len(rows),
-        "rows": rows,
-        "year": year,
-        "batchType": normalized_batch_type,
-        "sourceFile": cloudinary_file,
-    }
+    rows = _normalize_lab_timetable(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/lab-timetable")
+    
+    scope_key = _scope_key_global()
+    file_id = store.next_file_id("labcfg")
+    payload = {"id": file_id, "fileName": file.filename, "rowsParsed": len(rows), "rows": rows, "sourceFile": cloudinary_file}
     store.save_file_map(file_id, payload)
-    created = store.save_scoped_mapping("subject_periods_map", scope_key, payload, allow_overwrite=True)
-    if not created:
-        raise _conflict_error(
-            "Subject-periods mapping already exists for this year/batch",
-            [{"year": year, "batchType": normalized_batch_type}],
-        )
-    return UploadResponse(
-        fileId=file_id,
-        fileName=file.filename,
-        rowsParsed=len(rows),
-        message=f"Subject periods map uploaded successfully for {year} ({normalized_batch_type})",
-    )
+    store.save_scoped_mapping("lab_timetable_config", scope_key, payload, allow_overwrite=True)
+    return UploadResponse(fileId=file_id, fileName=file.filename, rowsParsed=len(rows), message="Lab timetable uploaded")
 
+@router.post("/uploads/subject-id-mapping", response_model=UploadResponse)
+async def upload_subject_id_mapping(file: UploadFile = File(...)):
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_subject_id_mapping(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/subject-id-mapping")
+    
+    file_id = store.next_file_id("subid")
+    payload = {"id": file_id, "fileName": file.filename, "rowsParsed": len(rows), "rows": rows, "sourceFile": cloudinary_file}
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("subject_id_mapping", "global", payload, allow_overwrite=True)
+    return UploadResponse(fileId=file_id, fileName=file.filename, rowsParsed=len(rows), message="Subject ID Map uploaded")
+
+@router.post("/uploads/subject-continuous-rules", response_model=UploadResponse)
+async def upload_subject_continuous_rules(file: UploadFile = File(...)):
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_continuous_rules(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/continuous-rules")
+    
+    file_id = store.next_file_id("subcnt")
+    payload = {"id": file_id, "fileName": file.filename, "rowsParsed": len(rows), "rows": rows, "sourceFile": cloudinary_file}
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("subject_continuous_rules", "global", payload, allow_overwrite=True)
+    return UploadResponse(fileId=file_id, fileName=file.filename, rowsParsed=len(rows), message="Continuous Rules uploaded")
 
 @router.post("/uploads/faculty-availability", response_model=UploadResponse)
 async def upload_faculty_availability(file: UploadFile = File(...)):
@@ -547,8 +595,12 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
         raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
 
     file_bytes = read_upload_bytes(file)
-    dataframe = parse_tabular_upload(file.filename, file_bytes)
-    rows = _normalize_faculty_availability_rows(dataframe_rows(dataframe))
+    rows: list[dict] = []
+    if suffix == ".xlsx":
+        rows = _parse_workload_sheet_rows(file_bytes)
+    if not rows:
+        dataframe = parse_tabular_upload(file.filename, file_bytes)
+        rows = _normalize_faculty_availability_rows(dataframe_rows(dataframe))
     cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/faculty-availability")
 
     # Merge with existing rows and deduplicate
@@ -641,51 +693,31 @@ async def get_mapping_status(
         raise _validation_error("Year is required", [])
 
     faculty_map = store.get_scoped_mapping("faculty_id_map", _scope_key_global())
-    subject_periods_map_all = store.get_scoped_mapping(
-        "subject_periods_map",
-        _scope_key_year_batch(normalized_year, "ALL"),
-    ) or store.get_scoped_mapping("subject_periods_map", _scope_key_year(normalized_year))
-    subject_periods_map_cream = store.get_scoped_mapping(
-        "subject_periods_map",
-        _scope_key_year_batch(normalized_year, "CREAM"),
-    )
-    subject_periods_map_general = store.get_scoped_mapping(
-        "subject_periods_map",
-        _scope_key_year_batch(normalized_year, "GENERAL"),
-    )
-    subject_faculty_map_all = store.get_scoped_mapping(
-        "subject_faculty_map",
-        _scope_key_year_batch(normalized_year, "ALL"),
-    ) or store.get_scoped_mapping("subject_faculty_map", _scope_key_year(normalized_year))
-    subject_faculty_map_cream = store.get_scoped_mapping(
-        "subject_faculty_map",
-        _scope_key_year_batch(normalized_year, "CREAM"),
-    )
-    subject_faculty_map_general = store.get_scoped_mapping(
-        "subject_faculty_map",
-        _scope_key_year_batch(normalized_year, "GENERAL"),
-    )
-
+    main_cfg = store.get_scoped_mapping("main_timetable_config", _scope_key_global())
+    lab_cfg = store.get_scoped_mapping("lab_timetable_config", _scope_key_global())
+    sub_id_map = store.get_scoped_mapping("subject_id_mapping", "global")
+    sub_cnt = store.get_scoped_mapping("subject_continuous_rules", "global")
+    faculty_availability = store.get_scoped_mapping("faculty_availability", "global")
+    shared_classes = store.get_scoped_mapping("shared_classes", "global")
+    
     return {
         "facultyIdMapUploaded": bool(faculty_map),
-        "subjectPeriodsMapUploaded": bool(subject_periods_map_all or subject_periods_map_cream or subject_periods_map_general),
-        "creamSubjectPeriodsMapUploaded": bool(subject_periods_map_cream),
-        "generalSubjectPeriodsMapUploaded": bool(subject_periods_map_general),
-        "subjectFacultyMapUploaded": bool(subject_faculty_map_all or subject_faculty_map_cream or subject_faculty_map_general),
-        "creamSubjectFacultyMapUploaded": bool(subject_faculty_map_cream),
-        "generalSubjectFacultyMapUploaded": bool(subject_faculty_map_general),
-        "facultyAvailabilityUploaded": bool(store.get_scoped_mapping("faculty_availability", "global")),
-        "sharedClassesUploaded": bool(store.get_scoped_mapping("shared_classes", "global")),
+        "mainTimetableConfigUploaded": bool(main_cfg),
+        "labTimetableConfigUploaded": bool(lab_cfg),
+        "subjectIdMappingUploaded": bool(sub_id_map),
+        "subjectContinuousRulesUploaded": bool(sub_cnt),
+        
+        "facultyAvailabilityUploaded": bool(faculty_availability),
+        "sharedClassesUploaded": bool(shared_classes),
+        
         "facultyIdMapFileName": faculty_map.get("fileName") if faculty_map else None,
-        "subjectPeriodsMapFileName": subject_periods_map_all.get("fileName") if subject_periods_map_all else None,
-        "creamSubjectPeriodsMapFileName": subject_periods_map_cream.get("fileName") if subject_periods_map_cream else None,
-        "generalSubjectPeriodsMapFileName": subject_periods_map_general.get("fileName") if subject_periods_map_general else None,
-        "subjectFacultyMapFileName": subject_faculty_map_all.get("fileName") if subject_faculty_map_all else None,
-        "creamSubjectFacultyMapFileName": subject_faculty_map_cream.get("fileName") if subject_faculty_map_cream else None,
-        "generalSubjectFacultyMapFileName": subject_faculty_map_general.get("fileName") if subject_faculty_map_general else None,
-        "sharedClassesFileName": (store.get_scoped_mapping("shared_classes", "global") or {}).get("fileName"),
+        "mainTimetableConfigFileName": main_cfg.get("fileName") if main_cfg else None,
+        "labTimetableConfigFileName": lab_cfg.get("fileName") if lab_cfg else None,
+        "subjectIdMappingFileName": sub_id_map.get("fileName") if sub_id_map else None,
+        "subjectContinuousRulesFileName": sub_cnt.get("fileName") if sub_cnt else None,
+        "sharedClassesFileName": shared_classes.get("fileName") if shared_classes else None,
+        "facultyAvailabilityFileName": faculty_availability.get("lastFileName") if faculty_availability else None,
     }
-
 
 @router.post("/uploads/shared-classes", response_model=UploadResponse)
 async def upload_shared_classes(file: UploadFile = File(...)):

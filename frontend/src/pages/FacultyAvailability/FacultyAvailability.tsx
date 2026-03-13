@@ -138,14 +138,15 @@ const FacultyAvailability = () => {
 
   return (
     <DashboardLayout>
-      <div className="page-header">
-        <h1>Faculty Availability Bulk Finder</h1>
-        <p>Find faculty who are free based on a list of dates and periods</p>
-      </div>
+      <div className="w-full space-y-6">
+        <div className="page-header">
+          <h1>Faculty Availability Bulk Finder</h1>
+          <p>Upload faculty workload sheets and find who is free for the requested dates and periods</p>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="space-y-6">
-          <div className="bg-card rounded-xl p-6 shadow-sm space-y-4 border border-border/60">
+        <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-6 w-full">
+          <div className="space-y-6">
+            <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm space-y-4 border border-border/60">
             <h3 className="text-sm font-semibold text-foreground flex items-center justify-between">
               Search Parameters
               <span className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-primary/10 text-primary">
@@ -155,7 +156,7 @@ const FacultyAvailability = () => {
             </h3>
 
             <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Faculty Availability Upload</Label>
+              <Label className="text-xs text-muted-foreground mb-2 block">Faculty Workload Upload</Label>
               <FileUpload
                 file={availabilityFile}
                 onFileSelect={handleAvailabilityUpload}
@@ -164,15 +165,16 @@ const FacultyAvailability = () => {
                   setAvailabilityFileId("");
                 }}
                 accept=".xlsx,.xls,.csv"
-                label="Upload faculty availability file"
-                description="Upload faculty timetable/availability data (XLSX/XLS/CSV)"
+                label="Upload faculty workload file"
+                description="Upload faculty workload sheets in the college format or a plain availability sheet"
                 icon={<Upload className="h-9 w-9 text-primary" />}
                 templateLinks={[
+                  { label: "Workload Template", href: `${templateBase}/faculty-workload` },
                   { label: "Availability Template", href: `${templateBase}/faculty-availability` },
                 ]}
               />
               <p className="text-[11px] text-muted-foreground mt-1">
-                {availabilityFileId ? `Upload ID: ${availabilityFileId}` : "Upload workload file to enable search."}
+                {availabilityFileId ? `Upload ID: ${availabilityFileId}` : "Upload faculty workload file to enable search."}
               </p>
             </div>
 
@@ -206,7 +208,7 @@ const FacultyAvailability = () => {
             </Button>
           </div>
 
-          <div className="bg-card rounded-xl p-6 shadow-sm space-y-4 border border-border/60">
+            <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm space-y-4 border border-border/60">
             <h3 className="text-sm font-semibold text-foreground">Ignore Rules (Treat as Free)</h3>
             <p className="text-xs text-muted-foreground">
               If a faculty is teaching any of the selected years or sections during a chosen period, treat that slot as free.
@@ -242,11 +244,11 @@ const FacultyAvailability = () => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
 
-        <div>
-          {results ? (
-            <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
+          <div>
+            {results ? (
+              <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm border border-border/60 min-h-full">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
                   <Users className="h-4 w-4 text-primary" /> Report Generated ({results.length} rows)
@@ -308,15 +310,16 @@ const FacultyAvailability = () => {
                   </p>
                 )}
               </div>
-            </div>
-          ) : (
-            <div className="bg-card rounded-xl p-12 shadow-sm flex flex-col items-center justify-center text-center border border-border/60">
-              <Users className="h-12 w-12 text-muted-foreground/30 mb-4" />
-              <p className="text-sm text-muted-foreground">
-                Upload your workload file and a query file to generate a bulk report.
-              </p>
-            </div>
-          )}
+              </div>
+            ) : (
+              <div className="bg-card rounded-xl p-12 shadow-sm flex flex-col items-center justify-center text-center border border-border/60 min-h-[420px]">
+                <Users className="h-12 w-12 text-muted-foreground/30 mb-4" />
+                <p className="text-sm text-muted-foreground">
+                  Upload your faculty workload file and a query file to generate a bulk report.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </DashboardLayout>

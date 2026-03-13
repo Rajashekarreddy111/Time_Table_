@@ -1,44 +1,11 @@
 from io import BytesIO
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from services.file_parser import create_excel_template
+from services.file_parser import create_excel_template, create_grouped_main_timetable_template
 
 router = APIRouter(tags=["templates"])
-
-
-def _build_alpha_sections(count: int) -> list[str]:
-    sections: list[str] = []
-    for idx in range(max(0, count)):
-        if idx < 26:
-            sections.append(chr(65 + idx))
-        else:
-            sections.append(f"S{idx + 1}")
-    return sections
-
-
-def _resolve_subject_faculty_sections(
-    section_list: str | None,
-    has_cream_general: bool,
-    section_count: int,
-    cream_section_count: int,
-    general_section_count: int,
-) -> list[str]:
-    if section_list:
-        parsed = [item.strip() for item in section_list.split(",") if item.strip()]
-        if parsed:
-            return parsed
-
-    if has_cream_general:
-        cream = [f"C{i + 1}" for i in range(max(0, cream_section_count))]
-        general = [f"G{i + 1}" for i in range(max(0, general_section_count))]
-        sections = cream + general
-        if sections:
-            return sections
-
-    fallback_count = section_count if section_count > 0 else 4
-    return _build_alpha_sections(fallback_count)
 
 
 def _template_response(file_name: str, records: list[dict]) -> StreamingResponse:
@@ -52,6 +19,228 @@ def _template_response(file_name: str, records: list[dict]) -> StreamingResponse
     )
 
 
+def _grouped_template_response(file_name: str, records: list[dict]) -> StreamingResponse:
+    content = create_grouped_main_timetable_template(records)
+    stream = BytesIO(content)
+    headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@router.get("/templates/main-timetable-config")
+async def main_timetable_template():
+    return _grouped_template_response(
+        "main-timetable-template.xlsx",
+        [
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "2",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "5",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "5",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "6",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "3",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "40",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "40",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "19",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "4",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "10",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "3",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "12",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "5",
+                "C1_HOURS": 3,
+                "C1_FACULTY_ID": "28",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 3,
+                "C2_FACULTY_ID": "38",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 3,
+                "C3_FACULTY_ID": "1",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "6",
+                "C1_HOURS": 1,
+                "C1_FACULTY_ID": "11",
+                "C1_CONTINUOUS_HOURS": 1,
+                "C2_HOURS": 1,
+                "C2_FACULTY_ID": "38,11",
+                "C2_CONTINUOUS_HOURS": 1,
+                "C3_HOURS": 1,
+                "C3_FACULTY_ID": "11,31",
+                "C3_CONTINUOUS_HOURS": 1,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "7",
+                "C1_HOURS": 2,
+                "C1_FACULTY_ID": "3",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 2,
+                "C2_FACULTY_ID": "2",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 2,
+                "C3_FACULTY_ID": "2",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "8",
+                "C1_HOURS": 2,
+                "C1_FACULTY_ID": "10",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 2,
+                "C2_FACULTY_ID": "3",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 2,
+                "C3_FACULTY_ID": "12",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "9",
+                "C1_HOURS": 3,
+                "C1_FACULTY_ID": "34",
+                "C1_CONTINUOUS_HOURS": 3,
+                "C2_HOURS": 3,
+                "C2_FACULTY_ID": "34",
+                "C2_CONTINUOUS_HOURS": 3,
+                "C3_HOURS": 3,
+                "C3_FACULTY_ID": "10",
+                "C3_CONTINUOUS_HOURS": 3,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "10",
+                "C1_HOURS": 2,
+                "C1_FACULTY_ID": "40",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 2,
+                "C2_FACULTY_ID": "40",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 2,
+                "C3_FACULTY_ID": "19",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "11",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "53",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "53",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "54",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "12",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "50",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "50",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "51",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "21",
+                "C1_HOURS": 4,
+                "C1_FACULTY_ID": "48",
+                "C1_CONTINUOUS_HOURS": 4,
+                "C2_HOURS": 4,
+                "C2_FACULTY_ID": "48",
+                "C2_CONTINUOUS_HOURS": 4,
+                "C3_HOURS": 4,
+                "C3_FACULTY_ID": "49",
+                "C3_CONTINUOUS_HOURS": 4,
+            },
+            {
+                "YEAR": "2",
+                "SUBJECT_ID": "1",
+                "C1_HOURS": 3,
+                "C1_FACULTY_ID": "32",
+                "C1_CONTINUOUS_HOURS": 2,
+                "C2_HOURS": 3,
+                "C2_FACULTY_ID": "15",
+                "C2_CONTINUOUS_HOURS": 2,
+                "C3_HOURS": 3,
+                "C3_FACULTY_ID": "32",
+                "C3_CONTINUOUS_HOURS": 2,
+            },
+        ],
+    )
+
+
+@router.get("/templates/lab-timetable")
+async def lab_timetable_template():
+    return _template_response(
+        "lab-timetable-template.xlsx",
+        [
+            {"YEAR": "2", "SECTION": "C1", "SUBJECT_ID": "7", "DAY": "1", "HOURS": "1,2", "VENUE": "2201"},
+            {"YEAR": "2", "SECTION": "C2", "SUBJECT_ID": "10", "DAY": "1", "HOURS": "3,4", "VENUE": "2202"},
+        ],
+    )
+
+
+@router.get("/templates/subject-id-mapping")
+async def subject_id_mapping_template():
+    return _template_response(
+        "subject-id-mapping-template.xlsx",
+        [
+            {"SUBJECT_ID": "7", "SUBJECT_NAME": "Data Structures"},
+            {"SUBJECT_ID": "10", "SUBJECT_NAME": "DBMS"},
+        ],
+    )
+
+
+@router.get("/templates/subject-continuous-rules")
+async def subject_continuous_rules_template():
+    return _template_response(
+        "subject-continuous-rules-template.xlsx",
+        [
+            {"SUBJECT_ID": "7", "COMPULSORY_CONTINUOUS_HOURS": 2},
+            {"SUBJECT_ID": "10", "COMPULSORY_CONTINUOUS_HOURS": 3},
+        ],
+    )
+
+
 @router.get("/templates/faculty-id-map")
 async def faculty_id_template():
     return _template_response(
@@ -62,92 +251,6 @@ async def faculty_id_template():
             {"faculty name": "faculty-3", "id assigned": "F003"},
         ],
     )
-
-
-@router.get("/templates/subject-faculty-map")
-async def subject_faculty_template(
-    year: str = Query(default="2nd Year"),
-    sectionCount: int = Query(default=4),
-    hasCreamGeneral: bool = Query(default=False),
-    creamSectionCount: int = Query(default=0),
-    generalSectionCount: int = Query(default=0),
-    sectionList: str | None = Query(default=None),
-):
-    year_value = year.strip() or "2nd Year"
-    sections = _resolve_subject_faculty_sections(
-        section_list=sectionList,
-        has_cream_general=hasCreamGeneral,
-        section_count=max(0, sectionCount),
-        cream_section_count=max(0, creamSectionCount),
-        general_section_count=max(0, generalSectionCount),
-    )
-
-    records: list[dict] = []
-    for section in sections:
-        records.append(
-            {
-                "year": year_value,
-                "section/subject": section,
-                "subject-1": "",
-                "subject-2": "",
-                "subject-3": "",
-                "lab-1": "",
-                "lab-2": "",
-                "lab-3": "",
-            }
-        )
-
-    return _template_response(
-        "subject-faculty-map-template.xlsx",
-        records,
-    )
-
-
-@router.get("/templates/subject-periods-map")
-async def subject_periods_template(batchType: str | None = Query(default=None)):
-    normalized = (batchType or "ALL").strip().upper()
-    if normalized == "CREAM":
-        return _template_response(
-            "cream-subject-periods-map-template.xlsx",
-            [
-                {"subject/lab": "Data Structures", "number of hours": 4, "continuous hours that can be allocated": 1},
-                {"subject/lab": "DBMS", "number of hours": 4, "continuous hours that can be allocated": 1},
-                {"subject/lab": "Operating Systems", "number of hours": 3, "continuous hours that can be allocated": 1},
-                {"subject/lab": "DS Lab", "number of hours": 3, "continuous hours that can be allocated": 3},
-            ],
-        )
-
-    if normalized == "GENERAL":
-        return _template_response(
-            "general-subject-periods-map-template.xlsx",
-            [
-                {"subject/lab": "Data Structures", "number of hours": 3, "continuous hours that can be allocated": 1},
-                {"subject/lab": "DBMS", "number of hours": 3, "continuous hours that can be allocated": 1},
-                {"subject/lab": "Operating Systems", "number of hours": 2, "continuous hours that can be allocated": 1},
-                {"subject/lab": "DS Lab", "number of hours": 2, "continuous hours that can be allocated": 2},
-            ],
-        )
-
-    return _template_response(
-        "subject-periods-map-template.xlsx",
-        [
-            {"subject/lab": "subject-1", "number of hours": 4, "continuous hours that can be allocated": 1},
-            {"subject/lab": "subject-2", "number of hours": 4, "continuous hours that can be allocated": 1},
-            {"subject/lab": "lab-1", "number of hours": 3, "continuous hours that can be allocated": 3},
-            {"subject/lab": "", "number of hours": "", "continuous hours that can be allocated": ""},
-            {"subject/lab": "", "number of hours": "", "continuous hours that can be allocated": ""},
-        ],
-    )
-
-
-@router.get("/templates/subject-periods-map-cream")
-async def subject_periods_template_cream():
-    return await subject_periods_template(batchType="CREAM")
-
-
-@router.get("/templates/subject-periods-map-general")
-async def subject_periods_template_general():
-    return await subject_periods_template(batchType="GENERAL")
 
 
 @router.get("/templates/faculty-availability")
@@ -171,6 +274,7 @@ async def faculty_workload_template():
             {"id assigned": "F003", "faculty name": "faculty-3", "day": "Wednesday", "period": 4, "year": "3rd Year", "section": "A", "subject": "Machine Learning"},
         ],
     )
+
 @router.get("/templates/shared-classes")
 async def shared_classes_template():
     return _template_response(

@@ -287,48 +287,49 @@ const FacultyWorkload = () => {
 
   return (
     <DashboardLayout>
-      <div className="page-header">
-        <h1>Faculty Workload</h1>
-        <p>View and export faculty schedules in timetable format</p>
-      </div>
-
-      <div className="bg-card rounded-xl p-6 shadow-sm mb-6">
-        <div className="flex flex-wrap items-end gap-4">
-          <div className="w-64">
-            <Label className="text-xs text-muted-foreground">Select Faculty</Label>
-            <Select value={selectedFaculty} onValueChange={setSelectedFaculty}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {facultyNames.map((faculty) => <SelectItem key={faculty} value={faculty}>{faculty}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5 ml-auto">
-            <Download className="h-3.5 w-3.5" /> Export Workload
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExportAll} className="gap-1.5">
-            <Download className="h-3.5 w-3.5" /> Export All Workloads
-          </Button>
+      <div className="w-full space-y-6">
+        <div className="page-header">
+          <h1>Faculty Workload</h1>
+          <p>View and export faculty schedules in timetable format</p>
         </div>
-      </div>
 
-      <div className="bg-card rounded-xl p-6 shadow-sm overflow-x-auto">
-        {workload ? (
-          <>
-            <div className="text-center mb-2 border border-border">
-              <h3 className="text-base font-semibold uppercase leading-tight border-b border-border py-1">{ACADEMIC_METADATA.COLLEGE_NAME}</h3>
-              <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">(AUTONOMOUS)</p>
-              <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
-              <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {toAcademicYear(new Date())} {ACADEMIC_METADATA.SEMESTER}</div>
-              <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
-              <div className="grid grid-cols-2 text-xs font-semibold">
-                <div className="text-left px-2 py-0.5 border-r border-border">Room No :</div>
-                <div className="text-right px-2 py-0.5">With effect from : {ACADEMIC_METADATA.EFFECTIVE_DATE}</div>
-              </div>
+        <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm mb-6 w-full">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="w-full sm:w-80">
+              <Label className="text-xs text-muted-foreground">Select Faculty</Label>
+              <Select value={selectedFaculty} onValueChange={setSelectedFaculty}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {facultyNames.map((faculty) => <SelectItem key={faculty} value={faculty}>{faculty}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
 
-            <table className="timetable-grid rounded-none overflow-hidden">
+            <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5 sm:ml-auto">
+              <Download className="h-3.5 w-3.5" /> Export Workload
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportAll} className="gap-1.5">
+              <Download className="h-3.5 w-3.5" /> Export All Workloads
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-card rounded-xl p-4 sm:p-6 xl:p-8 shadow-sm overflow-x-auto w-full">
+          {workload ? (
+            <>
+              <div className="text-center mb-3 border border-border min-w-[980px]">
+                <h3 className="text-base font-semibold uppercase leading-tight border-b border-border py-1">{ACADEMIC_METADATA.COLLEGE_NAME}</h3>
+                <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">(AUTONOMOUS)</p>
+                <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
+                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {toAcademicYear(new Date())} {ACADEMIC_METADATA.SEMESTER}</div>
+                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
+                <div className="grid grid-cols-2 text-xs font-semibold">
+                  <div className="text-left px-2 py-0.5 border-r border-border">Room No :</div>
+                  <div className="text-right px-2 py-0.5">With effect from : {ACADEMIC_METADATA.EFFECTIVE_DATE}</div>
+                </div>
+              </div>
+
+              <table className="timetable-grid rounded-none overflow-hidden min-w-[980px]">
               <thead>
                 <tr>
                   <th className="min-w-[40px]" rowSpan={2}>DAY</th>
@@ -402,10 +403,11 @@ const FacultyWorkload = () => {
                 </tr>
               </tbody>
             </table>
-          </>
-        ) : (
-          <div className="text-center py-16 text-muted-foreground">No workload data available for this faculty.</div>
-        )}
+            </>
+          ) : (
+            <div className="text-center py-16 text-muted-foreground">No workload data available for this faculty.</div>
+          )}
+        </div>
       </div>
     </DashboardLayout>
   );

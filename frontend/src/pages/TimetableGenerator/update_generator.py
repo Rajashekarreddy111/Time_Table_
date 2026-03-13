@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import os
+
+new_generator = '''import { useEffect, useRef, useState } from "react";
 import {
   Plus,
   Trash2,
@@ -41,9 +43,6 @@ import {
   uploadFacultyAvailability,
   ApiError,
   ManualEntryMode,
-  ManualLabEntry,
-  SubjectContinuousRuleEntry,
-  SubjectIdNameMappingEntry,
 } from "@/services/apiClient";
 import {
   getAllSectionKeys,
@@ -75,7 +74,6 @@ type MappingStatus = {
   sharedClassesUploaded?: boolean;
   sharedClassesFileName?: string | null;
   facultyAvailabilityUploaded?: boolean;
-  facultyAvailabilityFileName?: string | null;
 };
 
 const EMPTY_MAPPING_STATUS: MappingStatus = {
@@ -118,15 +116,6 @@ const TimetableGenerator = () => {
   ]);
   const [facultyIdMapping, setFacultyIdMapping] = useState<{ facultyId: string; facultyName: string }[]>([
     { facultyId: "", facultyName: "" },
-  ]);
-  const [subjectIdNameMapping, setSubjectIdNameMapping] = useState<SubjectIdNameMappingEntry[]>([
-    { subjectId: "", subjectName: "" },
-  ]);
-  const [subjectContinuousRules, setSubjectContinuousRules] = useState<SubjectContinuousRuleEntry[]>([
-    { subjectId: "", compulsoryContinuousHours: 1 },
-  ]);
-  const [manualLabEntries, setManualLabEntries] = useState<ManualLabEntry[]>([
-    { year: initialYear, section: initialSections[0] ?? "A", subjectId: "", day: 1, hours: [], venue: "" },
   ]);
 
   const [facultyIdFile, setFacultyIdFile] = useState<File | null>(null);
@@ -185,33 +174,6 @@ const TimetableGenerator = () => {
 
   const removeFacultyIdMapping = (i: number) => {
     setFacultyIdMapping(facultyIdMapping.filter((_, idx) => idx !== i));
-  };
-
-  const addSubjectIdNameMapping = () => {
-    setSubjectIdNameMapping([...subjectIdNameMapping, { subjectId: "", subjectName: "" }]);
-  };
-
-  const removeSubjectIdNameMapping = (i: number) => {
-    setSubjectIdNameMapping(subjectIdNameMapping.filter((_, idx) => idx !== i));
-  };
-
-  const addSubjectContinuousRule = () => {
-    setSubjectContinuousRules([...subjectContinuousRules, { subjectId: "", compulsoryContinuousHours: 1 }]);
-  };
-
-  const removeSubjectContinuousRule = (i: number) => {
-    setSubjectContinuousRules(subjectContinuousRules.filter((_, idx) => idx !== i));
-  };
-
-  const addManualLabEntry = () => {
-    setManualLabEntries([
-      ...manualLabEntries,
-      { year: selectedYear, section: selectedSection, subjectId: "", day: 1, hours: [], venue: "" },
-    ]);
-  };
-
-  const removeManualLabEntry = (i: number) => {
-    setManualLabEntries(manualLabEntries.filter((_, idx) => idx !== i));
   };
 
   const updateAcademicConfig = (next: AcademicConfig) => {
@@ -292,64 +254,18 @@ const TimetableGenerator = () => {
   }, [selectedYear, selectedSection]);
 
   const showDetailedError = (error: unknown, fallbackMessage: string) => {
-    if (error instanceof ApiError) {
-      toast.error(formatApiErrorMessage(error), { duration: 10000 });
-      return;
+    if (error instanceof ApiError && error.details && error.details.length > 0) {
+      const hint = (error.details[0] as Record<string, string>)?.hint || (error.details[0] as Record<string, string>)?.tip;
+      if (hint) {
+        toast.error(`${error.message}. Hint: ${hint}`, { duration: 6000 });
+        return;
+      }
     }
     if (error instanceof Error && error.message.includes("Failed to fetch")) {
       toast.error("Network error: Failed to fetch. Please check if the backend server is running and reachable.", { duration: 8000 });
       return;
     }
     toast.error(error instanceof Error ? error.message : fallbackMessage);
-  };
-
-  const formatApiErrorMessage = (error: ApiError) => {
-    const firstDetail = error.details?.[0] as Record<string, unknown> | undefined;
-    if (!firstDetail) {
-      return error.message;
-    }
-
-    const violatingSections = firstDetail.violating_sections;
-    if (Array.isArray(violatingSections) && violatingSections.length > 0) {
-      return `${error.message} Problem sections: ${violatingSections.join(", ")}.`;
-    }
-
-    const missingSection = typeof firstDetail.section === "string" ? firstDetail.section : "";
-    const subjectId = typeof firstDetail.subject_id === "string" ? firstDetail.subject_id : "";
-    const mainConfigSections = Array.isArray(firstDetail.mainConfigSections) ? firstDetail.mainConfigSections.join(", ") : "";
-    if (missingSection && mainConfigSections) {
-      return `${error.message} Section "${missingSection}"${subjectId ? ` for subject ${subjectId}` : ""} is not present in the main config for that year. Valid sections are: ${mainConfigSections}.`;
-    }
-
-    const missingSections = Array.isArray(firstDetail.missingSections) ? firstDetail.missingSections.join(", ") : "";
-    if (missingSections) {
-      return `${error.message} Missing sections: ${missingSections}.`;
-    }
-
-    const hint = typeof firstDetail.hint === "string" ? firstDetail.hint : typeof firstDetail.tip === "string" ? firstDetail.tip : "";
-    const sections = Array.isArray(firstDetail.sections) ? firstDetail.sections.join(", ") : "";
-    const taskCount = typeof firstDetail.taskCount === "number" ? firstDetail.taskCount : undefined;
-    const facultyCount = typeof firstDetail.facultyCount === "number" ? firstDetail.facultyCount : undefined;
-    const labEntryCount = typeof firstDetail.labEntryCount === "number" ? firstDetail.labEntryCount : undefined;
-    const sharedClassCount = typeof firstDetail.sharedClassCount === "number" ? firstDetail.sharedClassCount : undefined;
-
-    if (error.message.toLowerCase().includes("timed out")) {
-      const parts = [
-        hint,
-        sections ? `Sections involved: ${sections}.` : "",
-        taskCount !== undefined ? `Scheduling blocks to place: ${taskCount}.` : "",
-        facultyCount !== undefined ? `Faculty involved: ${facultyCount}.` : "",
-        labEntryCount !== undefined ? `Fixed lab entries: ${labEntryCount}.` : "",
-        sharedClassCount !== undefined ? `Shared class groups: ${sharedClassCount}.` : "",
-      ].filter(Boolean);
-      return `${error.message} ${parts.join(" ")}`.trim();
-    }
-
-    if (hint) {
-      return `${error.message} ${hint}`;
-    }
-
-    return error.message;
   };
 
   const uploadFacultyId = async (file: File) => {
@@ -367,7 +283,7 @@ const TimetableGenerator = () => {
   const handleUploadMainTimetable = async (file: File) => {
     setMainTimetableFile(file);
     try {
-      const response = await uploadMainTimetableConfig(file);
+      const response = await uploadMainTimetableConfig(file, selectedYear);
       setMappingFileIds((prev) => ({ ...prev, mainTimetableConfig: response.fileId }));
       toast.success("Main Timetable config uploaded.");
       loadMappingStatus(selectedYear);
@@ -379,7 +295,7 @@ const TimetableGenerator = () => {
   const handleUploadLabTimetable = async (file: File) => {
     setLabTimetableFile(file);
     try {
-      const response = await uploadLabTimetable(file);
+      const response = await uploadLabTimetable(file, selectedYear);
       setMappingFileIds((prev) => ({ ...prev, labTimetableConfig: response.fileId }));
       toast.success("Lab Timetable config uploaded.");
       loadMappingStatus(selectedYear);
@@ -460,21 +376,9 @@ const TimetableGenerator = () => {
       year: targetYear,
       section: targetSection,
       manualEntries: manualEntries.filter(m => m.subjectId && m.facultyId),
-      manualLabEntries: manualLabEntries
-        .map((entry) => ({
-          ...entry,
-          year: entry.year,
-          section: entry.section.trim(),
-          subjectId: entry.subjectId.trim(),
-          venue: entry.venue.trim(),
-          hours: entry.hours.filter((hour) => Number.isInteger(hour) && hour >= 1 && hour <= 7),
-        }))
-        .filter((entry) => entry.subjectId && entry.section && entry.hours.length > 0),
       sharedClasses: cleanedShared,
       facultyAvailability,
       facultyIdNameMapping: facultyIdMapping.filter(f => f.facultyId.trim() && f.facultyName.trim()),
-      subjectIdNameMapping: subjectIdNameMapping.filter((entry) => entry.subjectId.trim() && entry.subjectName.trim()),
-      subjectContinuousRules: subjectContinuousRules.filter((entry) => entry.subjectId.trim()),
       mappingFileIds: {
         facultyIdMap: mappingFileIds.facultyIdMap || undefined,
         mainTimetableConfig: mappingFileIds.mainTimetableConfig || undefined,
@@ -564,11 +468,7 @@ const TimetableGenerator = () => {
           }
           successCount++;
         } catch (error) {
-          const msg = error instanceof ApiError
-            ? formatApiErrorMessage(error)
-            : error instanceof Error
-              ? error.message
-              : "Unknown error";
+          const msg = error instanceof Error ? error.message : "Unknown error";
           errors.push(`${year}: ${msg}`);
         }
       }
@@ -600,10 +500,10 @@ const TimetableGenerator = () => {
 
       {generating ? (
         <div className="bg-card rounded-xl p-8 shadow-sm">
-          <LoadingSpinner message="Generating timetable... Applying constraints and resolving conflicts\n\nNote: Generating large sets might take some time finding valid combinations." />
+          <LoadingSpinner message="Generating timetable... Applying constraints and resolving conflicts\\n\\nNote: Generating large sets might take some time finding valid combinations." />
         </div>
       ) : (
-        <div className="space-y-6 w-full">
+        <div className="space-y-6">
           <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
             <h2 className="text-base font-semibold text-foreground mb-4">Academic Structure</h2>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
@@ -679,7 +579,7 @@ const TimetableGenerator = () => {
 
           <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
             <h2 className="text-base font-semibold text-foreground mb-4">Select Year and Section</h2>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 w-full max-w-3xl">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-md">
               <div>
                 <Label className="text-xs text-muted-foreground">Year</Label>
                 <Select
@@ -727,10 +627,10 @@ const TimetableGenerator = () => {
           {inputMode === "file" && (
             <div className="bg-card rounded-xl p-6 shadow-sm space-y-5 border border-border/60">
               <p className="text-xs text-muted-foreground">
-                Follow the Excel-driven process exactly. All uploaded files in this section are stored globally and reused across timetable generation, including Main Config, Lab Timetable, Shared Classes, and Faculty Availability.
+                Follow the Excel-driven process exactly. Global mappings apply across all timetables. Main and Lab timetables are mapped explicitly to the <span className="font-semibold">{selectedYear}</span>. Please verify your selected year.
               </p>
               
-              <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Faculty Name/ID Mapping (Global)</p>
                   {mappingStatus.facultyIdMapUploaded ? (
@@ -743,7 +643,7 @@ const TimetableGenerator = () => {
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
-                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Main Config (Global)</p>
+                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Main Config ({selectedYear})</p>
                   {mappingStatus.mainTimetableConfigUploaded ? (
                     <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
                       Uploaded: <span className="font-medium">{mappingStatus.mainTimetableConfigFileName}</span>
@@ -754,7 +654,7 @@ const TimetableGenerator = () => {
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
-                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Lab Timetable (Global)</p>
+                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Lab Timetable ({selectedYear})</p>
                   {mappingStatus.labTimetableConfigUploaded ? (
                     <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
                       Uploaded: <span className="font-medium">{mappingStatus.labTimetableConfigFileName}</span>
@@ -785,28 +685,6 @@ const TimetableGenerator = () => {
                     <FileUpload file={subjectContinuousRulesFile} onFileSelect={handleUploadSubjectContinuousRules} onClear={() => setSubjectContinuousRulesFile(null)} label="Upload Continuous Rules" templateLinks={[{ label: "Download Template", href: `${templateBase}/subject-continuous-rules` }]} />
                   )}
                 </div>
-
-                <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
-                  <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Shared Classes (Global)</p>
-                  {mappingStatus.sharedClassesUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.sharedClassesFileName}</span>
-                    </div>
-                  ) : (
-                    <FileUpload file={sharedClassesFile} onFileSelect={uploadSharedClassesDoc} onClear={() => setSharedClassesFile(null)} label="Upload Shared Classes" templateLinks={[{ label: "Download Template", href: `${templateBase}/shared-classes` }]} />
-                  )}
-                </div>
-
-                <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
-                  <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Faculty Availability (Global)</p>
-                  {mappingStatus.facultyAvailabilityUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.facultyAvailabilityFileName}</span>
-                    </div>
-                  ) : (
-                    <FileUpload file={facultyAvailabilityFile} onFileSelect={uploadFacultyAvailabilityDoc} onClear={() => setFacultyAvailabilityFile(null)} label="Upload Faculty Availability" templateLinks={[{ label: "Download Template", href: `${templateBase}/faculty-availability` }]} />
-                  )}
-                </div>
               </div>
             </div>
           )}
@@ -815,9 +693,6 @@ const TimetableGenerator = () => {
             <Tabs defaultValue="entries" className="w-full mt-6">
               <TabsList className="bg-muted w-full justify-start overflow-x-auto">
                 <TabsTrigger value="entries">Manual Entries</TabsTrigger>
-                <TabsTrigger value="subjectRules">Subject Rules</TabsTrigger>
-                <TabsTrigger value="subjectMapping">Subject Mapping</TabsTrigger>
-                <TabsTrigger value="labs">Lab Timetable</TabsTrigger>
                 <TabsTrigger value="facultyId">Faculty ID Mapping</TabsTrigger>
                 <TabsTrigger value="sharedClasses">Shared Classes</TabsTrigger>
                 <TabsTrigger value="availability">Faculty Availability</TabsTrigger>
@@ -838,6 +713,7 @@ const TimetableGenerator = () => {
                         <th className="text-left py-2 px-2 font-medium">Faculty ID</th>
                         <th className="text-left py-2 px-2 font-medium">Hours/Week</th>
                         <th className="text-left py-2 px-2 font-medium">Continuous Hrs (Max)</th>
+                        <th className="text-left py-2 px-2 font-medium">Compulsory Continuous Hrs</th>
                         <th className="w-10"></th>
                       </tr>
                     </thead>
@@ -848,6 +724,7 @@ const TimetableGenerator = () => {
                           <td className="py-1 px-2"><Input value={m.facultyId} onChange={(e) => { const c = [...manualEntries]; c[i].facultyId = e.target.value; setManualEntries(c); }} placeholder="FAC_001" className="h-8"/></td>
                           <td className="py-1 px-2"><Input type="number" min={1} max={10} value={m.noOfHours} onChange={(e) => { const c = [...manualEntries]; c[i].noOfHours = parseInt(e.target.value) || 1; setManualEntries(c); }} className="w-20 h-8"/></td>
                           <td className="py-1 px-2"><Input type="number" min={1} max={5} value={m.continuousHours} onChange={(e) => { const c = [...manualEntries]; c[i].continuousHours = parseInt(e.target.value) || 1; setManualEntries(c); }} className="w-20 h-8"/></td>
+                          <td className="py-1 px-2"><Input type="number" min={1} max={5} value={m.compulsoryContinuousHours} onChange={(e) => { const c = [...manualEntries]; c[i].compulsoryContinuousHours = parseInt(e.target.value) || 1; setManualEntries(c); }} className="w-20 h-8"/></td>
                           <td className="py-1 px-2">
                             {manualEntries.length > 1 && (
                               <Button variant="ghost" size="icon" onClick={() => removeManualEntry(i)} className="text-destructive h-8 w-8"><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -858,216 +735,6 @@ const TimetableGenerator = () => {
                     </tbody>
                   </table>
                   <p className="text-xs text-muted-foreground mt-4">Note: The backend enforces that the sum of these hours (plus any globally assigned labs matching this section) perfectly equals exactly 42 hours per week.</p>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="subjectRules" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold">Subject ID and Compulsory Continuous Hours</h3>
-                  <Button variant="outline" size="sm" onClick={addSubjectContinuousRule}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Rule
-                  </Button>
-                </div>
-                <div className="space-y-3">
-                  {subjectContinuousRules.map((rule, i) => (
-                    <div key={i} className="flex gap-3 items-end">
-                      <div className="flex-1">
-                        <Label className="text-xs text-muted-foreground">Subject ID</Label>
-                        <Input
-                          placeholder="SUB_001"
-                          value={rule.subjectId}
-                          onChange={(e) => {
-                            const c = [...subjectContinuousRules];
-                            c[i].subjectId = e.target.value;
-                            setSubjectContinuousRules(c);
-                          }}
-                        />
-                      </div>
-                      <div className="w-40">
-                        <Label className="text-xs text-muted-foreground">Compulsory Continuous Hours</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={5}
-                          value={rule.compulsoryContinuousHours}
-                          onChange={(e) => {
-                            const c = [...subjectContinuousRules];
-                            c[i].compulsoryContinuousHours = parseInt(e.target.value) || 1;
-                            setSubjectContinuousRules(c);
-                          }}
-                        />
-                      </div>
-                      {subjectContinuousRules.length > 1 && (
-                        <Button variant="ghost" size="icon" onClick={() => removeSubjectContinuousRule(i)} className="text-destructive">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </TabsContent>
-
-              <TabsContent value="subjectMapping" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold">Subject ID and Name Mapping</h3>
-                  <Button variant="outline" size="sm" onClick={addSubjectIdNameMapping}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Mapping
-                  </Button>
-                </div>
-                <div className="space-y-3">
-                  {subjectIdNameMapping.map((entry, i) => (
-                    <div key={i} className="flex gap-3 items-end">
-                      <div className="w-48">
-                        <Label className="text-xs text-muted-foreground">Subject ID</Label>
-                        <Input
-                          placeholder="SUB_001"
-                          value={entry.subjectId}
-                          onChange={(e) => {
-                            const c = [...subjectIdNameMapping];
-                            c[i].subjectId = e.target.value;
-                            setSubjectIdNameMapping(c);
-                          }}
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <Label className="text-xs text-muted-foreground">Subject Name</Label>
-                        <Input
-                          placeholder="Data Structures"
-                          value={entry.subjectName}
-                          onChange={(e) => {
-                            const c = [...subjectIdNameMapping];
-                            c[i].subjectName = e.target.value;
-                            setSubjectIdNameMapping(c);
-                          }}
-                        />
-                      </div>
-                      {subjectIdNameMapping.length > 1 && (
-                        <Button variant="ghost" size="icon" onClick={() => removeSubjectIdNameMapping(i)} className="text-destructive">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </TabsContent>
-
-              <TabsContent value="labs" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-semibold">Lab Timetable Input</h3>
-                  <Button variant="outline" size="sm" onClick={addManualLabEntry}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Lab Entry
-                  </Button>
-                </div>
-                <div className="space-y-4">
-                  {manualLabEntries.map((entry, i) => (
-                    <div key={i} className="rounded-lg border border-border/50 p-4 bg-muted/10">
-                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3 items-end">
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Year</Label>
-                          <Select
-                            value={entry.year}
-                            onValueChange={(value) => {
-                              const c = [...manualLabEntries];
-                              c[i].year = value;
-                              const sections = getSectionOptionsForYear(academicConfig, value);
-                              if (!sections.includes(c[i].section)) {
-                                c[i].section = sections[0] ?? "";
-                              }
-                              setManualLabEntries(c);
-                            }}
-                          >
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {getYearOptions(academicConfig).map((year) => (
-                                <SelectItem key={year} value={year}>{year}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Section</Label>
-                          <Select
-                            value={entry.section}
-                            onValueChange={(value) => {
-                              const c = [...manualLabEntries];
-                              c[i].section = value;
-                              setManualLabEntries(c);
-                            }}
-                          >
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {getSectionOptionsForYear(academicConfig, entry.year).map((section) => (
-                                <SelectItem key={section} value={section}>{section}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Subject ID</Label>
-                          <Input
-                            placeholder="LAB_001"
-                            value={entry.subjectId}
-                            onChange={(e) => {
-                              const c = [...manualLabEntries];
-                              c[i].subjectId = e.target.value;
-                              setManualLabEntries(c);
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Day</Label>
-                          <Select
-                            value={String(entry.day)}
-                            onValueChange={(value) => {
-                              const c = [...manualLabEntries];
-                              c[i].day = parseInt(value, 10);
-                              setManualLabEntries(c);
-                            }}
-                          >
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {DAYS.map((day, dayIndex) => (
-                                <SelectItem key={day} value={String(dayIndex + 1)}>
-                                  {dayIndex + 1} - {day}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Hours</Label>
-                          <Input
-                            placeholder="1,2"
-                            value={entry.hours.join(",")}
-                            onChange={(e) => {
-                              const c = [...manualLabEntries];
-                              c[i].hours = toPeriodList(e.target.value);
-                              setManualLabEntries(c);
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-xs text-muted-foreground">Venue</Label>
-                          <Input
-                            placeholder="2201"
-                            value={entry.venue}
-                            onChange={(e) => {
-                              const c = [...manualLabEntries];
-                              c[i].venue = e.target.value;
-                              setManualLabEntries(c);
-                            }}
-                          />
-                        </div>
-                      </div>
-                      {manualLabEntries.length > 1 && (
-                        <div className="mt-3 flex justify-end">
-                          <Button variant="ghost" size="sm" onClick={() => removeManualLabEntry(i)} className="text-destructive">
-                            <Trash2 className="h-4 w-4 mr-1" /> Remove
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
                 </div>
               </TabsContent>
 
@@ -1171,3 +838,9 @@ const TimetableGenerator = () => {
 };
 
 export default TimetableGenerator;
+'''
+
+with open(r"c:\\Users\\rajas\\OneDrive\\Desktop\\Timetable\\frontend\\src\\pages\\TimetableGenerator\\TimetableGenerator.tsx", "w", encoding="utf-8") as f:
+    f.write(new_generator)
+
+print("TimetableGenerator.tsx fully updated successfully")

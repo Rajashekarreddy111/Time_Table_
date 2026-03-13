@@ -1,4 +1,5 @@
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5000/api";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5000/api";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -44,20 +45,19 @@ export interface UploadResponse {
 
 export interface MappingStatusResponse {
   facultyIdMapUploaded: boolean;
-  subjectPeriodsMapUploaded: boolean;
-  creamSubjectPeriodsMapUploaded?: boolean;
-  generalSubjectPeriodsMapUploaded?: boolean;
-  subjectFacultyMapUploaded: boolean;
-  creamSubjectFacultyMapUploaded?: boolean;
-  generalSubjectFacultyMapUploaded?: boolean;
+  mainTimetableConfigUploaded: boolean;
+  labTimetableConfigUploaded: boolean;
+  subjectIdMappingUploaded: boolean;
+  subjectContinuousRulesUploaded: boolean;
   facultyIdMapFileName?: string | null;
-  subjectPeriodsMapFileName?: string | null;
-  creamSubjectPeriodsMapFileName?: string | null;
-  generalSubjectPeriodsMapFileName?: string | null;
-  subjectFacultyMapFileName?: string | null;
-  creamSubjectFacultyMapFileName?: string | null;
+  mainTimetableConfigFileName?: string | null;
+  labTimetableConfigFileName?: string | null;
+  subjectIdMappingFileName?: string | null;
+  subjectContinuousRulesFileName?: string | null;
   sharedClassesUploaded?: boolean;
   sharedClassesFileName?: string | null;
+  facultyAvailabilityUploaded?: boolean;
+  facultyAvailabilityFileName?: string | null;
 }
 
 export interface FacultyIdStatusResponse {
@@ -65,25 +65,57 @@ export interface FacultyIdStatusResponse {
   facultyIdMapFileName?: string | null;
 }
 
+export interface ManualEntryMode {
+  year: string;
+  section: string;
+  subjectId: string;
+  facultyId: string;
+  noOfHours: number;
+  continuousHours: number;
+  compulsoryContinuousHours: number;
+}
+
+export interface SubjectIdNameMappingEntry {
+  subjectId: string;
+  subjectName: string;
+}
+
+export interface SubjectContinuousRuleEntry {
+  subjectId: string;
+  compulsoryContinuousHours: number;
+}
+
+export interface ManualLabEntry {
+  year: string;
+  section: string;
+  subjectId: string;
+  day: number;
+  hours: number[];
+  venue: string;
+}
+
 export interface GenerateTimetableRequest {
   year: string;
   section: string;
-  sectionBatchMap?: Record<string, string>;
-  subjects: { subject: string; faculty: string }[];
-  labs: { lab: string; faculty: string[] }[];
-  sharedClasses: { year: string; sections: string[]; subject: string }[];
-  subjectHours: { subject: string; hours: number; continuousHours: number }[];
-  batchSubjectHours?: Record<string, { subject: string; hours: number; continuousHours: number }[]>;
-  facultyAvailability?: { facultyId: string; availablePeriodsByDay: Record<string, number[]> }[];
+  manualEntries?: ManualEntryMode[];
+  subjects?: { subject: string; faculty: string }[];
+  labs?: { lab: string; faculty: string[] }[];
+  sharedClasses?: { year: string; sections: string[]; subject: string }[];
+  subjectHours?: { subject: string; hours: number; continuousHours: number }[];
+  facultyAvailability?: {
+    facultyId: string;
+    availablePeriodsByDay: Record<string, number[]>;
+  }[];
   mappingFileIds?: {
     facultyIdMap?: string;
-    subjectFacultyMap?: string;
-    subjectFacultyMapCream?: string;
-    subjectFacultyMapGeneral?: string;
-    subjectPeriodsMap?: string;
-    subjectPeriodsMapCream?: string;
-    subjectPeriodsMapGeneral?: string;
+    mainTimetableConfig?: string;
+    labTimetableConfig?: string;
+    subjectIdMapping?: string;
+    subjectContinuousRules?: string;
   };
+  subjectIdNameMapping?: SubjectIdNameMappingEntry[];
+  subjectContinuousRules?: SubjectContinuousRuleEntry[];
+  manualLabEntries?: ManualLabEntry[];
 }
 
 export interface GenerateTimetableResponse {
@@ -95,8 +127,17 @@ export interface TimetableRecord {
   id: string;
   year: string;
   section: string;
-  grid: Record<string, ({ subject: string; faculty?: string; isLab?: boolean } | null)[]>;
-  allGrids?: Record<string, Record<string, ({ subject: string; faculty?: string; isLab?: boolean } | null)[]>>;
+  grid: Record<
+    string,
+    ({ subject: string; faculty?: string; isLab?: boolean } | null)[]
+  >;
+  allGrids?: Record<
+    string,
+    Record<
+      string,
+      ({ subject: string; faculty?: string; isLab?: boolean } | null)[]
+    >
+  >;
   facultyWorkloads?: Record<string, Record<string, (string | null)[]>>;
   source?: unknown;
 }
@@ -111,7 +152,11 @@ export class ApiError extends Error {
   status: number;
   details: Record<string, unknown>[];
 
-  constructor(message: string, status: number, details: Record<string, unknown>[] = []) {
+  constructor(
+    message: string,
+    status: number,
+    details: Record<string, unknown>[] = [],
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -119,7 +164,11 @@ export class ApiError extends Error {
   }
 }
 
-async function apiRequest<T>(path: string, method: HttpMethod, body?: unknown): Promise<T> {
+async function apiRequest<T>(
+  path: string,
+  method: HttpMethod,
+  body?: unknown,
+): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     headers: {
@@ -153,7 +202,11 @@ async function apiRequest<T>(path: string, method: HttpMethod, body?: unknown): 
   return response.json() as Promise<T>;
 }
 
-async function parseResponseError(response: Response, method: string, path: string): Promise<ApiError> {
+async function parseResponseError(
+  response: Response,
+  method: string,
+  path: string,
+): Promise<ApiError> {
   let message = `Request failed (${response.status}): ${method} ${path}`;
   let details: Record<string, unknown>[] = [];
   try {
@@ -171,7 +224,9 @@ async function parseResponseError(response: Response, method: string, path: stri
     }
   } catch (e) {
     // fallback to status text
-    message = response.statusText ? `${message} - ${response.statusText}` : message;
+    message = response.statusText
+      ? `${message} - ${response.statusText}`
+      : message;
   }
   return new ApiError(message, response.status, details);
 }
@@ -193,19 +248,13 @@ export async function uploadFacultyIdMap(file: File): Promise<UploadResponse> {
   return response.json() as Promise<UploadResponse>;
 }
 
-export async function uploadSubjectFacultyMap(
+export async function uploadMainTimetableConfig(
   file: File,
-  year: string,
-  batchType?: "CREAM" | "GENERAL" | "ALL",
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("year", year);
-  if (batchType) {
-    formData.append("batchType", batchType);
-  }
 
-  const path = "/uploads/subject-faculty-map";
+  const path = "/uploads/main-timetable-config";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     body: formData,
@@ -218,19 +267,13 @@ export async function uploadSubjectFacultyMap(
   return response.json() as Promise<UploadResponse>;
 }
 
-export async function uploadSubjectPeriodsMap(
+export async function uploadLabTimetable(
   file: File,
-  year: string,
-  batchType?: "CREAM" | "GENERAL" | "ALL",
 ): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("year", year);
-  if (batchType) {
-    formData.append("batchType", batchType);
-  }
 
-  const path = "/uploads/subject-periods-map";
+  const path = "/uploads/lab-timetable";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     body: formData,
@@ -243,7 +286,47 @@ export async function uploadSubjectPeriodsMap(
   return response.json() as Promise<UploadResponse>;
 }
 
-export async function uploadFacultyAvailability(file: File): Promise<UploadResponse> {
+export async function uploadSubjectIdMapping(
+  file: File,
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/subject-id-mapping";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadSubjectContinuousRules(
+  file: File,
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/subject-continuous-rules";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadFacultyAvailability(
+  file: File,
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -278,14 +361,26 @@ export async function uploadSharedClasses(file: File): Promise<UploadResponse> {
 }
 
 export function getFacultyAvailability(payload: FacultyAvailabilityRequest) {
-  return apiRequest<FacultyAvailabilityResponse>("/faculty/availability", "POST", payload);
+  return apiRequest<FacultyAvailabilityResponse>(
+    "/faculty/availability",
+    "POST",
+    payload,
+  );
 }
 
-export function getBulkFacultyAvailability(payload: BulkFacultyAvailabilityRequest) {
-  return apiRequest<BulkFacultyAvailabilityResponse>("/faculty/availability/bulk", "POST", payload);
+export function getBulkFacultyAvailability(
+  payload: BulkFacultyAvailabilityRequest,
+) {
+  return apiRequest<BulkFacultyAvailabilityResponse>(
+    "/faculty/availability/bulk",
+    "POST",
+    payload,
+  );
 }
 
-export async function uploadFacultyAvailabilityQuery(file: File): Promise<UploadResponse> {
+export async function uploadFacultyAvailabilityQuery(
+  file: File,
+): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -303,7 +398,11 @@ export async function uploadFacultyAvailabilityQuery(file: File): Promise<Upload
 }
 
 export function generateTimetable(payload: GenerateTimetableRequest) {
-  return apiRequest<GenerateTimetableResponse>("/timetables/generate", "POST", payload);
+  return apiRequest<GenerateTimetableResponse>(
+    "/timetables/generate",
+    "POST",
+    payload,
+  );
 }
 
 export function listTimetables() {
@@ -311,7 +410,10 @@ export function listTimetables() {
 }
 
 export function getTimetableById(timetableId: string) {
-  return apiRequest<TimetableRecord>(`/timetables/${encodeURIComponent(timetableId)}`, "GET");
+  return apiRequest<TimetableRecord>(
+    `/timetables/${encodeURIComponent(timetableId)}`,
+    "GET",
+  );
 }
 
 export function getMappingStatus(year: string) {
@@ -322,13 +424,18 @@ export function getMappingStatus(year: string) {
 }
 
 export function getFacultyIdStatus() {
-  return apiRequest<FacultyIdStatusResponse>("/uploads/faculty-id-status", "GET");
+  return apiRequest<FacultyIdStatusResponse>(
+    "/uploads/faculty-id-status",
+    "GET",
+  );
 }
 
 export function getBackendHealth() {
   return apiRequest<BackendHealthResponse>("/health", "GET");
 }
-export const deleteTimetable = async (timetableId: string): Promise<{ message: string }> => {
+export const deleteTimetable = async (
+  timetableId: string,
+): Promise<{ message: string }> => {
   const response = await fetch(`${API_BASE_URL}/timetables/${timetableId}`, {
     method: "DELETE",
   });
