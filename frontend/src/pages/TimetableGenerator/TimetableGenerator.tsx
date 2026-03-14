@@ -505,8 +505,11 @@ const TimetableGenerator = () => {
     try {
       const response = await generateTimetable(buildPayload());
       localStorage.setItem("latestTimetableId", response.timetableId);
-      toast.success("Timetable generated successfully.");
-      navigate(`/timetables?timetableId=${encodeURIComponent(response.timetableId)}`);
+      const reportOnly = response.message.toLowerCase().includes("report");
+      toast.success(response.message);
+      navigate(reportOnly
+        ? `/outputs?timetableId=${encodeURIComponent(response.timetableId)}`
+        : `/timetables?timetableId=${encodeURIComponent(response.timetableId)}`);
     } catch (error) {
       showDetailedError(error, "Failed to generate timetable");
     } finally {
@@ -584,7 +587,7 @@ const TimetableGenerator = () => {
       }
       if (firstTimetableId) {
         localStorage.setItem("latestTimetableId", firstTimetableId);
-        navigate(`/timetables?timetableId=${encodeURIComponent(firstTimetableId)}`);
+        navigate(`/outputs?timetableId=${encodeURIComponent(firstTimetableId)}`);
       }
     } else {
       toast.error(errors.length > 0 ? `Generation failed for all years: ${errors.join("; ")}` : "No years could be generated.", { duration: 8000 });

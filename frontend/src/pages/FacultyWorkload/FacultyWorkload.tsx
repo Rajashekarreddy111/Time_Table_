@@ -231,7 +231,11 @@ const FacultyWorkload = () => {
     void load();
   }, []);
 
-  const workloads = useMemo(() => records.length > 0 ? parseFacultyWorkloads(records) : [], [records]);
+  const validRecords = useMemo(
+    () => records.filter((record) => record.hasValidTimetable !== false),
+    [records],
+  );
+  const workloads = useMemo(() => validRecords.length > 0 ? parseFacultyWorkloads(validRecords) : [], [validRecords]);
   const facultyNames = useMemo(() => workloads.map((item) => item.name), [workloads]);
 
   useEffect(() => {
@@ -277,7 +281,10 @@ const FacultyWorkload = () => {
       <div className={`flex flex-col gap-1 ${isConflict ? "text-destructive" : ""}`}>
         {entries.map((entry, i) => (
           <div key={i} className="font-semibold text-[11px] leading-tight">
-            {entryCode(entry)}
+            {entry.subject}
+            <div className="font-normal text-[10px] text-muted-foreground">
+              {entry.year} {entry.section}
+            </div>
           </div>
         ))}
         {isConflict && (

@@ -133,6 +133,7 @@ export interface TimetableRecord {
   id: string;
   year: string;
   section: string;
+  hasValidTimetable?: boolean;
   grid: Record<
     string,
     ({ subject: string; subjectName?: string; faculty?: string; facultyName?: string; isLab?: boolean; sharedSections?: string[] } | null)[]

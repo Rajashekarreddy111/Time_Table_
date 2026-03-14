@@ -11,8 +11,7 @@ import * as XLSX from "xlsx";
 import { buildLegend, DISPLAY_DAYS, getCellByPeriod } from "@/lib/timetableFormat";
 import { listTimetables, type TimetableRecord, deleteTimetable } from "@/services/apiClient";
 import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
-import { Link, useSearchParams } from "react-router-dom";
-import type { GeneratedWorkbookFile } from "@/services/apiClient";
+import { useSearchParams } from "react-router-dom";
 
 const TOTAL_COLUMNS = 10;
 
@@ -156,20 +155,6 @@ function extractSectionTimetables(records: TimetableRecord[]): SectionTimetable[
   return items;
 }
 
-function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
-  const binary = atob(file.contentBase64);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const blob = new Blob([bytes], { type: file.contentType });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = file.fileName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
 const TimetableViewer = () => {
   const [searchParams] = useSearchParams();
   const timetableId = searchParams.get("timetableId");
@@ -200,7 +185,11 @@ const TimetableViewer = () => {
     void load();
   }, []);
 
-  const allTimetables = useMemo(() => extractSectionTimetables(records), [records]);
+  const validRecords = useMemo(
+    () => records.filter((record) => record.hasValidTimetable !== false),
+    [records],
+  );
+  const allTimetables = useMemo(() => extractSectionTimetables(validRecords), [validRecords]);
   const availableYears = useMemo(() => Array.from(new Set(allTimetables.map((item) => item.year))), [allTimetables]);
   const availableSections = useMemo(
     () => Array.from(new Set(allTimetables.filter((item) => item.year === selectedYear).map((item) => item.section))),
@@ -220,7 +209,7 @@ const TimetableViewer = () => {
   }, [availableSections, selectedSection]);
 
   const timetable = allTimetables.find((item) => item.year === selectedYear && item.section === selectedSection);
-  const activeRecord = records.find((record) =>
+  const activeRecord = validRecords.find((record) =>
     (record.year === selectedYear && record.section === selectedSection) ||
     Boolean(record.allGrids && record.allGrids[selectedSection]),
   );
@@ -327,41 +316,6 @@ const TimetableViewer = () => {
             <Button variant="outline" size="sm" onClick={handleExportAllTimetables} className="gap-1.5">
               <Download className="h-3.5 w-3.5" /> Download All Timetables
             </Button>
-            {activeRecord && (
-              <Button variant="outline" size="sm" asChild className="gap-1.5">
-                <Link to={`/outputs?timetableId=${encodeURIComponent(activeRecord.id)}`}>Open Outputs Page</Link>
-              </Button>
-            )}
-            {activeRecord?.generatedFiles?.facultyWorkload && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.facultyWorkload!)}
-                className="gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" /> Faculty Workload
-              </Button>
-            )}
-            {activeRecord?.generatedFiles?.sharedClassesReport && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sharedClassesReport!)}
-                className="gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" /> Shared Class Report
-              </Button>
-            )}
-            {activeRecord?.generatedFiles?.constraintViolationReport && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.constraintViolationReport!)}
-                className="gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" /> Constraint Report
-              </Button>
-            )}
             <Button variant="outline" size="sm" onClick={handlePrint} className="gap-1.5">
               <Printer className="h-3.5 w-3.5" /> Print
             </Button>
@@ -375,54 +329,6 @@ const TimetableViewer = () => {
       <div className="bg-card rounded-xl p-6 shadow-sm print:shadow-none print:p-0">
         {timetable ? (
           <div className="space-y-4">
-            {activeRecord && (
-              <div className="rounded-xl border border-border/70 bg-muted/20 p-4 print:hidden">
-                <h3 className="text-sm font-semibold text-foreground mb-2">Generated Outputs</h3>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  {activeRecord.generatedFiles?.sectionTimetables && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sectionTimetables!)}
-                      className="gap-1.5"
-                    >
-                      <Download className="h-3.5 w-3.5" /> section_timetables.xlsx
-                    </Button>
-                  )}
-                  {activeRecord.generatedFiles?.facultyWorkload && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.facultyWorkload!)}
-                      className="gap-1.5"
-                    >
-                      <Download className="h-3.5 w-3.5" /> faculty_workload.xlsx
-                    </Button>
-                  )}
-                  {activeRecord.generatedFiles?.sharedClassesReport && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.sharedClassesReport!)}
-                      className="gap-1.5"
-                    >
-                      <Download className="h-3.5 w-3.5" /> shared_classes_report.xlsx
-                    </Button>
-                  )}
-                  {activeRecord.generatedFiles?.constraintViolationReport && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => downloadGeneratedWorkbook(activeRecord.generatedFiles!.constraintViolationReport!)}
-                      className="gap-1.5"
-                    >
-                      <Download className="h-3.5 w-3.5" /> constraint_violation_report.xlsx
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )}
-
             <TimetableGrid
               grid={timetable.grid}
               header={{
@@ -437,8 +343,8 @@ const TimetableViewer = () => {
           </div>
         ) : (
           <div className="text-center py-16">
-            <p className="text-muted-foreground">No timetable generated for {selectedYear} - Section {selectedSection}.</p>
-            <p className="text-xs text-muted-foreground mt-1">Use the Timetable Generator to create one.</p>
+            <p className="text-muted-foreground">No valid timetable is available for {selectedYear} - Section {selectedSection}.</p>
+            <p className="text-xs text-muted-foreground mt-1">If generation failed, check the Generated Outputs page for the constraint report.</p>
           </div>
         )}
       </div>

@@ -23,7 +23,8 @@ class Requirement:
     faculty_id: str
     sections: tuple[str, ...]
     hours: int
-    continuous_hours: int
+    min_consecutive_hours: int
+    max_consecutive_hours: int
     shared: bool
 
 
@@ -171,15 +172,19 @@ def _build_faculty_availability(
     return availability
 
 
-def _candidate_block_sizes(remaining_hours: int, continuous_hours: int) -> list[int]:
+def _candidate_block_sizes(
+    remaining_hours: int,
+    min_consecutive_hours: int,
+    max_consecutive_hours: int,
+) -> list[int]:
     if remaining_hours <= 0:
         return []
-    min_consecutive = max(1, continuous_hours)
-    if remaining_hours > min_consecutive:
-        return list(range(remaining_hours, min_consecutive - 1, -1))
-    if remaining_hours == min_consecutive:
+    minimum = max(1, min_consecutive_hours)
+    maximum = max(minimum, max_consecutive_hours)
+    upper_bound = min(remaining_hours, maximum)
+    if remaining_hours < minimum:
         return [remaining_hours]
-    return [remaining_hours]
+    return list(range(upper_bound, minimum - 1, -1))
 
 
 def _slot_is_free(
@@ -309,7 +314,7 @@ def _infer_failure_reason(
                 requirement.faculty_id,
                 day,
                 start,
-                min(requirement.hours, max(1, requirement.continuous_hours)),
+                min(requirement.hours, max(1, requirement.min_consecutive_hours)),
                 schedules,
                 faculty_busy,
                 faculty_availability,
@@ -322,7 +327,7 @@ def _infer_failure_reason(
         return "faculty availability conflict"
     if len(requirement.sections) > 1 and not section_has_any_slot:
         return "shared class constraint"
-    if requirement.continuous_hours > 1 and not faculty_has_continuous_slot:
+    if requirement.min_consecutive_hours > 1 and not faculty_has_continuous_slot:
         return "continuous hours constraint"
     return "no free slot"
 
@@ -346,7 +351,11 @@ def _schedule_requirement(
             return False
         if remaining_hours == 0:
             return True
-        for block_size in _candidate_block_sizes(remaining_hours, requirement.continuous_hours):
+        for block_size in _candidate_block_sizes(
+            remaining_hours,
+            requirement.min_consecutive_hours,
+            requirement.max_consecutive_hours,
+        ):
             for days_order, periods_order in retry_orders:
                 for day in days_order:
                     for start_period in periods_order:
@@ -496,13 +505,13 @@ def _build_shared_classes_workbook(shared_sessions: list[dict]) -> Workbook:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "SharedClasses"
-    worksheet.append(["YEAR", "SUBJECT_ID", "FACULTY_ID", "SECTIONS", "DAY", "PERIODS"])
+    worksheet.append(["YEAR", "SUBJECT", "FACULTY", "SECTIONS", "DAY", "PERIODS"])
     for session in shared_sessions:
         worksheet.append(
             [
                 session.get("year", ""),
-                session.get("subject_id", ""),
-                session.get("faculty_id", ""),
+                session.get("subject_name", "") or session.get("subject_id", ""),
+                session.get("faculty_name", "") or session.get("faculty_id", ""),
                 ",".join(session.get("sections", [])),
                 session.get("day", ""),
                 ",".join(str(period) for period in session.get("periods", [])),
@@ -515,14 +524,14 @@ def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "ConstraintViolations"
-    worksheet.append(["YEAR", "SECTIONS", "SUBJECT_ID", "FACULTY_ID", "CONSTRAINT", "DETAIL"])
+    worksheet.append(["YEAR", "SECTIONS", "SUBJECT", "FACULTY", "CONSTRAINT", "DETAIL"])
     for violation in violations:
         worksheet.append(
             [
                 violation.get("year", ""),
                 ",".join(violation.get("sections", [])),
-                violation.get("subject_id", ""),
-                violation.get("faculty_id", ""),
+                violation.get("subject_name", "") or violation.get("subject_id", ""),
+                violation.get("faculty_name", "") or violation.get("faculty_id", ""),
                 violation.get("constraint", ""),
                 violation.get("detail", ""),
             ]
@@ -532,8 +541,8 @@ def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[
             [
                 item.get("year", ""),
                 ",".join(item.get("sections", [])),
-                item.get("subject_id", ""),
-                item.get("faculty_id", ""),
+                item.get("subject_name", "") or item.get("subject_id", ""),
+                item.get("faculty_name", "") or item.get("faculty_id", ""),
                 "unscheduled subject",
                 item.get("detail", ""),
             ]
@@ -609,7 +618,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         if not section or not subject_id:
             continue
         section_total_hours[section] = section_total_hours.get(section, 0) + hours
-        actual_continuous = max(1, compulsory_continuous.get(subject_id, continuous_hours))
+        max_consecutive_hours = max(1, continuous_hours)
+        min_consecutive_hours = max(1, compulsory_continuous.get(subject_id, 1))
         key = (section, subject_id)
         if key not in main_rows_by_section_subject:
             main_rows_by_section_subject[key] = {
@@ -617,11 +627,15 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 "subject_id": subject_id,
                 "faculty_id": faculty_id,
                 "hours": 0,
-                "continuous_hours": actual_continuous,
+                "min_consecutive_hours": min_consecutive_hours,
+                "max_consecutive_hours": max_consecutive_hours,
             }
         main_rows_by_section_subject[key]["hours"] += hours
-        main_rows_by_section_subject[key]["continuous_hours"] = max(
-            main_rows_by_section_subject[key]["continuous_hours"], actual_continuous
+        main_rows_by_section_subject[key]["min_consecutive_hours"] = max(
+            main_rows_by_section_subject[key]["min_consecutive_hours"], min_consecutive_hours
+        )
+        main_rows_by_section_subject[key]["max_consecutive_hours"] = min(
+            main_rows_by_section_subject[key]["max_consecutive_hours"], max_consecutive_hours
         )
         section_subject_faculty[key] = faculty_id
 
@@ -640,6 +654,27 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             )
     if validation_errors:
         raise _validation_error("Validation Error: Main config section totals must equal 42.", validation_errors)
+
+    for row in sorted(main_rows_by_section_subject.values(), key=lambda item: (item["section"], item["subject_id"])):
+        if int(row["min_consecutive_hours"]) > int(row["max_consecutive_hours"]):
+            constraint_detail = (
+                f"Subject {row['subject_id']} in section {row['section']} requires at least "
+                f"{row['min_consecutive_hours']} consecutive hour(s), but the main config allows only "
+                f"{row['max_consecutive_hours']}."
+            )
+            raise _validation_error(
+                "Continuous hours rules conflict with the main timetable configuration.",
+                [
+                    {
+                        "year": year,
+                        "section": row["section"],
+                        "subject_id": row["subject_id"],
+                        "minConsecutiveHours": row["min_consecutive_hours"],
+                        "maxConsecutiveHours": row["max_consecutive_hours"],
+                        "detail": constraint_detail,
+                    }
+                ],
+            )
 
     all_sections = sorted(section_total_hours)
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]] = {
@@ -819,7 +854,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 for row in section_rows
                 if row
             ]
-            continuous_hours = max(int(row.get("continuous_hours", 1) or 1) for row in section_rows if row)
+            min_consecutive_hours = max(int(row.get("min_consecutive_hours", 1) or 1) for row in section_rows if row)
+            max_consecutive_hours = min(int(row.get("max_consecutive_hours", 1) or 1) for row in section_rows if row)
             if len(faculties) != 1 or not next(iter(faculties), ""):
                 constraint_violations.append(
                     {
@@ -844,6 +880,20 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     }
                 )
                 continue
+            if min_consecutive_hours > max_consecutive_hours:
+                constraint_violations.append(
+                    {
+                        "year": year,
+                        "sections": list(sections),
+                        "subject_id": subject_id,
+                        "faculty_id": next(iter(faculties)),
+                        "constraint": "continuous hours constraint",
+                        "detail": (
+                            "Shared class requires more consecutive hours than allowed by the main config."
+                        ),
+                    }
+                )
+                continue
             hours = remaining_hours[0]
             if hours <= 0:
                 for section in sections:
@@ -855,7 +905,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     faculty_id=next(iter(faculties)),
                     sections=sections,
                     hours=hours,
-                    continuous_hours=continuous_hours,
+                    min_consecutive_hours=min_consecutive_hours,
+                    max_consecutive_hours=max_consecutive_hours,
                     shared=True,
                 )
             )
@@ -874,7 +925,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 faculty_id=str(row.get("faculty_id", "")).strip(),
                 sections=(section,),
                 hours=remaining_hours,
-                continuous_hours=max(1, int(row.get("continuous_hours", 1) or 1)),
+                min_consecutive_hours=max(1, int(row.get("min_consecutive_hours", 1) or 1)),
+                max_consecutive_hours=max(1, int(row.get("max_consecutive_hours", 1) or 1)),
                 shared=False,
             )
         )
@@ -882,7 +934,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     requirements.sort(
         key=lambda item: (
             0 if item.shared else 1,
-            -item.continuous_hours,
+            -item.min_consecutive_hours,
+            -item.max_consecutive_hours,
             -item.hours,
             item.subject_id,
             ",".join(item.sections),
@@ -965,8 +1018,9 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             }
         )
 
-    all_grids = _serialize_section_grids(year, all_sections, schedules)
-    faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
+    has_constraint_failures = bool(unscheduled_subjects or constraint_violations)
+    all_grids = {} if has_constraint_failures else _serialize_section_grids(year, all_sections, schedules)
+    faculty_workloads = {} if has_constraint_failures else _build_faculty_workloads_from_sessions(session_log)
     shared_sessions = [session for session in session_log if len(session.get("sections", [])) > 1]
 
     for violation in constraint_violations:
@@ -985,16 +1039,17 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         if faculty_id:
             item["faculty_name"] = faculty_id_to_name.get(faculty_id, faculty_id)
 
-    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules)
-    faculty_workbook = _build_faculty_workload_workbook(faculty_workloads, faculty_id_to_name)
     shared_workbook = _build_shared_classes_workbook(shared_sessions)
     constraint_workbook = _build_constraint_report_workbook(constraint_violations, unscheduled_subjects)
 
     generated_files = {
-        "sectionTimetables": _encode_workbook("section_timetables.xlsx", section_workbook),
-        "facultyWorkload": _encode_workbook("faculty_workload.xlsx", faculty_workbook),
         "sharedClassesReport": _encode_workbook("shared_classes_report.xlsx", shared_workbook),
     }
+    if not has_constraint_failures:
+        section_workbook = _build_section_timetables_workbook(year, all_sections, schedules)
+        faculty_workbook = _build_faculty_workload_workbook(faculty_workloads, faculty_id_to_name)
+        generated_files["sectionTimetables"] = _encode_workbook("section_timetables.xlsx", section_workbook)
+        generated_files["facultyWorkload"] = _encode_workbook("faculty_workload.xlsx", faculty_workbook)
     if constraint_violations or unscheduled_subjects:
         generated_files["constraintViolationReport"] = _encode_workbook(
             "constraint_violation_report.xlsx", constraint_workbook
@@ -1009,12 +1064,13 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             "id": timetable_id,
             "year": year,
             "section": selected_section,
-            "grid": all_grids[selected_section],
+            "grid": all_grids.get(selected_section, {day: [None] * len(PERIODS) for day in DAYS}),
             "allGrids": all_grids,
             "facultyWorkloads": faculty_workloads,
             "sharedClasses": shared_sessions,
             "constraintViolations": constraint_violations,
             "unscheduledSubjects": unscheduled_subjects,
+            "hasValidTimetable": not has_constraint_failures,
             "generatedFiles": generated_files,
             "generationMeta": {
                 "timeoutSeconds": 300,
@@ -1024,20 +1080,21 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         },
     )
 
-    occupied_faculty_slots: set[tuple[str, str, int]] = set()
-    for session in session_log:
-        faculty_id = str(session.get("faculty_id", "")).strip()
-        if not faculty_id:
-            continue
-        for period in session.get("periods", []):
-            occupied_faculty_slots.add((faculty_id, str(session["day"]), int(period)))
+    if not has_constraint_failures:
+        occupied_faculty_slots: set[tuple[str, str, int]] = set()
+        for session in session_log:
+            faculty_id = str(session.get("faculty_id", "")).strip()
+            if not faculty_id:
+                continue
+            for period in session.get("periods", []):
+                occupied_faculty_slots.add((faculty_id, str(session["day"]), int(period)))
 
-    for faculty_id, day, period in sorted(occupied_faculty_slots):
-        store.mark_faculty_busy(faculty_id, day, period, timetable_id, year=year, section=selected_section)
+        for faculty_id, day, period in sorted(occupied_faculty_slots):
+            store.mark_faculty_busy(faculty_id, day, period, timetable_id, year=year, section=selected_section)
 
-    if unscheduled_subjects or constraint_violations:
+    if has_constraint_failures:
         return {
             "timetableId": timetable_id,
-            "message": "Timetable generated partially with constraint violations.",
+            "message": "Constraints could not be fully satisfied. A report was generated instead of a timetable.",
         }
     return {"timetableId": timetable_id, "message": "Timetable generated successfully"}
