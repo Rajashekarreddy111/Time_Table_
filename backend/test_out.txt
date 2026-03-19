@@ -1,2 +1,3 @@
 ✅ Shared Class Constraint (Math in A & B) PASSED
 ✅ Faculty Availability Constraint (Physics F002) PASSED
+❌ Manual Generation (Section A) API call FAILED: {"error":"ValidationError","message":"No configurable sections found for the specified year.","details":[]}

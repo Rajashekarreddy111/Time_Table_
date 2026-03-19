@@ -239,10 +239,7 @@ const TimetableGenerator = () => {
     };
     if (!next.years[yearIndex]) {
       next.years[yearIndex] = {
-        hasCreamGeneral: false,
-        sectionCount: 4,
-        creamSectionCount: 0,
-        generalSectionCount: 0,
+        sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"],
       };
     }
     next.years[yearIndex] = updater(next.years[yearIndex]);
@@ -459,7 +456,14 @@ const TimetableGenerator = () => {
     return {
       year: targetYear,
       section: targetSection,
-      manualEntries: manualEntries.filter(m => m.subjectId && m.facultyId),
+      manualEntries: manualEntries
+        .filter((m) => m.subjectId && m.facultyId)
+        .map(m => ({
+          ...m,
+          year: targetYear,
+          section: targetSection,
+          compulsoryContinuousHours: subjectContinuousRules.find(r => r.subjectId === m.subjectId)?.compulsoryContinuousHours || 0
+        })),
       manualLabEntries: manualLabEntries
         .map((entry) => ({
           ...entry,
@@ -628,7 +632,7 @@ const TimetableGenerator = () => {
                             if (checked && !isActive) {
                               nextActive.push(yearStr);
                               nextActive.sort();
-                              nextYears.push({ hasCreamGeneral: false, sectionCount: 4, creamSectionCount: 0, generalSectionCount: 0 });
+                              nextYears.push({ sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"] });
                             } else if (!checked && isActive) {
                               const removeIdx = nextActive.indexOf(yearStr);
                               if (removeIdx > -1) {
@@ -638,7 +642,7 @@ const TimetableGenerator = () => {
                             }
                             if (nextActive.length === 0) {
                               nextActive = ["1st Year"];
-                              nextYears = [{ hasCreamGeneral: false, sectionCount: 4, creamSectionCount: 0, generalSectionCount: 0 }];
+                              nextYears = [{ sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"] }];
                             }
                             updateAcademicConfig({ activeYears: nextActive, years: nextYears });
                           }}
@@ -650,25 +654,23 @@ const TimetableGenerator = () => {
                 </div>
               </div>
               <div>
-                <Label className="text-xs text-muted-foreground mb-2 block">Sections Per Year</Label>
+                <Label className="text-xs text-muted-foreground mb-2 block">Sections Per Year (Comma separated)</Label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {getYearOptions(academicConfig).map((yearLabel, idx) => (
                     <div key={yearLabel} className="rounded-md border border-border/60 px-3 py-3 bg-muted/20 space-y-2">
                       <Label className="text-[11px] font-semibold">{yearLabel}</Label>
                       <div>
-                        <Label className="text-[10px] text-muted-foreground">Number of Sections</Label>
                         <Input
-                          type="number"
-                          min={1}
-                          max={60}
-                          value={academicConfig.years[idx]?.sectionCount ?? 4}
-                          className="h-8 text-xs"
+                          type="text"
+                          value={(academicConfig.years[idx]?.sectionNames || []).join(", ")}
+                          className="h-8 text-[11px]"
+                          placeholder="C1, C2, C3, C4, C5, G1, G2"
                           onChange={(e) => {
-                            const count = Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 1));
+                            const val = e.target.value;
+                            const sectionNames = val.split(',').map(s => s.trim());
                             updateYearStructure(idx, (current) => ({
                               ...current,
-                              hasCreamGeneral: false,
-                              sectionCount: count,
+                              sectionNames: sectionNames.filter(Boolean).length > 0 ? sectionNames.filter(Boolean) : ["C1", "C2", "C3", "C4", "C5", "G1", "G2"],
                             }));
                           }}
                         />
@@ -679,7 +681,6 @@ const TimetableGenerator = () => {
               </div>
             </div>
           </div>
-
           <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
             <h2 className="text-base font-semibold text-foreground mb-4">Select Year and Section</h2>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 w-full max-w-3xl">
@@ -714,7 +715,6 @@ const TimetableGenerator = () => {
               </div>
             </div>
           </div>
-
           <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
             <h2 className="text-base font-semibold text-foreground mb-4">Data Input Method</h2>
             <div className="flex flex-wrap gap-3">

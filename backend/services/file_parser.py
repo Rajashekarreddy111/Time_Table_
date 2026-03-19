@@ -64,8 +64,6 @@ def _looks_like_grouped_main_timetable_header(rows: list[tuple]) -> bool:
         normalized_triplet = [cell.upper() if cell else "" for cell in triplet]
         if normalized_triplet != ["NO OF HOURS", "FACULTY-ID", "CONTINUOUS HOURS"]:
             return False
-        if not str(section).upper().startswith(("C", "G")):
-            return False
         section_seen = True
 
     return section_seen

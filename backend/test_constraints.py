@@ -20,10 +20,14 @@ def test_manual_generation():
         "year": "2nd Year",
         "section": "A",
         "sectionBatchMap": {},
-        "subjects": [
-            {"subject": "Math", "faculty": "F001"},
-            {"subject": "Physics", "faculty": "F002"}
+        "manualEntries": [
+            {"year": "2nd Year", "section": "A", "subjectId": "Math", "facultyId": "F001", "noOfHours": 4, "continuousHours": 1, "compulsoryContinuousHours": 1},
+            {"year": "2nd Year", "section": "A", "subjectId": "Physics", "facultyId": "F002", "noOfHours": 3, "continuousHours": 1, "compulsoryContinuousHours": 1},
+            {"year": "2nd Year", "section": "A", "subjectId": "Dummy1", "facultyId": "F003", "noOfHours": 35, "continuousHours": 1, "compulsoryContinuousHours": 1},
+            {"year": "2nd Year", "section": "B", "subjectId": "Math", "facultyId": "F001", "noOfHours": 4, "continuousHours": 1, "compulsoryContinuousHours": 1},
+            {"year": "2nd Year", "section": "B", "subjectId": "Dummy2", "facultyId": "F004", "noOfHours": 38, "continuousHours": 1, "compulsoryContinuousHours": 1}
         ],
+        "subjects": [],
         "labs": [],
         "sharedClasses": [
             {
@@ -32,10 +36,7 @@ def test_manual_generation():
                 "subject": "Math"
             }
         ],
-        "subjectHours": [
-            {"subject": "Math", "hours": 4, "continuousHours": 1},
-            {"subject": "Physics", "hours": 3, "continuousHours": 1}
-        ],
+        "subjectHours": [],
         "facultyAvailability": [
             {
                 "facultyId": "F002",
