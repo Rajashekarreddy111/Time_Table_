@@ -130,13 +130,11 @@ def _build_subject_maps(
 def _build_faculty_availability(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
-    faculty_keys: set[str],
+    all_faculties: set[str],
     faculty_id_to_name: dict[str, str],
 ) -> dict[str, dict[str, set[int]]]:
-    default_map = {day: set(PERIODS) for day in DAYS}
     availability: dict[str, dict[str, set[int]]] = {
-        faculty: {day: periods.copy() for day, periods in default_map.items()}
-        for faculty in faculty_keys
+        fid: {day: set(PERIODS) for day in DAYS} for fid in all_faculties
     }
 
     reverse_faculty_name_map = {
@@ -152,35 +150,25 @@ def _build_faculty_availability(
 
     uploaded_payload = store.get_scoped_mapping("faculty_availability", "global")
     if uploaded_payload:
-        seen_pairs: set[tuple[str, str]] = set()
         for row in uploaded_payload.get("rows", []):
             faculty_key = resolve_faculty_key(row.get("faculty_id", ""), row.get("faculty_name", ""))
             day = _normalize_day(str(row.get("day", "")))
             period = int(row.get("period", 0) or 0)
             if not faculty_key or not day or period not in PERIODS:
                 continue
-            availability.setdefault(
-                faculty_key, {name: periods.copy() for name, periods in default_map.items()}
-            )
-            pair = (faculty_key, day)
-            if pair not in seen_pairs:
-                availability[faculty_key][day] = set()
-                seen_pairs.add(pair)
+            availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
             availability[faculty_key][day].add(period)
 
     for entry in request_data.facultyAvailability:
         faculty_key = str(entry.facultyId).strip()
         if not faculty_key:
             continue
-        availability.setdefault(
-            faculty_key, {name: periods.copy() for name, periods in default_map.items()}
-        )
+        availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
         for raw_day, periods in entry.availablePeriodsByDay.items():
             day = _normalize_day(raw_day)
             if not day:
                 continue
-            availability[faculty_key][day] = {int(period) for period in periods if int(period) in PERIODS}
-
+            availability[faculty_key][day] = {int(p) for p in periods if int(p) in PERIODS}
     return availability
 
 
@@ -254,9 +242,10 @@ def _candidate_block_sizes(
     minimum = max(1, min_consecutive_hours)
     maximum = max(minimum, max_consecutive_hours)
     upper_bound = min(remaining_hours, maximum)
-    if remaining_hours < minimum:
-        return [remaining_hours]
-    return list(range(upper_bound, minimum - 1, -1))
+    sizes = list(range(upper_bound, minimum - 1, -1))
+    if minimum > 1:
+        sizes.extend(range(minimum - 1, 0, -1))
+    return sizes
 
 
 def _default_day_availability() -> dict[str, set[int]]:
@@ -329,7 +318,7 @@ def _requirement_weekly_capacity(
 ) -> int:
     faculty_options = requirement.faculty_options or ((requirement.faculty_id,) if requirement.faculty_id else ())
     if not faculty_options:
-        return 42
+        return len(DAYS) * len(PERIODS)
     return max(_faculty_weekly_capacity(faculty_id, faculty_availability) for faculty_id in faculty_options)
 
 
@@ -404,8 +393,9 @@ def _section_capacity_is_feasible(
 
 
 def _compute_timeout_seconds(section_count: int, requirement_count: int) -> int:
+    # §18: adaptive timeout – 30s small, 90s medium, 180s large
     if section_count <= 5:
-        base = 60
+        base = 30
     elif section_count <= 10:
         base = 90
     else:
@@ -422,7 +412,7 @@ def _requirement_priority(
     faculty_availability: dict[str, dict[str, set[int]]],
 ) -> tuple[int, int, int, int, str, str]:
     weekly_capacity = _requirement_weekly_capacity(requirement, faculty_availability)
-    strict_availability = 42 - weekly_capacity
+    strict_availability = len(DAYS) * len(PERIODS) - weekly_capacity
     return (
         requirement.phase,
         -requirement.hours,
@@ -442,18 +432,11 @@ def _determine_requirement_phase(
 ) -> int:
     if shared:
         return 1
-    if min_consecutive_hours > 1:
+    if hours >= 4:
         return 2
-    weekly_capacity = (
-        max(_faculty_weekly_capacity(option, faculty_availability) for option in faculty_options)
-        if faculty_options
-        else 42
-    )
-    if hours >= 6 or weekly_capacity < 24:
+    if min_consecutive_hours > 1:
         return 3
-    if hours >= 3:
-        return 4
-    return 5
+    return 4
 
 
 def _score_slot_candidate(
@@ -467,26 +450,31 @@ def _score_slot_candidate(
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
 ) -> int:
-    section_flex = _count_free_periods_for_sections(requirement.sections, day, schedules, year)
-    faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability)
+    # §14: slot scoring weights – +5 section free, +5 faculty available, +3 continuous, -5 conflict
+    section_flex = _count_free_periods_for_sections(requirement.sections, day, schedules, year) # Changed PERIODS
+    faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability) # Changed PERIODS
     faculty_load = _faculty_daily_load(faculty_id, day, faculty_busy)
-    subject_load = _subject_daily_load(requirement, day, schedules, year)
-    empty_slots = _remaining_empty_slots_for_sections(requirement.sections, schedules, year)
-    center_bonus = 2 if start_period not in (1, PERIODS[-1]) else 0
-    availability_bonus = 5 if faculty_flex > 0 else -10
-    section_bonus = 3 if section_flex > 0 else -10
+    subject_load = _subject_daily_load(requirement, day, schedules, year) # Changed PERIODS
+    empty_slots = _remaining_empty_slots_for_sections(requirement.sections, schedules, year) # Changed PERIODS
+    center_bonus = 2 if start_period not in (PERIODS[0], PERIODS[-1]) else 0 # Changed PERIODS = PERIODS
+    # Primary scoring per spec
+    section_free_score = 5 if section_flex > 0 else -5
+    faculty_available_score = 5 if faculty_flex > 0 else -5
+    continuous_score = 3 if block_size >= requirement.min_consecutive_hours else -10
+    conflict_penalty = -5 if faculty_load + block_size > 5 else 0  # penalise overloaded days
+    # Secondary heuristics
     shared_bonus = 2 if requirement.shared else 0
-    continuous_bonus = 2 if block_size >= requirement.min_consecutive_hours else -6
     longer_block_bonus = block_size * 2
     faculty_load_penalty = -3 * max(0, faculty_load + block_size - 4)
     clustering_penalty = -2 * subject_load
     scarcity_bonus = max(0, 8 - faculty_flex)
     tail_fill_bonus = 3 if empty_slots <= len(requirement.sections) * 8 else 0
     return (
-        availability_bonus
-        + section_bonus
+        section_free_score
+        + faculty_available_score
+        + continuous_score
+        + conflict_penalty
         + shared_bonus
-        + continuous_bonus
         + longer_block_bonus
         + center_bonus
         + scarcity_bonus
@@ -582,6 +570,13 @@ def _select_next_requirement(
         remaining = remaining_hours.get(req_idx, 0)
         if remaining <= 0 or not requirement.faculty_id:
             continue
+        requirement.phase = _determine_requirement_phase(
+            requirement.shared,
+            requirement.min_consecutive_hours,
+            requirement.hours,
+            requirement.faculty_options,
+            faculty_availability,
+        )
         if active_phase is None or requirement.phase < active_phase:
             active_phase = requirement.phase
 
@@ -606,7 +601,7 @@ def _select_next_requirement(
             len(candidates),
             -requirement.min_consecutive_hours,
             -remaining,
-            42 - _requirement_weekly_capacity(requirement, faculty_availability),
+            len(DAYS) * len(PERIODS) - _requirement_weekly_capacity(requirement, faculty_availability),
             requirement.subject_id,
             ",".join(requirement.sections),
         )
@@ -632,6 +627,7 @@ def _place_block(
     subject_id_to_name: dict[str, str],
     faculty_id_to_name: dict[str, str],
     session_log: list[dict],
+    source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
     faculty_id, faculty_name = _resolve_faculty_output(faculty_id, faculty_id_to_name)
@@ -650,6 +646,7 @@ def _place_block(
                 "venue": "",
                 "sharedSections": list(requirement.sections) if len(requirement.sections) > 1 else [],
             }
+    # §21: tag source so only file-driven sessions appear in the shared class report
     session_log.append(
         {
             "year": year,
@@ -663,6 +660,7 @@ def _place_block(
             "venue": "",
             "isLab": False,
             "shared": len(requirement.sections) > 1,
+            "source": source,
         }
     )
     return [(day, period) for period in periods]
@@ -693,9 +691,6 @@ def _infer_failure_reason(
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
 ) -> str:
-    if not requirement.faculty_id:
-        return "missing faculty mapping"
-
     faculty_has_any_slot = False
     faculty_has_continuous_slot = False
     section_has_any_slot = False
@@ -716,19 +711,20 @@ def _infer_failure_reason(
                 faculty_has_any_slot = True
                 if len(requirement.sections) > 1:
                     section_has_any_slot = True
-            if _slot_is_free(
-                requirement.sections,
-                requirement,
-                day,
-                start,
-                min(requirement.hours, max(1, requirement.min_consecutive_hours)),
-                schedules,
-                faculty_busy,
-                faculty_availability,
-                year,
-            ):
-                faculty_has_continuous_slot = True
-                section_has_any_slot = True
+                
+                if _slot_is_free(
+                    requirement.sections,
+                    requirement,
+                    day,
+                    start,
+                    min(requirement.hours, max(1, requirement.min_consecutive_hours)),
+                    schedules,
+                    faculty_busy,
+                    faculty_availability,
+                    year,
+                ):
+                    faculty_has_continuous_slot = True
+                    section_has_any_slot = True
 
     if not faculty_has_any_slot:
         return "faculty availability conflict"
@@ -819,24 +815,23 @@ def _serialize_section_grids(
     }
 
 
-def _build_faculty_workloads_from_sessions(sessions: list[dict]) -> dict[str, dict[str, list[str | None]]]:
-    workloads: dict[str, dict[str, dict[int, str]]] = {}
+def _build_faculty_workloads_from_sessions(
+    sessions: list[dict],
+) -> dict[str, dict[str, list[str | None]]]:
+    workloads: dict[str, dict[str, dict[int, str | None]]] = {}
     for session in sessions:
-        faculty_name = str(session.get("faculty_name", "")).strip() or str(session.get("faculty_id", "")).strip()
-        if not faculty_name:
+        day = session["day"]
+        faculty_id = str(session.get("faculty_id", "")).strip()
+        if not faculty_id:
             continue
-        day = str(session["day"])
-        sections_label = ",".join(session["sections"])
-        subject_label = session.get("subject_name") or session.get("subject_id") or ""
-        year_label = session.get("year", "")
-        value = f"{year_label} {sections_label} {subject_label}".strip()
+        faculty_workload = workloads.setdefault(faculty_id, {d: {p: None for p in PERIODS} for d in DAYS})
         for period in session["periods"]:
-            workloads.setdefault(faculty_name, {}).setdefault(day, {})[period] = value
-
-    return {
-        faculty: {day: [day_map.get(day, {}).get(period) for period in PERIODS] for day in DAYS}
-        for faculty, day_map in workloads.items()
-    }
+            faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])})"
+    
+    final_workloads: dict[str, dict[str, list[str | None]]] = {}
+    for fid, days_data in workloads.items():
+        final_workloads[fid] = {day: [days_data[day][period] for period in PERIODS] for day in DAYS}
+    return final_workloads
 
 
 def _workbook_bytes(workbook: Workbook) -> bytes:
@@ -889,20 +884,15 @@ def _build_faculty_workload_workbook(
     workbook = Workbook()
     workbook.remove(workbook.active)
     if not faculty_workloads:
-        worksheet = workbook.create_sheet(title="FacultyWorkload")
-        worksheet.append(["FACULTY_ID", "FACULTY_NAME", "DAY", *PERIODS])
         return workbook
 
-    for faculty_id in sorted(faculty_workloads):
+    for faculty_id, workload in sorted(faculty_workloads.items()):
         faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
-        worksheet = workbook.create_sheet(title=str(faculty_name or faculty_id)[:31] or "Faculty")
-        worksheet.append(["FACULTY_ID", faculty_id])
-        worksheet.append(["FACULTY_NAME", faculty_name])
-        worksheet.append([])
+        worksheet = workbook.create_sheet(title=f"{faculty_name}"[:31])
         worksheet.append(["DAY", *PERIODS])
         for day in DAYS:
             row = [day]
-            row.extend(faculty_workloads.get(faculty_id, {}).get(day, [None] * len(PERIODS)))
+            row.extend(workload.get(day, [None] * len(PERIODS)))
             worksheet.append(row)
     return workbook
 
@@ -960,12 +950,22 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     request_data.year = normalize_year(request_data.year)
     year = request_data.year
 
-    faculty_id_to_name = _build_faculty_maps(request_data, store)
-    subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
-
     main_payload = store.get_scoped_mapping("main_timetable_config", "global")
     lab_payload = store.get_scoped_mapping("lab_timetable_config", "global")
     shared_payload = store.get_scoped_mapping("shared_classes", "global")
+
+    max_period = 7
+    capacity_per_section = 42
+
+    # Re-normalize year and faculty id map
+    faculty_id_to_name = _build_faculty_maps(request_data, store)
+    # Strip .0 from numeric faculty IDs
+    faculty_id_to_name = {
+        (k[:-2] if k.endswith(".0") else k): v
+        for k, v in faculty_id_to_name.items()
+    }
+
+    subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
 
     raw_main_rows = [
         row
@@ -982,12 +982,17 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         entry_year = normalize_year(entry.year)
         if entry_year != year:
             continue
+        # Strip .0 from numeric faculty ID
+        fid = str(entry.facultyId).strip()
+        if fid.endswith(".0"):
+            fid = fid[:-2]
+        
         raw_main_rows.append(
             {
                 "year": entry_year,
                 "section": str(entry.section).strip(),
                 "subject_id": str(entry.subjectId).strip(),
-                "faculty_id": str(entry.facultyId).strip(),
+                "faculty_id": fid,
                 "hours": int(entry.noOfHours),
                 "continuous_hours": int(entry.continuousHours or 1),
             }
@@ -1010,7 +1015,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         )
 
     if not raw_main_rows:
-        raise _validation_error("No configurable sections found for the specified year.", [])
+        raise HTTPException(status_code=400, detail="No configurable sections found for the specified year.")
 
     section_total_hours: dict[str, int] = {}
     main_rows_by_section_subject: dict[tuple[str, str], dict] = {}
@@ -1019,6 +1024,9 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         section = str(row.get("section", "")).strip()
         subject_id = str(row.get("subject_id", "")).strip()
         faculty_id = str(row.get("faculty_id", "")).strip()
+        if faculty_id.endswith(".0"):
+            faculty_id = faculty_id[:-2]
+            
         hours = int(row.get("hours", 0) or 0)
         continuous_hours = max(1, int(row.get("continuous_hours", 1) or 1))
         if not section or not subject_id:
@@ -1048,18 +1056,18 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     validation_errors = []
     for section in sorted(section_total_hours):
         total = section_total_hours[section]
-        if total != 42:
+        if total != capacity_per_section:
             validation_errors.append(
                 {
                     "year": year,
                     "section": section,
                     "hours": total,
-                    "expected": 42,
-                    "detail": f"Year {year} Section {section} -> {total} hours (Expected: 42)",
+                    "expected": capacity_per_section,
+                    "detail": f"Section {section} needs exactly {capacity_per_section} hours but has {total} hour(s) configured.",
                 }
             )
     if validation_errors:
-        raise _validation_error("Validation Error: Main config section totals must equal 42.", validation_errors)
+        raise HTTPException(status_code=400, detail=f"Validation Error: Section totals must be exactly {capacity_per_section} hours.")
 
     for row in sorted(main_rows_by_section_subject.values(), key=lambda item: (item["section"], item["subject_id"])):
         if int(row["min_consecutive_hours"]) > int(row["max_consecutive_hours"]):
@@ -1137,6 +1145,15 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         faculty_id = section_subject_faculty.get((section, subject_id), "")
         day = _normalize_day(int(row.get("day", 0) or 0))
         periods = tuple(sorted(int(period) for period in row.get("hours", []) if int(period) in PERIODS))
+        
+        # Explicit validation for out-of-range periods
+        raw_periods = [int(p) for p in row.get("hours", []) if str(p).isdigit()]
+        invalid_periods = [p for p in raw_periods if p not in PERIODS]
+        if invalid_periods:
+            raise _validation_error(
+                f"Lab timetable references invalid periods: {invalid_periods}. Only periods 1-7 are allowed.",
+                [{"year": year, "section": section, "subject_id": subject_id, "day": day, "periods": invalid_periods}]
+            )
         venue = str(row.get("venue", "")).strip()
         if not sections or any(sec not in all_sections for sec in sections):
             invalid_sections = [sec for sec in sections if sec not in all_sections] or [section]
@@ -1232,6 +1249,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 faculty_busy.setdefault(faculty_id_resolved, set()).add((day, period))
                 faculty_slot_sessions.setdefault(faculty_id_resolved, {})[(day, period)] = session_key
 
+        # §21: lab entries are always file-driven; tag source = "lab"
         session_log.append(
             {
                 "year": year,
@@ -1245,6 +1263,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 "venue": venue,
                 "isLab": True,
                 "shared": len(sections) > 1,
+                "source": "lab",
             }
         )
 
@@ -1398,12 +1417,43 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
 
     requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
 
-    early_capacity_violations = _group_sections_by_remaining_capacity(requirements, schedules, year)
-    if early_capacity_violations:
-        raise _validation_error(
-            "Section capacity validation failed after locking labs.",
-            early_capacity_violations,
+    for section in all_sections:
+        reqs_for_sec = [req for req in requirements if section in req.sections]
+        remaining_slots = sum(
+            1 for day in DAYS for period in PERIODS
+            if schedules[(year, section)][day][period] is None
         )
+        required_hours = sum(r.hours for r in reqs_for_sec)
+        
+        if required_hours > remaining_slots:
+            excess = required_hours - remaining_slots
+            adjustable_reqs = [r for r in reqs_for_sec if not r.shared]
+            adjustable_reqs.sort(key=lambda item: _requirement_priority(item, faculty_availability), reverse=True)
+            
+            for req in adjustable_reqs:
+                if excess <= 0:
+                    break
+                reduction = min(req.hours, excess)
+                idx = requirements.index(req)
+                new_hours = req.hours - reduction
+                if new_hours > 0:
+                    requirements[idx] = Requirement(
+                        subject_id=req.subject_id,
+                        faculty_id=req.faculty_id,
+                        faculty_options=req.faculty_options,
+                        sections=req.sections,
+                        hours=new_hours,
+                        min_consecutive_hours=min(new_hours, req.min_consecutive_hours),
+                        max_consecutive_hours=min(new_hours, req.max_consecutive_hours),
+                        shared=req.shared,
+                        phase=req.phase,
+                    )
+                else:
+                    requirements.pop(idx)
+                excess -= reduction
+
+    requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
+
 
     timeout_seconds = _compute_timeout_seconds(len(all_sections), len(requirements))
     total_deadline = time.perf_counter() + timeout_seconds
@@ -1458,13 +1508,15 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 for sec in session.get("sections", []):
                     schedules[(year, sec)][session["day"]][period] = None
 
+    remaining_by_req = {req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)}
+
     def _solve_with_orders(
         days_order: list[str],
         periods_order: list[int],
         candidate_limit: int,
         attempt_deadline: float,
     ) -> bool:
-        remaining_by_req = {req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)}
+        remaining_by_req.update({req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)})
 
         def backtrack() -> bool:
             if time.perf_counter() >= attempt_deadline:
@@ -1488,6 +1540,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 return False
 
             requirement = requirements[next_req_idx]
+            # §21: solver-placed shared subjects (from file) get source tag "shared_class_file"
+            place_source = "shared_class_file" if requirement.shared else "solver"
             for candidate in candidates:
                 placements = _place_block(
                     requirement,
@@ -1501,6 +1555,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     subject_id_to_name,
                     faculty_id_to_name,
                     session_log,
+                    source=place_source,
                 )
                 remaining_by_req[next_req_idx] -= candidate.block_size
                 if backtrack():
@@ -1539,14 +1594,17 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
 
     if not solved:
         _reset_non_lab_assignments()
-        for requirement in requirements:
+        for req_idx, requirement in enumerate(requirements):
+            remaining = remaining_by_req.get(req_idx, requirement.hours)
+            if remaining <= 0:
+                continue
             if not requirement.faculty_id:
                 reason = "missing faculty mapping"
             elif time.perf_counter() >= total_deadline:
-                reason = "generation timeout"
+                reason = "solver timeout"
             else:
                 reason = _infer_failure_reason(requirement, schedules, faculty_busy, faculty_availability, year)
-
+            
             constraint_violations.append(
                 {
                     "year": year,
@@ -1554,7 +1612,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     "subject_id": requirement.subject_id,
                     "faculty_id": requirement.faculty_id,
                     "constraint": reason,
-                    "detail": f"Unable to place {requirement.hours} remaining hour(s) for subject {requirement.subject_id}.",
+                    "detail": f"Unable to place {remaining} remaining hour(s) for subject {requirement.subject_id}. Possible reason: {reason}",
                 }
             )
             unscheduled_subjects.append(
@@ -1605,9 +1663,18 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         item.pop("constraint", None)
 
     has_constraint_failures = bool(unscheduled_subjects or constraint_violations)
-    all_grids = {} if has_constraint_failures else _serialize_section_grids(year, all_sections, schedules)
-    faculty_workloads = {} if has_constraint_failures else _build_faculty_workloads_from_sessions(session_log)
-    shared_sessions = [session for session in session_log if len(session.get("sections", [])) > 1]
+    all_grids = {}
+    faculty_workloads = {}
+    if not has_constraint_failures:
+        all_grids = _serialize_section_grids(year, all_sections, schedules)
+        faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
+    # §21: shared class report must only include explicitly file-driven sessions
+    # (source == "lab" from Lab File, or "shared_class_file" from Shared Class File)
+    # Never include auto-detected sessions (source == "solver").
+    shared_sessions = [
+        session for session in session_log
+        if session.get("source") in {"lab", "shared_class_file"}
+    ]
 
     for violation in constraint_violations:
         subject_id = str(violation.get("subject_id", "")).strip()

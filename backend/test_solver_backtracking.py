@@ -180,7 +180,7 @@ class TimetableSolverTests(unittest.TestCase):
         self.assertTrue(payload["hasValidTimetable"])
         self.assertEqual([], payload["constraintViolations"])
         self.assertEqual([], payload["unscheduledSubjects"])
-        self.assertEqual(60, payload["generationMeta"]["timeoutSeconds"])
+        self.assertEqual(30, payload["generationMeta"]["timeoutSeconds"])  # §18: small config ≤5 sections = 30s
         self.assertEqual(5, payload["generationMeta"]["retryStrategies"])
         self.assertIn("shared-first", payload["generationMeta"]["attemptStrategies"])
         self.assertEqual(42, _count_filled_slots(payload["allGrids"]["A"]))
@@ -336,6 +336,148 @@ class TimetableSolverTests(unittest.TestCase):
         self.assertTrue(first_payload["hasValidTimetable"])
         self.assertTrue(second_payload["hasValidTimetable"])
         self.assertEqual(42, _count_filled_slots(second_payload["allGrids"]["A"]))
+
+
+    def test_lab_shared_session_no_false_faculty_conflict(self) -> None:
+        """
+        Requirement §10: Faculty teaching multiple sections the SAME lab at the
+        same time is VALID. This must not produce a faculty conflict violation.
+        C4 and C5 both have Lab FL1 with faculty FLAB, Monday P3+P4.
+        Expected: no constraint violations, one shared lab entry in sharedClasses.
+        """
+        store = MemoryStore()
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="C4",
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="C4",
+                    subjectId="FL1",
+                    facultyId="FLAB",
+                    noOfHours=2,
+                    continuousHours=2,
+                    compulsoryContinuousHours=2,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="C4",
+                    subjectId="FILL_C4",
+                    facultyId="FA",
+                    noOfHours=40,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="C5",
+                    subjectId="FL1",
+                    facultyId="FLAB",
+                    noOfHours=2,
+                    continuousHours=2,
+                    compulsoryContinuousHours=2,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="C5",
+                    subjectId="FILL_C5",
+                    facultyId="FB",
+                    noOfHours=40,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+            manualLabEntries=[
+                ManualLabEntry(year="2nd Year", section="C4", subjectId="FL1", day=1, hours=[3, 4]),
+                ManualLabEntry(year="2nd Year", section="C5", subjectId="FL1", day=1, hours=[3, 4]),
+            ],
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+
+        # No faculty conflicts — same faculty same session across two sections is valid
+        faculty_conflict_violations = [
+            v for v in payload["constraintViolations"]
+            if "faculty" in v.get("constraint", "").lower()
+        ]
+        self.assertEqual([], faculty_conflict_violations, f"Unexpected faculty conflicts: {faculty_conflict_violations}")
+
+        # The lab session should appear in sharedClasses (source = "lab")
+        lab_shared = [s for s in payload["sharedClasses"] if s.get("subject_id") == "FL1"]
+        self.assertGreater(len(lab_shared), 0, "FL1 lab should appear in shared class report")
+
+        # Both sections should be in the shared entry
+        for entry in lab_shared:
+            self.assertIn("C4", entry.get("sections", []))
+            self.assertIn("C5", entry.get("sections", []))
+
+        # Both sections fully scheduled
+        self.assertTrue(payload["hasValidTimetable"])
+
+    def test_shared_report_only_contains_file_driven_sessions(self) -> None:
+        """
+        Requirement §21: The shared class report must NEVER include auto-detected
+        sessions. Two sections with the same subject + same faculty should NOT
+        appear in sharedClasses unless explicitly declared in the shared class file.
+        """
+        store = MemoryStore()
+        # Two sections X and Y both have COMMON taught by FCOMMON — but NO shared class declaration
+        request = GenerateTimetableRequest(
+            year="3rd Year",
+            section="X",
+            manualEntries=[
+                ManualEntryMode(
+                    year="3rd Year",
+                    section="X",
+                    subjectId="COMMON",
+                    facultyId="FCOMMON",
+                    noOfHours=2,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+                ManualEntryMode(
+                    year="3rd Year",
+                    section="X",
+                    subjectId="FILL_X",
+                    facultyId="FX",
+                    noOfHours=40,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+                ManualEntryMode(
+                    year="3rd Year",
+                    section="Y",
+                    subjectId="COMMON",
+                    facultyId="FCOMMON",
+                    noOfHours=2,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+                ManualEntryMode(
+                    year="3rd Year",
+                    section="Y",
+                    subjectId="FILL_Y",
+                    facultyId="FY",
+                    noOfHours=40,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+            # NO sharedClasses entry for COMMON — it must NOT appear in shared report
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+
+        # COMMON must NOT appear in the shared class report (it's solver-placed, not file-driven)
+        common_in_shared = [s for s in payload["sharedClasses"] if s.get("subject_id") == "COMMON"]
+        self.assertEqual(
+            [],
+            common_in_shared,
+            f"COMMON was auto-detected as shared — this is wrong! Entries: {common_in_shared}",
+        )
+        self.assertTrue(payload["hasValidTimetable"])
 
 
 if __name__ == "__main__":

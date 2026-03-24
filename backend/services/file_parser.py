@@ -25,6 +25,12 @@ def validation_error(message: str, details: list | None = None) -> HTTPException
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = df.copy()
     cleaned.columns = [str(col).strip() for col in cleaned.columns]
+    
+    # Fill down YEAR column if it exists (handles merged cells in Excel)
+    year_cols = [c for c in cleaned.columns if str(c).upper() == "YEAR"]
+    if year_cols:
+        cleaned[year_cols[0]] = cleaned[year_cols[0]].ffill()
+
     cleaned = cleaned.where(pd.notnull(cleaned), None)
     return cleaned
 
@@ -136,7 +142,7 @@ def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
                 values.extend([None] * (block_width - len(values)))
 
             record: dict[str, object | None] = {
-                "YEAR": values[0] if len(values) > 0 else None,
+                "YEAR": values[0] if len(values) > 0 and values[0] is not None else (records[-1]["YEAR"] if records else None),
                 "SUBJECT_ID": values[1] if len(values) > 1 else None,
             }
 
@@ -291,7 +297,7 @@ def create_grouped_main_timetable_template(records: list[dict]) -> bytes:
     for row in normalized_records:
         for key in row.keys():
             if key.endswith("_HOURS") and "CONTINUOUS" not in key:
-                section_name = key[: -len("_HOURS")]
+                section_name = key.removesuffix("_HOURS")
                 if section_name not in section_names:
                     section_names.append(section_name)
 

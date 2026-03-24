@@ -8,34 +8,34 @@ def normalize_year(y: str) -> str:
     y_stripped = y.strip()
     y_upper = y_stripped.upper()
 
-    # Remove trailing "YEAR" or " YEAR" to isolate the prefix
-    for suffix in (" YEAR", "YEAR"):
-        if y_upper.endswith(suffix):
-            prefix = y_upper[: -len(suffix)].strip()
-            break
-    else:
+    # Remove leading/trailing "YEAR" or " YEAR" to isolate the prefix
+    prefix = y_upper.replace("YEAR", "").strip()
+    if not prefix: # If the original was just "YEAR", try to use the input
         prefix = y_upper
 
-    # Match roman numerals or numeric prefixes
-    if prefix in {"I", "1", "1ST"}:
+    # Match roman numerals, numeric prefixes, or verbal names
+    if prefix in {"I", "1", "1ST", "FIRST"}:
         return "1st Year"
-    if prefix in {"II", "2", "2ND"}:
+    if prefix in {"II", "2", "2ND", "SECOND"}:
         return "2nd Year"
-    if prefix in {"III", "3", "3RD"}:
+    if prefix in {"III", "3", "3RD", "THIRD"}:
         return "3rd Year"
-    if prefix in {"IV", "4", "4TH"}:
+    if prefix in {"IV", "4", "4TH", "FOURTH"}:
         return "4th Year"
-    if prefix.startswith("1"):
+    
+    # Handle "B.TECH II", "YEAR 2", etc.
+    if "II" in prefix or "2ND" in prefix or "SECOND" in prefix or "2" in prefix:
+        return "2nd Year"
+    if "III" in prefix or "3RD" in prefix or "THIRD" in prefix or "3" in prefix:
+        return "3rd Year"
+    if "IV" in prefix or "4TH" in prefix or "FOURTH" in prefix or "4" in prefix:
+        return "4th Year"
+    if "I" in prefix or "1ST" in prefix or "FIRST" in prefix or "1" in prefix:
         return "1st Year"
-    if prefix.startswith("2"):
-        return "2nd Year"
-    if prefix.startswith("3"):
-        return "3rd Year"
-    if prefix.startswith("4"):
-        return "4th Year"
 
     # Fallback: re-assemble with capitalize
-    if y_upper.endswith("YEAR") or y_upper.endswith(" YEAR"):
-        return f"{prefix.capitalize()} Year"
-    return f"{y_stripped.capitalize()} Year"
+    res = prefix.capitalize()
+    if "Year" not in res:
+        return f"{res} Year"
+    return res
 
