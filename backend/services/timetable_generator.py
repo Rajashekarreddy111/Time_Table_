@@ -340,7 +340,11 @@ def _subject_daily_load(
     for section in requirement.sections:
         for period in PERIODS:
             entry = schedules[(year, section)][day][period]
-            if entry and str(entry.get("subject", "")).strip() == requirement.subject_id:
+            if not entry:
+                continue
+            slot_subject_id = str(entry.get("subjectId", "")).strip()
+            slot_subject = str(entry.get("subject", "")).strip()
+            if slot_subject_id == requirement.subject_id or slot_subject == requirement.subject_id:
                 count += 1
     return count
 
@@ -689,10 +693,12 @@ def _place_block(
             faculty_busy.setdefault(faculty_id, set()).add((day, period))
         for section in requirement.sections:
             schedules[(year, section)][day][period] = {
-                "subject": subject_id,
+                "subject": subject_name,
                 "subjectName": subject_name,
-                "faculty": faculty_id,
+                "subjectId": subject_id,
+                "faculty": faculty_name,
                 "facultyName": faculty_name,
+                "facultyId": faculty_id,
                 "isLab": False,
                 "locked": False,
                 "venue": "",
@@ -873,10 +879,12 @@ def _build_faculty_workloads_from_sessions(
     workloads: dict[str, dict[str, dict[int, str | None]]] = {}
     for session in sessions:
         day = session["day"]
+        faculty_name = str(session.get("faculty_name", "")).strip()
         faculty_id = str(session.get("faculty_id", "")).strip()
-        if not faculty_id:
+        faculty_key = faculty_name or faculty_id
+        if not faculty_key:
             continue
-        faculty_workload = workloads.setdefault(faculty_id, {d: {p: None for p in PERIODS} for d in DAYS})
+        faculty_workload = workloads.setdefault(faculty_key, {d: {p: None for p in PERIODS} for d in DAYS})
         for period in session["periods"]:
             faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])})"
     
@@ -1118,30 +1126,6 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     "detail": f"Section {section} needs exactly {capacity_per_section} hours but has {total} hour(s) configured.",
                 }
             )
-    if validation_errors:
-        raise HTTPException(status_code=400, detail=f"Validation Error: Section totals must be exactly {capacity_per_section} hours.")
-
-    for row in sorted(main_rows_by_section_subject.values(), key=lambda item: (item["section"], item["subject_id"])):
-        if int(row["min_consecutive_hours"]) > int(row["max_consecutive_hours"]):
-            constraint_detail = (
-                f"Subject {row['subject_id']} in section {row['section']} requires at least "
-                f"{row['min_consecutive_hours']} consecutive hour(s), but the main config allows only "
-                f"{row['max_consecutive_hours']}."
-            )
-            raise _validation_error(
-                "Continuous hours rules conflict with the main timetable configuration.",
-                [
-                    {
-                        "year": year,
-                        "section": row["section"],
-                        "subject_id": row["subject_id"],
-                        "minConsecutiveHours": row["min_consecutive_hours"],
-                        "maxConsecutiveHours": row["max_consecutive_hours"],
-                        "detail": constraint_detail,
-                    }
-                ],
-            )
-
     all_sections = sorted(section_total_hours)
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]] = {
         (year, section): {day: {period: None for period in PERIODS} for day in DAYS} for section in all_sections
@@ -1157,6 +1141,37 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     session_log: list[dict] = []
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
+
+    for item in validation_errors:
+        constraint_violations.append(
+            {
+                "year": item.get("year", year),
+                "sections": [str(item.get("section", "")).strip()] if str(item.get("section", "")).strip() else [],
+                "subject_id": "",
+                "faculty_id": "",
+                "constraint": "section capacity constraint",
+                "detail": str(item.get("detail", "")).strip()
+                or f"Section totals should be {capacity_per_section} hours.",
+            }
+        )
+
+    for row in sorted(main_rows_by_section_subject.values(), key=lambda item: (item["section"], item["subject_id"])):
+        if int(row["min_consecutive_hours"]) <= int(row["max_consecutive_hours"]):
+            continue
+        constraint_violations.append(
+            {
+                "year": year,
+                "sections": [str(row.get("section", "")).strip()] if str(row.get("section", "")).strip() else [],
+                "subject_id": str(row.get("subject_id", "")).strip(),
+                "faculty_id": str(row.get("faculty_id", "")).strip(),
+                "constraint": "continuous hours constraint",
+                "detail": (
+                    f"Subject {row['subject_id']} in section {row['section']} requires at least "
+                    f"{row['min_consecutive_hours']} consecutive hour(s), but the main config allows only "
+                    f"{row['max_consecutive_hours']}."
+                ),
+            }
+        )
 
     def _resolve_shared_sections(raw_sections: list | tuple | str | int | None, sections_count: int | None = None) -> tuple[str, ...]:
         """
@@ -1240,17 +1255,31 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         raw_periods = [int(p) for p in row.get("hours", []) if str(p).isdigit()]
         invalid_periods = [p for p in raw_periods if p not in PERIODS]
         if invalid_periods:
-            raise _validation_error(
-                f"Lab timetable references invalid periods: {invalid_periods}. Only periods 1-7 are allowed.",
-                [{"year": year, "section": section, "subject_id": subject_id, "day": day, "periods": invalid_periods}]
+            constraint_violations.append(
+                {
+                    "year": year,
+                    "sections": sections or ([section] if section else []),
+                    "subject_id": subject_id,
+                    "faculty_id": faculty_id,
+                    "constraint": "invalid lab configuration",
+                    "detail": f"Lab timetable references invalid periods: {invalid_periods}. Only periods 1-7 are allowed.",
+                }
             )
+            continue
         venue = str(row.get("venue", "")).strip()
         if not sections or any(sec not in all_sections for sec in sections):
             invalid_sections = [sec for sec in sections if sec not in all_sections] or [section]
-            raise _validation_error(
-                "Lab timetable references a section that is missing from the main config file.",
-                [{"year": year, "section": ",".join(invalid_sections), "subject_id": subject_id}],
+            constraint_violations.append(
+                {
+                    "year": year,
+                    "sections": invalid_sections,
+                    "subject_id": subject_id,
+                    "faculty_id": faculty_id,
+                    "constraint": "invalid lab configuration",
+                    "detail": "Lab timetable references a section that is missing from the main config file.",
+                }
             )
+            continue
         if not day or not periods:
             constraint_violations.append(
                 {
@@ -1291,25 +1320,41 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         subject_id_resolved, subject_name = _resolve_subject_output(subject_id, subject_id_to_name)
         faculty_id_resolved, faculty_name = _resolve_faculty_output(faculty_id, faculty_id_to_name)
         session_key = (year, subject_id_resolved, faculty_id_resolved, day, periods)
-        shared_session_registry[session_key] = sections
+        placed_sections: set[str] = set()
+        placed_periods: list[int] = []
         for period in periods:
+            period_sections: list[str] = []
             for section in sections:
                 if schedules[(year, section)][day][period] is not None:
-                    raise _validation_error(
-                        "Lab timetable has overlapping locked lab slots.",
-                        [{"year": year, "section": section, "day": day, "period": period, "subject_id": subject_id}],
+                    constraint_violations.append(
+                        {
+                            "year": year,
+                            "sections": [section],
+                            "subject_id": subject_id,
+                            "faculty_id": faculty_id,
+                            "constraint": "lab slot overlap",
+                            "detail": f"Lab timetable overlap at {day} period {period} for section {section}.",
+                        }
                     )
+                    continue
                 schedules[(year, section)][day][period] = {
-                    "subject": subject_id_resolved,
+                    "subject": subject_name,
                     "subjectName": subject_name,
-                    "faculty": faculty_id_resolved,
+                    "subjectId": subject_id_resolved,
+                    "faculty": faculty_name,
                     "facultyName": faculty_name,
+                    "facultyId": faculty_id_resolved,
                     "isLab": True,
                     "locked": True,
                     "venue": venue,
                     "sharedSections": sections if len(sections) > 1 else [],
                 }
                 lab_assigned_hours[(section, subject_id)] = lab_assigned_hours.get((section, subject_id), 0) + 1
+                period_sections.append(section)
+                placed_sections.add(section)
+            if not period_sections:
+                continue
+            placed_periods.append(period)
             if faculty_id_resolved:
                 if period not in faculty_availability.get(faculty_id_resolved, {day_name: set(PERIODS) for day_name in DAYS}).get(
                     day, set(PERIODS)
@@ -1317,7 +1362,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     constraint_violations.append(
                         {
                             "year": year,
-                            "sections": sections,
+                            "sections": period_sections,
                             "subject_id": subject_id,
                             "faculty_id": faculty_id_resolved,
                             "constraint": "faculty availability conflict",
@@ -1329,7 +1374,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                     constraint_violations.append(
                         {
                             "year": year,
-                            "sections": sections,
+                            "sections": period_sections,
                             "subject_id": subject_id,
                             "faculty_id": faculty_id_resolved,
                             "constraint": "faculty workload conflict",
@@ -1339,6 +1384,10 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 faculty_busy.setdefault(faculty_id_resolved, set()).add((day, period))
                 faculty_slot_sessions.setdefault(faculty_id_resolved, {})[(day, period)] = session_key
 
+        if not placed_periods:
+            continue
+        shared_session_registry[session_key] = sorted(placed_sections)
+
         # §21: lab entries are always file-driven; tag source = "lab"
         session_log.append(
             {
@@ -1347,12 +1396,12 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 "subject_name": subject_name,
                 "faculty_id": faculty_id_resolved,
                 "faculty_name": faculty_name,
-                "sections": sections,
+                "sections": sorted(placed_sections),
                 "day": day,
-                "periods": list(periods),
+                "periods": placed_periods,
                 "venue": venue,
                 "isLab": True,
-                "shared": len(sections) > 1,
+                "shared": len(placed_sections) > 1,
                 "source": "lab",
             }
         )
@@ -1755,11 +1804,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         item.pop("constraint", None)
 
     has_constraint_failures = bool(unscheduled_subjects or constraint_violations)
-    all_grids = {}
-    faculty_workloads = {}
-    if not has_constraint_failures:
-        all_grids = _serialize_section_grids(year, all_sections, schedules)
-        faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
+    all_grids = _serialize_section_grids(year, all_sections, schedules)
+    faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
     # §21: shared class report must only include explicitly file-driven sessions
     # (source == "lab" from Lab File, or "shared_class_file" from Shared Class File)
     # Never include auto-detected sessions (source == "solver").
@@ -1790,11 +1836,10 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     generated_files = {
         "sharedClassesReport": _encode_workbook("shared_classes_report.xlsx", shared_workbook),
     }
-    if not has_constraint_failures:
-        section_workbook = _build_section_timetables_workbook(year, all_sections, schedules)
-        faculty_workbook = _build_faculty_workload_workbook(faculty_workloads, faculty_id_to_name)
-        generated_files["sectionTimetables"] = _encode_workbook("section_timetables.xlsx", section_workbook)
-        generated_files["facultyWorkload"] = _encode_workbook("faculty_workload.xlsx", faculty_workbook)
+    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules)
+    faculty_workbook = _build_faculty_workload_workbook(faculty_workloads, faculty_id_to_name)
+    generated_files["sectionTimetables"] = _encode_workbook("section_timetables.xlsx", section_workbook)
+    generated_files["facultyWorkload"] = _encode_workbook("faculty_workload.xlsx", faculty_workbook)
     if constraint_violations or unscheduled_subjects:
         generated_files["constraintViolationReport"] = _encode_workbook(
             "constraint_violation_report.xlsx", constraint_workbook
@@ -1815,7 +1860,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             "sharedClasses": shared_sessions,
             "constraintViolations": constraint_violations,
             "unscheduledSubjects": unscheduled_subjects,
-            "hasValidTimetable": not has_constraint_failures,
+            "hasValidTimetable": True,
+            "hasConstraintViolations": has_constraint_failures,
             "generatedFiles": generated_files,
             "generationMeta": {
                 "timeoutSeconds": timeout_seconds,
@@ -1829,6 +1875,6 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     if has_constraint_failures:
         return {
             "timetableId": timetable_id,
-            "message": "Constraints could not be fully satisfied. A report was generated instead of a timetable.",
+            "message": "Timetable generated with constraint violations. Check Generated Outputs for details.",
         }
-    return {"timetableId": timetable_id, "message": "Timetable generated successfully"}
+    return {"timetableId": timetable_id, "message": "Timetable generated successfully."}
