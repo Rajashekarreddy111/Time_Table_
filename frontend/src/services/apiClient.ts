@@ -123,6 +123,22 @@ export interface GenerateTimetableResponse {
   message: string;
 }
 
+export interface FeasibilitySectionSummary {
+  section: string;
+  requiredHours: number;
+  freeSlots: number;
+  deficitHours: number;
+  lockedSlots: number;
+}
+
+export interface TimetableFeasibilityResponse {
+  year: string;
+  feasible: boolean;
+  blockingSections: FeasibilitySectionSummary[];
+  sectionSummary: FeasibilitySectionSummary[];
+  issues: Array<Record<string, unknown>>;
+}
+
 export interface GeneratedWorkbookFile {
   fileName: string;
   contentType: string;
@@ -445,6 +461,14 @@ export async function uploadFacultyAvailabilityQuery(
 export function generateTimetable(payload: GenerateTimetableRequest) {
   return apiRequest<GenerateTimetableResponse>(
     "/timetables/generate",
+    "POST",
+    payload,
+  );
+}
+
+export function checkTimetableFeasibility(payload: GenerateTimetableRequest) {
+  return apiRequest<TimetableFeasibilityResponse>(
+    "/timetables/feasibility",
     "POST",
     payload,
   );

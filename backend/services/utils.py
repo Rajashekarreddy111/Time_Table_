@@ -1,41 +1,38 @@
+import re
+
+
 def normalize_year(y: str) -> str:
     """
     Standardize year strings into '1st Year', '2nd Year', etc.
-    Handles: numeric prefixes, roman numerals (with or without 'Year' appended).
+    Supports labels like:
+    - '2', '2nd', 'second', 'II', 'II-I', 'B.Tech II', 'Year 2'
+    - similarly for 1/3/4
     """
     if not y:
         return ""
-    y_stripped = y.strip()
-    y_upper = y_stripped.upper()
 
-    # Remove leading/trailing "YEAR" or " YEAR" to isolate the prefix
-    prefix = y_upper.replace("YEAR", "").strip()
-    if not prefix: # If the original was just "YEAR", try to use the input
-        prefix = y_upper
+    source = str(y).strip()
+    if not source:
+        return ""
 
-    # Match roman numerals, numeric prefixes, or verbal names
-    if prefix in {"I", "1", "1ST", "FIRST"}:
-        return "1st Year"
-    if prefix in {"II", "2", "2ND", "SECOND"}:
-        return "2nd Year"
-    if prefix in {"III", "3", "3RD", "THIRD"}:
-        return "3rd Year"
-    if prefix in {"IV", "4", "4TH", "FOURTH"}:
-        return "4th Year"
-    
-    # Handle "B.TECH II", "YEAR 2", etc.
-    if "II" in prefix or "2ND" in prefix or "SECOND" in prefix or "2" in prefix:
-        return "2nd Year"
-    if "III" in prefix or "3RD" in prefix or "THIRD" in prefix or "3" in prefix:
-        return "3rd Year"
-    if "IV" in prefix or "4TH" in prefix or "FOURTH" in prefix or "4" in prefix:
-        return "4th Year"
-    if "I" in prefix or "1ST" in prefix or "FIRST" in prefix or "1" in prefix:
-        return "1st Year"
+    # Normalize separators so token boundaries are easier to detect.
+    tokenized = re.sub(r"[^A-Z0-9]+", " ", source.upper()).strip()
+    if not tokenized:
+        return ""
 
-    # Fallback: re-assemble with capitalize
-    res = prefix.capitalize()
-    if "Year" not in res:
-        return f"{res} Year"
-    return res
+    # Check higher years first to avoid overlap (e.g., 'III' containing 'II').
+    checks = [
+        (4, [r"\bIV\b", r"\b4\b", r"\b4TH\b", r"\bFOURTH\b"]),
+        (3, [r"\bIII\b", r"\b3\b", r"\b3RD\b", r"\bTHIRD\b"]),
+        (2, [r"\bII\b", r"\b2\b", r"\b2ND\b", r"\bSECOND\b"]),
+        (1, [r"\bI\b", r"\b1\b", r"\b1ST\b", r"\bFIRST\b"]),
+    ]
+
+    for year_number, patterns in checks:
+        if any(re.search(pattern, tokenized) for pattern in patterns):
+            suffix = {1: "st", 2: "nd", 3: "rd", 4: "th"}[year_number]
+            return f"{year_number}{suffix} Year"
+
+    # If we cannot classify reliably, keep behavior predictable.
+    return source
 

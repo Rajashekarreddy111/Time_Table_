@@ -78,6 +78,11 @@ async def create_timetable(payload: GenerateTimetableRequest):
     return GenerateTimetableResponse(**result)
 
 
+@router.post("/timetables/feasibility")
+async def check_timetable_feasibility(payload: GenerateTimetableRequest):
+    return generate_timetable(payload, store, precheck_only=True)
+
+
 @router.get("/timetables")
 async def list_generated_timetables():
     items = [_enrich_subject_names(item) for item in store.list_timetables()]

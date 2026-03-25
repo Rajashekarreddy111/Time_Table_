@@ -30,6 +30,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   API_BASE_URL,
+  checkTimetableFeasibility,
   generateTimetable,
   getMappingStatus,
   uploadFacultyIdMap,
@@ -222,8 +223,8 @@ const TimetableGenerator = () => {
     const safeYear = years.includes(selectedYear) ? selectedYear : years[0];
     if (safeYear) {
       setSelectedYear(safeYear);
-      const sections = getSectionOptionsForYear(next, safeYear);
-      if (!sections.includes(selectedSection)) {
+      if (!selectedSection.trim()) {
+        const sections = getSectionOptionsForYear(next, safeYear);
         setSelectedSection(sections[0] ?? "A");
       }
     }
@@ -238,8 +239,14 @@ const TimetableGenerator = () => {
       years: academicConfig.years.map((year) => ({ ...year })),
     };
     if (!next.years[yearIndex]) {
+      const template = academicConfig.years[0] ?? {
+        hasCreamGeneral: false,
+        sectionCount: 4,
+        creamSectionCount: 0,
+        generalSectionCount: 0,
+      };
       next.years[yearIndex] = {
-        sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"],
+        ...template,
       };
     }
     next.years[yearIndex] = updater(next.years[yearIndex]);
@@ -278,14 +285,6 @@ const TimetableGenerator = () => {
     setSubjectContinuousRulesFile(null);
     setSharedClassesFile(null);
     setFacultyAvailabilityFile(null);
-
-    setMappingFileIds({
-      facultyIdMap: "",
-      mainTimetableConfig: "",
-      labTimetableConfig: "",
-      subjectIdMapping: "",
-      subjectContinuousRules: "",
-    });
   }, [selectedYear, selectedSection]);
 
   const showDetailedError = (error: unknown, fallbackMessage: string) => {
@@ -489,6 +488,16 @@ const TimetableGenerator = () => {
     };
   };
 
+  const formatBlockingSections = (
+    sections: Array<{ section: string; requiredHours: number; freeSlots: number; deficitHours: number }>,
+  ) => {
+    const top = sections.slice(0, 5);
+    const summary = top
+      .map((item) => `${item.section}: needs ${item.requiredHours}, free ${item.freeSlots}, deficit ${item.deficitHours}`)
+      .join(" | ");
+    return sections.length > 5 ? `${summary} | ...` : summary;
+  };
+
   const handleGenerate = async () => {
     if (
       inputMode === "file" &&
@@ -507,7 +516,17 @@ const TimetableGenerator = () => {
 
     setGenerating(true);
     try {
-      const response = await generateTimetable(buildPayload());
+      const payload = buildPayload();
+      const feasibility = await checkTimetableFeasibility(payload);
+      if (!feasibility.feasible) {
+        toast.error(
+          `Generation blocked: infeasible section capacity for ${feasibility.year}. ${formatBlockingSections(feasibility.blockingSections)}`,
+          { duration: 12000 },
+        );
+        return;
+      }
+
+      const response = await generateTimetable(payload);
       localStorage.setItem("latestTimetableId", response.timetableId);
       const reportOnly = response.message.toLowerCase().includes("report");
       toast.success(response.message);
@@ -522,7 +541,9 @@ const TimetableGenerator = () => {
   };
 
   const handleGenerateAll = async () => {
-    const allYears = getYearOptions(academicConfig);
+    const yearOrder = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+    const configuredYears = getYearOptions(academicConfig);
+    const allYears = yearOrder.filter((year) => configuredYears.includes(year) || year !== "1st Year");
     if (allYears.length < 2) {
       await handleGenerate();
       return;
@@ -565,6 +586,11 @@ const TimetableGenerator = () => {
         }
 
         try {
+          const feasibility = await checkTimetableFeasibility(payload);
+          if (!feasibility.feasible) {
+            errors.push(`${year}: Infeasible section capacity (${formatBlockingSections(feasibility.blockingSections)})`);
+            continue;
+          }
           const response = await generateTimetable(payload);
           if (!firstTimetableId) {
             firstTimetableId = response.timetableId;
@@ -632,7 +658,14 @@ const TimetableGenerator = () => {
                             if (checked && !isActive) {
                               nextActive.push(yearStr);
                               nextActive.sort();
-                              nextYears.push({ sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"] });
+                              nextYears.push({
+                                ...(academicConfig.years[0] ?? {
+                                  hasCreamGeneral: false,
+                                  sectionCount: 4,
+                                  creamSectionCount: 0,
+                                  generalSectionCount: 0,
+                                }),
+                              });
                             } else if (!checked && isActive) {
                               const removeIdx = nextActive.indexOf(yearStr);
                               if (removeIdx > -1) {
@@ -642,7 +675,14 @@ const TimetableGenerator = () => {
                             }
                             if (nextActive.length === 0) {
                               nextActive = ["1st Year"];
-                              nextYears = [{ sectionNames: ["C1", "C2", "C3", "C4", "C5", "G1", "G2"] }];
+                              nextYears = [{
+                                ...(academicConfig.years[0] ?? {
+                                  hasCreamGeneral: false,
+                                  sectionCount: 4,
+                                  creamSectionCount: 0,
+                                  generalSectionCount: 0,
+                                }),
+                              }];
                             }
                             updateAcademicConfig({ activeYears: nextActive, years: nextYears });
                           }}
@@ -654,26 +694,30 @@ const TimetableGenerator = () => {
                 </div>
               </div>
               <div>
-                <Label className="text-xs text-muted-foreground mb-2 block">Sections Per Year (Comma separated)</Label>
+                <Label className="text-xs text-muted-foreground mb-2 block">Sections Per Year (Count only)</Label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {getYearOptions(academicConfig).map((yearLabel, idx) => (
                     <div key={yearLabel} className="rounded-md border border-border/60 px-3 py-3 bg-muted/20 space-y-2">
                       <Label className="text-[11px] font-semibold">{yearLabel}</Label>
-                      <div>
+                      <div className="grid grid-cols-2 gap-2">
                         <Input
-                          type="text"
-                          value={(academicConfig.years[idx]?.sectionNames || []).join(", ")}
+                          type="number"
+                          min={1}
+                          max={26}
+                          value={academicConfig.years[idx]?.sectionCount ?? 4}
                           className="h-8 text-[11px]"
-                          placeholder="C1, C2, C3, C4, C5, G1, G2"
+                          placeholder="4"
                           onChange={(e) => {
-                            const val = e.target.value;
-                            const sectionNames = val.split(',').map(s => s.trim());
+                            const sectionCount = Math.max(1, Number(e.target.value) || 1);
                             updateYearStructure(idx, (current) => ({
                               ...current,
-                              sectionNames: sectionNames.filter(Boolean).length > 0 ? sectionNames.filter(Boolean) : ["C1", "C2", "C3", "C4", "C5", "G1", "G2"],
+                              sectionCount,
                             }));
                           }}
                         />
+                        <div className="text-[10px] text-muted-foreground flex items-center">
+                          Auto sections: A, B, C... (you can type any section manually below)
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -690,8 +734,10 @@ const TimetableGenerator = () => {
                   value={selectedYear}
                   onValueChange={(year) => {
                     setSelectedYear(year);
-                    const sections = getSectionOptionsForYear(academicConfig, year);
-                    setSelectedSection(sections[0] ?? "A");
+                    if (!selectedSection.trim()) {
+                      const sections = getSectionOptionsForYear(academicConfig, year);
+                      setSelectedSection(sections[0] ?? "A");
+                    }
                   }}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -1118,8 +1164,22 @@ const TimetableGenerator = () => {
                         <Input placeholder="SUB_001" value={sc.subject} onChange={(e) => { const c = [...sharedClasses]; c[i].subject = e.target.value; setSharedClasses(c); }} />
                       </div>
                       <div className="flex-1">
-                        <Label className="text-xs text-muted-foreground">Sections (Comma sep)</Label>
-                        <Input placeholder="A, B" value={sc.sections.join(", ")} onChange={(e) => { const c = [...sharedClasses]; c[i].sections = e.target.value.split(',').map(s=>s.trim()).filter(Boolean); setSharedClasses(c); }} />
+                        <Label className="text-xs text-muted-foreground">Sections (comma list or count)</Label>
+                        <Input
+                          placeholder="e.g. 1,2 or 3 (count)"
+                          value={sc.sections.join(", ")}
+                          onChange={(e) => {
+                            const c = [...sharedClasses];
+                            const raw = e.target.value.trim();
+                            // Single number means "count"; backend will convert it to first N sections.
+                            if (/^\\d+$/.test(raw)) {
+                              c[i].sections = [raw];
+                            } else {
+                              c[i].sections = raw.split(",").map((s) => s.trim()).filter(Boolean);
+                            }
+                            setSharedClasses(c);
+                          }}
+                        />
                       </div>
                       <Button variant="ghost" size="icon" onClick={() => removeSharedClass(i)} className="text-destructive h-9 w-9"><Trash2 className="h-4 w-4" /></Button>
                     </div>
