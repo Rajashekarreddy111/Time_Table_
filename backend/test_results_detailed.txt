@@ -1,0 +1,45 @@
+test_lab_shared_session_no_false_faculty_conflict (test_solver_backtracking.TimetableSolverTests.test_lab_shared_session_no_false_faculty_conflict)
+Requirement §10: Faculty teaching multiple sections the SAME lab at the ... ok
+test_shared_report_only_contains_file_driven_sessions (test_solver_backtracking.TimetableSolverTests.test_shared_report_only_contains_file_driven_sessions)
+Requirement §21: The shared class report must NEVER include auto-detected ... ok
+test_solver_does_not_auto_group_matching_subjects_across_sections (test_solver_backtracking.TimetableSolverTests.test_solver_does_not_auto_group_matching_subjects_across_sections) ... FAIL
+test_solver_generates_full_timetable_with_locked_and_shared_sessions (test_solver_backtracking.TimetableSolverTests.test_solver_generates_full_timetable_with_locked_and_shared_sessions) ... FAIL
+test_solver_prioritizes_scarce_slots_over_high_hour_subject (test_solver_backtracking.TimetableSolverTests.test_solver_prioritizes_scarce_slots_over_high_hour_subject) ... FAIL
+test_solver_resets_state_between_year_runs (test_solver_backtracking.TimetableSolverTests.test_solver_resets_state_between_year_runs) ... FAIL
+
+======================================================================
+FAIL: test_solver_does_not_auto_group_matching_subjects_across_sections (test_solver_backtracking.TimetableSolverTests.test_solver_does_not_auto_group_matching_subjects_across_sections)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\rajas\OneDrive\Desktop\Timetable\backend\test_solver_backtracking.py", line 113, in test_solver_does_not_auto_group_matching_subjects_across_sections
+    self.assertEqual(42, _count_filled_slots(payload["allGrids"]["B"]))
+AssertionError: 42 != 39
+
+======================================================================
+FAIL: test_solver_generates_full_timetable_with_locked_and_shared_sessions (test_solver_backtracking.TimetableSolverTests.test_solver_generates_full_timetable_with_locked_and_shared_sessions)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\rajas\OneDrive\Desktop\Timetable\backend\test_solver_backtracking.py", line 287, in test_solver_generates_full_timetable_with_locked_and_shared_sessions
+    self.assertEqual(42, _count_filled_slots(payload["allGrids"]["B"]))
+AssertionError: 42 != 39
+
+======================================================================
+FAIL: test_solver_prioritizes_scarce_slots_over_high_hour_subject (test_solver_backtracking.TimetableSolverTests.test_solver_prioritizes_scarce_slots_over_high_hour_subject)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\rajas\OneDrive\Desktop\Timetable\backend\test_solver_backtracking.py", line 186, in test_solver_prioritizes_scarce_slots_over_high_hour_subject
+    self.assertEqual(42, _count_filled_slots(payload["allGrids"]["A"]))
+AssertionError: 42 != 39
+
+======================================================================
+FAIL: test_solver_resets_state_between_year_runs (test_solver_backtracking.TimetableSolverTests.test_solver_resets_state_between_year_runs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\rajas\OneDrive\Desktop\Timetable\backend\test_solver_backtracking.py", line 338, in test_solver_resets_state_between_year_runs
+    self.assertEqual(42, _count_filled_slots(second_payload["allGrids"]["A"]))
+AssertionError: 42 != 39
+
+----------------------------------------------------------------------
+Ran 6 tests in 13.728s
+
+FAILED (failures=4)

@@ -342,8 +342,13 @@ const TimetableGenerator = () => {
       return `${error.message} ${parts.join(" ")}`.trim();
     }
 
-    if (hint) {
-      return `${error.message} ${hint}`;
+    if (error.details && error.details.length > 0) {
+      const detailMessages = error.details
+        .map((d: any) => d.detail || d.message)
+        .filter(Boolean);
+      if (detailMessages.length > 0) {
+        return `${error.message} ${detailMessages.join(" ")}`;
+      }
     }
 
     return error.message;

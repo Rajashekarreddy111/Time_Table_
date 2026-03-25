@@ -1,0 +1,13 @@
+{
+  "test1_none": [],
+  "test2_ignore_year2": [
+    "Faculty 1"
+  ],
+  "test3_ignore_sec3b": [
+    "Faculty 2"
+  ],
+  "test4_ignore_both": [
+    "Faculty 1",
+    "Faculty 2"
+  ]
+}
