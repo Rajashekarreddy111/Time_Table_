@@ -23,6 +23,7 @@ class Requirement:
     subject_id: str
     faculty_id: str
     faculty_options: tuple[str, ...]
+    faculty_team: tuple[str, ...]
     sections: tuple[str, ...]
     hours: int
     min_consecutive_hours: int
@@ -37,6 +38,7 @@ class SlotCandidate:
     start_period: int
     block_size: int
     faculty_id: str
+    faculty_ids: tuple[str, ...]
     score: int
 
 
@@ -63,13 +65,55 @@ def _normalize_day(value: str | int) -> str | None:
 
 
 def _resolve_faculty_output(faculty_id: str, faculty_id_to_name: dict[str, str]) -> tuple[str, str]:
-    faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
-    return faculty_id, faculty_name
+    token = str(faculty_id).strip()
+    faculty_name = faculty_id_to_name.get(token, token)
+    return token, faculty_name
 
 
 def _resolve_subject_output(subject_id: str, subject_id_to_name: dict[str, str]) -> tuple[str, str]:
-    subject_name = subject_id_to_name.get(subject_id, subject_id)
-    return subject_id, subject_name
+    token = str(subject_id).strip()
+    if token.endswith(".0"):
+        token = token[:-2]
+    subject_name = subject_id_to_name.get(token, token)
+    return token, subject_name
+
+
+def _normalize_id_token(value: str | int | float | None) -> str:
+    token = str(value or "").strip()
+    if token.endswith(".0"):
+        token = token[:-2]
+    return token
+
+
+def _split_faculty_tokens(raw_faculty_id: str) -> tuple[str, ...]:
+    tokens = [str(raw_faculty_id or "").strip()]
+    for delimiter in [",", "/", "|", "+", "&"]:
+        next_tokens: list[str] = []
+        for token in tokens:
+            next_tokens.extend(part.strip() for part in token.split(delimiter))
+        tokens = next_tokens
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = _normalize_id_token(token)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+    return tuple(cleaned)
+
+
+def _normalize_faculty_field(raw_faculty_id: str | int | float | None) -> str:
+    return ",".join(_split_faculty_tokens(str(raw_faculty_id or "")))
+
+
+def _resolve_faculty_display(
+    faculty_ids: tuple[str, ...],
+    faculty_id_to_name: dict[str, str],
+) -> tuple[str, str]:
+    ids = tuple(_normalize_id_token(fid) for fid in faculty_ids if _normalize_id_token(fid))
+    names = tuple(faculty_id_to_name.get(fid, fid) for fid in ids)
+    return ",".join(ids), ", ".join(names)
 
 
 def _build_faculty_maps(request_data: GenerateTimetableRequest, store: MemoryStore) -> dict[str, str]:
@@ -77,12 +121,12 @@ def _build_faculty_maps(request_data: GenerateTimetableRequest, store: MemorySto
     fac_map_payload = store.get_scoped_mapping("faculty_id_map", "global")
     if fac_map_payload:
         for row in fac_map_payload.get("rows", []):
-            faculty_id = str(row.get("faculty_id", "")).strip()
+            faculty_id = _normalize_faculty_field(row.get("faculty_id", ""))
             faculty_name = str(row.get("faculty_name", "")).strip()
             if faculty_id:
                 faculty_id_to_name[faculty_id] = faculty_name or faculty_id
     for row in request_data.facultyIdNameMapping:
-        faculty_id = str(row.facultyId).strip()
+        faculty_id = _normalize_faculty_field(row.facultyId)
         faculty_name = str(row.facultyName).strip()
         if faculty_id:
             faculty_id_to_name[faculty_id] = faculty_name or faculty_id
@@ -99,7 +143,7 @@ def _build_subject_maps(
     subject_map_payload = store.get_scoped_mapping("subject_id_mapping", "global")
     if subject_map_payload:
         for row in subject_map_payload.get("rows", []):
-            subject_id = str(row.get("subject_id", "")).strip()
+            subject_id = _normalize_id_token(row.get("subject_id", ""))
             subject_name = str(row.get("subject_name", "")).strip()
             if subject_id:
                 subject_id_to_name[subject_id] = subject_name or subject_id
@@ -107,20 +151,20 @@ def _build_subject_maps(
     rule_payload = store.get_scoped_mapping("subject_continuous_rules", "global")
     if rule_payload:
         for row in rule_payload.get("rows", []):
-            subject_id = str(row.get("subject_id", "")).strip()
+            subject_id = _normalize_id_token(row.get("subject_id", ""))
             if subject_id:
                 compulsory_continuous[subject_id] = max(
                     1, int(row.get("compulsory_continuous_hours", 1) or 1)
                 )
 
     for row in request_data.subjectIdNameMapping:
-        subject_id = str(row.subjectId).strip()
+        subject_id = _normalize_id_token(row.subjectId)
         subject_name = str(row.subjectName).strip()
         if subject_id:
             subject_id_to_name[subject_id] = subject_name or subject_id
 
     for row in request_data.subjectContinuousRules:
-        subject_id = str(row.subjectId).strip()
+        subject_id = _normalize_id_token(row.subjectId)
         if subject_id:
             compulsory_continuous[subject_id] = max(1, int(row.compulsoryContinuousHours or 1))
 
@@ -142,7 +186,7 @@ def _build_faculty_availability(
     }
 
     def resolve_faculty_key(raw_id: str, raw_name: str = "") -> str:
-        faculty_id = str(raw_id).strip()
+        faculty_id = _normalize_faculty_field(raw_id)
         if faculty_id:
             return faculty_id
         faculty_name = str(raw_name).strip()
@@ -152,23 +196,26 @@ def _build_faculty_availability(
     if uploaded_payload:
         for row in uploaded_payload.get("rows", []):
             faculty_key = resolve_faculty_key(row.get("faculty_id", ""), row.get("faculty_name", ""))
+            faculty_keys = _split_faculty_tokens(faculty_key) or ((faculty_key,) if faculty_key else ())
             day = _normalize_day(str(row.get("day", "")))
             period = int(row.get("period", 0) or 0)
-            if not faculty_key or not day or period not in PERIODS:
+            if not faculty_keys or not day or period not in PERIODS:
                 continue
-            availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
-            availability[faculty_key][day].add(period)
+            for key in faculty_keys:
+                availability.setdefault(key, {name: set(PERIODS) for name in DAYS})
+                availability[key][day].add(period)
 
     for entry in request_data.facultyAvailability:
-        faculty_key = str(entry.facultyId).strip()
-        if not faculty_key:
+        faculty_keys = _split_faculty_tokens(str(entry.facultyId).strip())
+        if not faculty_keys:
             continue
-        availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
-        for raw_day, periods in entry.availablePeriodsByDay.items():
-            day = _normalize_day(raw_day)
-            if not day:
-                continue
-            availability[faculty_key][day] = {int(p) for p in periods if int(p) in PERIODS}
+        for faculty_key in faculty_keys:
+            availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
+            for raw_day, periods in entry.availablePeriodsByDay.items():
+                day = _normalize_day(raw_day)
+                if not day:
+                    continue
+                availability[faculty_key][day] = {int(p) for p in periods if int(p) in PERIODS}
     return availability
 
 
@@ -177,7 +224,12 @@ def _resolve_faculty_pool(
     faculty_id_to_name: dict[str, str],
     faculty_availability: dict[str, dict[str, set[int]]],
 ) -> tuple[str, ...]:
-    faculty_token = str(raw_faculty_id).strip()
+    faculty_raw = str(raw_faculty_id or "").strip()
+    if any(delimiter in faculty_raw for delimiter in [",", "/", "|", "+", "&"]):
+        split_pool = _split_faculty_tokens(faculty_raw)
+        if split_pool:
+            return split_pool
+    faculty_token = _normalize_id_token(faculty_raw)
     if not faculty_token:
         return ()
     if faculty_token in faculty_id_to_name or faculty_token in faculty_availability:
@@ -191,13 +243,7 @@ def _resolve_faculty_pool(
     if normalized_matches:
         return tuple(sorted(set(normalized_matches)))
 
-    split_tokens = [faculty_token]
-    for delimiter in [",", "/", "|", "+", "&"]:
-        next_tokens: list[str] = []
-        for token in split_tokens:
-            next_tokens.extend(part.strip() for part in token.split(delimiter))
-        split_tokens = next_tokens
-    cleaned_split = tuple(sorted({token for token in split_tokens if token}))
+    cleaned_split = _split_faculty_tokens(faculty_token)
     if len(cleaned_split) > 1:
         return cleaned_split
     return (faculty_token,)
@@ -212,6 +258,15 @@ def _choose_faculty_for_slot(
     faculty_availability: dict[str, dict[str, set[int]]],
 ) -> str | None:
     periods = range(start_period, start_period + block_size)
+    if requirement.faculty_team:
+        for faculty_id in requirement.faculty_team:
+            allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+            if any(period not in allowed_periods for period in periods):
+                return None
+            if any((day, period) in faculty_busy.setdefault(faculty_id, set()) for period in periods):
+                return None
+        return ",".join(requirement.faculty_team)
+
     best_faculty: str | None = None
     best_key: tuple[int, int, str] | None = None
     faculty_options = requirement.faculty_options or ((requirement.faculty_id,) if requirement.faculty_id else ())
@@ -316,6 +371,9 @@ def _requirement_weekly_capacity(
     requirement: Requirement,
     faculty_availability: dict[str, dict[str, set[int]]],
 ) -> int:
+    if requirement.faculty_team:
+        capacities = [_faculty_weekly_capacity(fid, faculty_availability) for fid in requirement.faculty_team]
+        return min(capacities) if capacities else 0
     faculty_options = requirement.faculty_options or ((requirement.faculty_id,) if requirement.faculty_id else ())
     if not faculty_options:
         return len(DAYS) * len(PERIODS)
@@ -588,15 +646,18 @@ def _enumerate_slot_candidates(
                 ):
                     continue
 
+                assigned_faculty_ids = _split_faculty_tokens(faculty_id)
+                scoring_faculty_id = assigned_faculty_ids[0] if assigned_faculty_ids else faculty_id
                 candidates.append(
                     SlotCandidate(
                         day=day,
                         start_period=start_period,
                         block_size=block_size,
-                        faculty_id=faculty_id,
+                        faculty_id=scoring_faculty_id,
+                        faculty_ids=assigned_faculty_ids or ((scoring_faculty_id,) if scoring_faculty_id else ()),
                         score=_score_slot_candidate(
                             requirement,
-                            faculty_id,
+                            scoring_faculty_id,
                             day,
                             start_period,
                             block_size,
@@ -673,7 +734,7 @@ def _select_next_requirement(
 
 def _place_block(
     requirement: Requirement,
-    faculty_id: str,
+    faculty_ids: tuple[str, ...],
     day: str,
     start_period: int,
     block_size: int,
@@ -686,11 +747,14 @@ def _place_block(
     source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
-    faculty_id, faculty_name = _resolve_faculty_output(faculty_id, faculty_id_to_name)
+    if not faculty_ids:
+        faculty_ids = _split_faculty_tokens(requirement.faculty_id)
+    faculty_ids = tuple(_normalize_id_token(fid) for fid in faculty_ids if _normalize_id_token(fid))
+    faculty_id, faculty_name = _resolve_faculty_display(faculty_ids, faculty_id_to_name)
     periods = list(range(start_period, start_period + block_size))
     for period in periods:
-        if faculty_id:
-            faculty_busy.setdefault(faculty_id, set()).add((day, period))
+        for faculty_token in faculty_ids:
+            faculty_busy.setdefault(faculty_token, set()).add((day, period))
         for section in requirement.sections:
             schedules[(year, section)][day][period] = {
                 "subject": subject_name,
@@ -712,6 +776,8 @@ def _place_block(
             "subject_name": subject_name,
             "faculty_id": faculty_id,
             "faculty_name": faculty_name,
+            "faculty_ids": list(faculty_ids),
+            "faculty_names": [faculty_id_to_name.get(fid, fid) for fid in faculty_ids],
             "sections": list(requirement.sections),
             "day": day,
             "periods": periods,
@@ -726,7 +792,7 @@ def _place_block(
 
 def _undo_block(
     requirement: Requirement,
-    faculty_id: str,
+    faculty_ids: tuple[str, ...],
     placements: list[tuple[str, int]],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     faculty_busy: dict[str, set[tuple[str, int]]],
@@ -734,8 +800,8 @@ def _undo_block(
     session_log: list[dict],
 ) -> None:
     for day, period in placements:
-        if faculty_id:
-            faculty_busy.setdefault(faculty_id, set()).discard((day, period))
+        for faculty_token in faculty_ids:
+            faculty_busy.setdefault(faculty_token, set()).discard((day, period))
         for section in requirement.sections:
             schedules[(year, section)][day][period] = None
     if session_log:
@@ -879,14 +945,25 @@ def _build_faculty_workloads_from_sessions(
     workloads: dict[str, dict[str, dict[int, str | None]]] = {}
     for session in sessions:
         day = session["day"]
-        faculty_name = str(session.get("faculty_name", "")).strip()
-        faculty_id = str(session.get("faculty_id", "")).strip()
-        faculty_key = faculty_name or faculty_id
-        if not faculty_key:
+        faculty_names = [str(name).strip() for name in session.get("faculty_names", []) if str(name).strip()]
+        faculty_ids = [str(fid).strip() for fid in session.get("faculty_ids", []) if str(fid).strip()]
+        if not faculty_names:
+            fallback_name = str(session.get("faculty_name", "")).strip()
+            if fallback_name:
+                faculty_names = [part.strip() for part in fallback_name.split(",") if part.strip()]
+        if not faculty_ids:
+            fallback_id = str(session.get("faculty_id", "")).strip()
+            if fallback_id:
+                faculty_ids = [part.strip() for part in fallback_id.split(",") if part.strip()]
+
+        faculty_keys = faculty_names or faculty_ids
+        if not faculty_keys:
             continue
-        faculty_workload = workloads.setdefault(faculty_key, {d: {p: None for p in PERIODS} for d in DAYS})
-        for period in session["periods"]:
-            faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])})"
+
+        for faculty_key in faculty_keys:
+            faculty_workload = workloads.setdefault(faculty_key, {d: {p: None for p in PERIODS} for d in DAYS})
+            for period in session["periods"]:
+                faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])})"
     
     final_workloads: dict[str, dict[str, list[str | None]]] = {}
     for fid, days_data in workloads.items():
@@ -1042,23 +1119,21 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         entry_year = normalize_year(entry.year)
         if entry_year != year:
             continue
-        # Strip .0 from numeric faculty ID
-        fid = str(entry.facultyId).strip()
-        if fid.endswith(".0"):
-            fid = fid[:-2]
+        fid = _normalize_faculty_field(entry.facultyId)
+        subject_token = _normalize_id_token(entry.subjectId)
         
         raw_main_rows.append(
             {
                 "year": entry_year,
                 "section": str(entry.section).strip(),
-                "subject_id": str(entry.subjectId).strip(),
+                "subject_id": subject_token,
                 "faculty_id": fid,
                 "hours": int(entry.noOfHours),
                 "continuous_hours": int(entry.continuousHours or 1),
             }
         )
         if entry.compulsoryContinuousHours:
-            compulsory_continuous[str(entry.subjectId).strip()] = max(1, int(entry.compulsoryContinuousHours))
+            compulsory_continuous[subject_token] = max(1, int(entry.compulsoryContinuousHours))
 
     for lab in request_data.manualLabEntries:
         if normalize_year(lab.year) != year:
@@ -1067,7 +1142,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             {
                 "year": year,
                 "section": str(lab.section).strip(),
-                "subject_id": str(lab.subjectId).strip(),
+                "subject_id": _normalize_id_token(lab.subjectId),
                 "day": int(lab.day),
                 "hours": [int(hour) for hour in lab.hours],
                 "venue": str(lab.venue).strip(),
@@ -1082,10 +1157,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     section_subject_faculty: dict[tuple[str, str], str] = {}
     for row in raw_main_rows:
         section = str(row.get("section", "")).strip()
-        subject_id = str(row.get("subject_id", "")).strip()
-        faculty_id = str(row.get("faculty_id", "")).strip()
-        if faculty_id.endswith(".0"):
-            faculty_id = faculty_id[:-2]
+        subject_id = _normalize_id_token(row.get("subject_id", ""))
+        faculty_id = _normalize_faculty_field(row.get("faculty_id", ""))
             
         hours = int(row.get("hours", 0) or 0)
         continuous_hours = max(1, int(row.get("continuous_hours", 1) or 1))
@@ -1132,9 +1205,10 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     }
 
     all_faculties = {
-        str(item.get("faculty_id", "")).strip()
+        token
         for item in main_rows_by_section_subject.values()
-        if str(item.get("faculty_id", "")).strip()
+        for token in _split_faculty_tokens(str(item.get("faculty_id", "")).strip())
+        if token
     }
     faculty_availability = _build_faculty_availability(request_data, store, all_faculties, faculty_id_to_name)
     faculty_busy: dict[str, set[tuple[str, int]]] = {}
@@ -1213,7 +1287,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         for row in shared_payload.get("rows", []):
             if normalize_year(str(row.get("year", ""))) != year:
                 continue
-            subject_id = str(row.get("subject", row.get("subject_id", ""))).strip()
+            subject_id = _normalize_id_token(row.get("subject", row.get("subject_id", "")))
             sections = _resolve_shared_sections(
                 row.get("sections", []),
                 int(row.get("sections_count", 0) or 0) if str(row.get("sections_count", "")).strip() else None,
@@ -1224,7 +1298,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     for shared in request_data.sharedClasses:
         if normalize_year(shared.year) != year:
             continue
-        subject_id = str(shared.subject).strip()
+        subject_id = _normalize_id_token(shared.subject)
         sections = _resolve_shared_sections(shared.sections)
         if subject_id and sections:
             shared_constraints.setdefault(subject_id, []).append(sections)
@@ -1244,7 +1318,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
 
     for row in sorted_lab_rows:
         section = str(row.get("section", "")).strip()
-        subject_id = str(row.get("subject_id", "")).strip()
+        subject_id = _normalize_id_token(row.get("subject_id", ""))
         explicit_sections = [str(item).strip() for item in row.get("sections", []) if str(item).strip()]
         sections = sorted(set(explicit_sections or ([section] if section else [])))
         faculty_id = section_subject_faculty.get((section, subject_id), "")
@@ -1318,7 +1392,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         sections = sorted(group["sections"])
         venue = str(group.get("venue", "")).strip()
         subject_id_resolved, subject_name = _resolve_subject_output(subject_id, subject_id_to_name)
-        faculty_id_resolved, faculty_name = _resolve_faculty_output(faculty_id, faculty_id_to_name)
+        faculty_ids_resolved = _split_faculty_tokens(faculty_id)
+        faculty_id_resolved, faculty_name = _resolve_faculty_display(faculty_ids_resolved, faculty_id_to_name)
         session_key = (year, subject_id_resolved, faculty_id_resolved, day, periods)
         placed_sections: set[str] = set()
         placed_periods: list[int] = []
@@ -1355,34 +1430,34 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             if not period_sections:
                 continue
             placed_periods.append(period)
-            if faculty_id_resolved:
-                if period not in faculty_availability.get(faculty_id_resolved, {day_name: set(PERIODS) for day_name in DAYS}).get(
-                    day, set(PERIODS)
-                ):
+            for faculty_token in faculty_ids_resolved:
+                if period not in faculty_availability.get(
+                    faculty_token, {day_name: set(PERIODS) for day_name in DAYS}
+                ).get(day, set(PERIODS)):
                     constraint_violations.append(
                         {
                             "year": year,
                             "sections": period_sections,
                             "subject_id": subject_id,
-                            "faculty_id": faculty_id_resolved,
+                            "faculty_id": faculty_token,
                             "constraint": "faculty availability conflict",
                             "detail": f"Locked lab on {day} period {period} is outside allowed faculty availability.",
                         }
                     )
-                existing_session = faculty_slot_sessions.setdefault(faculty_id_resolved, {}).get((day, period))
+                existing_session = faculty_slot_sessions.setdefault(faculty_token, {}).get((day, period))
                 if existing_session and existing_session != session_key:
                     constraint_violations.append(
                         {
                             "year": year,
                             "sections": period_sections,
                             "subject_id": subject_id,
-                            "faculty_id": faculty_id_resolved,
+                            "faculty_id": faculty_token,
                             "constraint": "faculty workload conflict",
                             "detail": f"Locked lab on {day} period {period} overlaps an existing faculty assignment.",
                         }
                     )
-                faculty_busy.setdefault(faculty_id_resolved, set()).add((day, period))
-                faculty_slot_sessions.setdefault(faculty_id_resolved, {})[(day, period)] = session_key
+                faculty_busy.setdefault(faculty_token, set()).add((day, period))
+                faculty_slot_sessions.setdefault(faculty_token, {})[(day, period)] = session_key
 
         if not placed_periods:
             continue
@@ -1396,6 +1471,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 "subject_name": subject_name,
                 "faculty_id": faculty_id_resolved,
                 "faculty_name": faculty_name,
+                "faculty_ids": list(faculty_ids_resolved),
+                "faculty_names": [faculty_id_to_name.get(fid, fid) for fid in faculty_ids_resolved],
                 "sections": sorted(placed_sections),
                 "day": day,
                 "periods": placed_periods,
@@ -1415,7 +1492,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         section_rows: list[dict],
         shared: bool,
     ) -> Requirement | None:
-        raw_faculty_ids = {str(row.get("faculty_id", "")).strip() for row in section_rows if row}
+        raw_faculty_ids = {_normalize_faculty_field(row.get("faculty_id", "")) for row in section_rows if row}
         faculty_pools = {
             _resolve_faculty_pool(raw_faculty_id, faculty_id_to_name, faculty_availability)
             for raw_faculty_id in raw_faculty_ids
@@ -1473,10 +1550,13 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             return None
 
         resolved_faculty_options = faculty_options or ((faculty_label,) if faculty_label else ())
+        explicit_team = _split_faculty_tokens(faculty_label)
+        resolved_faculty_team = explicit_team if len(explicit_team) > 1 else ()
         return Requirement(
             subject_id=subject_id,
             faculty_id=faculty_label,
             faculty_options=resolved_faculty_options,
+            faculty_team=resolved_faculty_team,
             sections=sections,
             hours=hours,
             min_consecutive_hours=min_consecutive_hours,
@@ -1533,12 +1613,15 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         remaining_hours = max(0, int(row.get("hours", 0) or 0) - lab_assigned_hours.get((section, subject_id), 0))
         if remaining_hours <= 0:
             continue
-        faculty_options = _resolve_faculty_pool(str(row.get("faculty_id", "")).strip(), faculty_id_to_name, faculty_availability)
+        raw_faculty_value = str(row.get("faculty_id", "")).strip()
+        faculty_options = _resolve_faculty_pool(raw_faculty_value, faculty_id_to_name, faculty_availability)
+        faculty_team = _split_faculty_tokens(raw_faculty_value)
         requirements.append(
             Requirement(
                 subject_id=subject_id,
-                faculty_id=str(row.get("faculty_id", "")).strip(),
+                faculty_id=raw_faculty_value,
                 faculty_options=faculty_options,
+                faculty_team=faculty_team if len(faculty_team) > 1 else (),
                 sections=(section,),
                 hours=remaining_hours,
                 min_consecutive_hours=max(1, int(row.get("min_consecutive_hours", 1) or 1)),
@@ -1580,6 +1663,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                         subject_id=req.subject_id,
                         faculty_id=req.faculty_id,
                         faculty_options=req.faculty_options,
+                        faculty_team=req.faculty_team,
                         sections=req.sections,
                         hours=new_hours,
                         min_consecutive_hours=min(new_hours, req.min_consecutive_hours),
@@ -1684,7 +1768,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
             for candidate in candidates:
                 placements = _place_block(
                     requirement,
-                    candidate.faculty_id,
+                    candidate.faculty_ids,
                     candidate.day,
                     candidate.start_period,
                     candidate.block_size,
@@ -1700,7 +1784,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
                 if backtrack():
                     return True
                 remaining_by_req[next_req_idx] += candidate.block_size
-                _undo_block(requirement, candidate.faculty_id, placements, schedules, faculty_busy, year, session_log)
+                _undo_block(requirement, candidate.faculty_ids, placements, schedules, faculty_busy, year, session_log)
             return False
 
         return backtrack()
@@ -1815,20 +1899,24 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     ]
 
     for violation in constraint_violations:
-        subject_id = str(violation.get("subject_id", "")).strip()
+        subject_id = _normalize_id_token(violation.get("subject_id", ""))
         faculty_id = str(violation.get("faculty_id", "")).strip()
+        faculty_ids = _split_faculty_tokens(faculty_id)
         if subject_id:
             violation["subject_name"] = subject_id_to_name.get(subject_id, subject_id)
-        if faculty_id:
-            violation["faculty_name"] = faculty_id_to_name.get(faculty_id, faculty_id)
+        if faculty_ids:
+            violation["faculty_name"] = ", ".join(faculty_id_to_name.get(fid, fid) for fid in faculty_ids)
+            violation["faculty_id"] = ",".join(faculty_ids)
 
     for item in unscheduled_subjects:
-        subject_id = str(item.get("subject_id", "")).strip()
+        subject_id = _normalize_id_token(item.get("subject_id", ""))
         faculty_id = str(item.get("faculty_id", "")).strip()
+        faculty_ids = _split_faculty_tokens(faculty_id)
         if subject_id:
             item["subject_name"] = subject_id_to_name.get(subject_id, subject_id)
-        if faculty_id:
-            item["faculty_name"] = faculty_id_to_name.get(faculty_id, faculty_id)
+        if faculty_ids:
+            item["faculty_name"] = ", ".join(faculty_id_to_name.get(fid, fid) for fid in faculty_ids)
+            item["faculty_id"] = ",".join(faculty_ids)
 
     shared_workbook = _build_shared_classes_workbook(shared_sessions)
     constraint_workbook = _build_constraint_report_workbook(constraint_violations, unscheduled_subjects)
