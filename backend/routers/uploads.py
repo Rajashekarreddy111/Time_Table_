@@ -177,20 +177,36 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         year = normalize_year(_to_text(row.get("year")))
         sections_raw = _to_text(row.get("sections"))
-        subject = _to_text(row.get("subject"))
+        subject = _to_text(row.get("subject")) or _to_text(row.get("subject_id"))
         
         if not year or not sections_raw or not subject:
             continue
-            
+
+        # Accept both "1,2,3" and "1, 2, 3" formats.
         sections = [s.strip() for s in sections_raw.split(",") if s.strip()]
         if not sections:
             continue
-            
-        normalized.append({
-            "year": year,
-            "sections": sections,
-            "subject": subject
-        })
+
+        # If a single numeric value is provided (e.g. "3"), interpret it as
+        # "total number of sections for this year" instead of explicit names.
+        if len(sections) == 1 and sections[0].isdigit():
+            normalized.append(
+                {
+                    "year": year,
+                    "sections": [],
+                    "sections_count": int(sections[0]),
+                    "subject": subject,
+                }
+            )
+            continue
+
+        normalized.append(
+            {
+                "year": year,
+                "sections": sections,
+                "subject": subject,
+            }
+        )
         
     if not normalized:
         raise _validation_error(

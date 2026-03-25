@@ -18,7 +18,7 @@ PERIODS = [1, 2, 3, 4, 5, 6, 7]
 DAY_INDEX = {index + 1: day for index, day in enumerate(DAYS)}
 
 
-@dataclass(frozen=True)
+@dataclass
 class Requirement:
     subject_id: str
     faculty_id: str
@@ -486,6 +486,62 @@ def _score_slot_candidate(
     )
 
 
+def _score_slot_candidate_fast(
+    requirement: Requirement,
+    faculty_id: str,
+    day: str,
+    start_period: int,
+    block_size: int,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    faculty_busy: dict[str, set[tuple[str, int]]],
+    faculty_availability: dict[str, dict[str, set[int]]],
+    year: str,
+) -> int:
+    """
+    Performance-focused scoring:
+    - avoids expensive per-candidate metrics (subject_daily_load, empty slot scans, etc.)
+    - keeps the spec's spirit: prefer section+faculty freedom and longer blocks
+    """
+    # Slots are already filtered to be free by the caller, so we treat "free" as boolean.
+    section_free = 1
+    faculty_free = 1
+    # Mirror original heuristic: if block_size is too small for the requirement's
+    # minimum consecutive hours, heavily penalize it.
+    continuous_score = 3 if block_size >= requirement.min_consecutive_hours else -10
+
+    # Light flex metric to differentiate candidates.
+    section_flex = 0
+    for p in PERIODS:
+        if all(schedules[(year, sec)][day][p] is None for sec in requirement.sections):
+            section_flex += 1
+
+    faculty_flex = 0
+    allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+    busy_slots = faculty_busy.get(faculty_id, set())
+    for p in allowed_periods:
+        if (day, p) not in busy_slots:
+            faculty_flex += 1
+
+    center_bonus = 2 if start_period not in (PERIODS[0], PERIODS[-1]) else 0
+    shared_bonus = 2 if requirement.shared else 0
+
+    # Core weights from spec.
+    score = 0
+    score += 5 * section_free
+    score += 5 * faculty_free
+    score += continuous_score
+
+    # Cheap differentiators.
+    score += section_flex
+    score += faculty_flex
+    # Prefer scarce faculty availability (approximation of the original solver).
+    score += max(0, 8 - faculty_flex)
+    score += (block_size * 2)  # prefer longer blocks
+    score += center_bonus
+    score += shared_bonus
+    return int(score)
+
+
 def _enumerate_slot_candidates(
     requirement: Requirement,
     remaining_hours: int,
@@ -527,6 +583,7 @@ def _enumerate_slot_candidates(
                     year,
                 ):
                     continue
+
                 candidates.append(
                     SlotCandidate(
                         day=day,
@@ -564,7 +621,6 @@ def _select_next_requirement(
     best_idx: int | None = None
     best_candidates: list[SlotCandidate] = []
     best_key: tuple[int, int, int, int, str, str] | None = None
-    active_phase: int | None = None
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
@@ -577,14 +633,10 @@ def _select_next_requirement(
             requirement.faculty_options,
             faculty_availability,
         )
-        if active_phase is None or requirement.phase < active_phase:
-            active_phase = requirement.phase
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
         if remaining <= 0 or not requirement.faculty_id:
-            continue
-        if active_phase is not None and requirement.phase != active_phase:
             continue
         candidates = _enumerate_slot_candidates(
             requirement,
@@ -1106,13 +1158,51 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
 
+    def _resolve_shared_sections(raw_sections: list | tuple | str | int | None, sections_count: int | None = None) -> tuple[str, ...]:
+        """
+        Accept either:
+        - explicit section names list (e.g. ["C1","C2"] or ["C1, C2"])
+        - a single numeric value meaning section count (e.g. "3")
+        - a separate sections_count field from upload normalization
+        """
+        if sections_count is not None and sections_count > 0:
+            return tuple(all_sections[: sections_count])
+
+        values: list[str] = []
+        if raw_sections is None:
+            return ()
+        if isinstance(raw_sections, (list, tuple)):
+            for item in raw_sections:
+                text = str(item).strip()
+                if not text:
+                    continue
+                # Allow "C1, C2" inside one cell item.
+                values.extend([part.strip() for part in text.split(",") if part.strip()])
+        else:
+            values.extend([part.strip() for part in str(raw_sections).split(",") if part.strip()])
+
+        if not values:
+            return ()
+
+        # If only one numeric token is provided, treat it as section count.
+        if len(values) == 1 and values[0].isdigit():
+            count = int(values[0])
+            if count <= 0:
+                return ()
+            return tuple(all_sections[:count])
+
+        return tuple(sorted({value for value in values if value}))
+
     shared_constraints: dict[str, list[tuple[str, ...]]] = {}
     if shared_payload:
         for row in shared_payload.get("rows", []):
             if normalize_year(str(row.get("year", ""))) != year:
                 continue
-            subject_id = str(row.get("subject", "")).strip()
-            sections = tuple(sorted({str(section).strip() for section in row.get("sections", []) if str(section).strip()}))
+            subject_id = str(row.get("subject", row.get("subject_id", ""))).strip()
+            sections = _resolve_shared_sections(
+                row.get("sections", []),
+                int(row.get("sections_count", 0) or 0) if str(row.get("sections_count", "")).strip() else None,
+            )
             if subject_id and sections:
                 shared_constraints.setdefault(subject_id, []).append(sections)
 
@@ -1120,7 +1210,7 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         if normalize_year(shared.year) != year:
             continue
         subject_id = str(shared.subject).strip()
-        sections = tuple(sorted({str(section).strip() for section in shared.sections if str(section).strip()}))
+        sections = _resolve_shared_sections(shared.sections)
         if subject_id and sections:
             shared_constraints.setdefault(subject_id, []).append(sections)
 
@@ -1586,6 +1676,8 @@ def generate_timetable(request_data: GenerateTimetableRequest, store: MemoryStor
         else:
             days_order, periods_order = retry_orders[attempt]
 
+        # Increase candidate diversity so scarce-slot constraints can still be satisfied
+        # without waiting for timeout-level backtracking.
         candidate_limit = min(36, 14 + attempt * 6)
         attempt_deadline = min(total_deadline, time.perf_counter() + per_attempt_budgets[attempt])
         if _solve_with_orders(days_order, periods_order, candidate_limit, attempt_deadline):
