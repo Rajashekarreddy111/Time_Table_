@@ -27,6 +27,10 @@ class FacultyAvailabilityResponse(BaseModel):
     day: str
     periods: list[PeriodInfo]
     faculty: list[str]
+    availableFacultyCount: int = 0
+    sufficientFaculty: bool = False
+    shortageCount: int = 0
+    message: str = ""
 
 
 class BulkFacultyAvailabilityItem(FacultyAvailabilityResponse):

@@ -26,6 +26,26 @@ def _to_text(value) -> str:
     return str(value).strip()
 
 
+def _normalize_workload_day(value) -> str:
+    text = _to_text(value).upper()
+    compact = "".join(ch for ch in text if ch.isalpha())
+    day_map = {
+        "MON": "MON",
+        "MONDAY": "MON",
+        "TUE": "TUE",
+        "TUESDAY": "TUE",
+        "WED": "WED",
+        "WEDNESDAY": "WED",
+        "THU": "THU",
+        "THURSDAY": "THU",
+        "FRI": "FRI",
+        "FRIDAY": "FRI",
+        "SAT": "SAT",
+        "SATURDAY": "SAT",
+    }
+    return day_map.get(compact, "")
+
+
 
 
 def _normalize_faculty_id_rows(rows: list[dict]) -> list[dict]:
@@ -262,7 +282,7 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                 elif v_str in ["1", "2", "3", "4", "5", "6", "7"]:
                     col_to_period[k] = int(v_str)
                     
-            VALID_DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"]
+            VALID_DAYS = {"MON", "TUE", "WED", "THU", "FRI", "SAT"}
             
             for row in rows:
                 if day_col_key not in row:
@@ -270,7 +290,7 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                 day_val_raw = row[day_col_key]
                 if day_val_raw is None or (isinstance(day_val_raw, float) and math.isnan(day_val_raw)):
                     continue
-                day_val = str(day_val_raw).upper().strip()
+                day_val = _normalize_workload_day(day_val_raw)
                 
                 if day_val in VALID_DAYS:
                     for col_key, p_num in col_to_period.items():
@@ -285,6 +305,7 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                                 "year": "",
                                 "section": "",
                                 "subject": "",
+                                "is_available": True,
                             })
                             
             if normalized_workload:
@@ -306,7 +327,7 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
 
     if is_day_grid:
         normalized_grid: list[dict] = []
-        VALID_DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]
+        VALID_DAYS = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"}
         for row in rows:
             faculty_id = ""
             for k, v in row.items():
@@ -342,7 +363,8 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                                 "period": period_num,
                                 "year": "",
                                 "section": "",
-                                "subject": ""
+                                "subject": "",
+                                "is_available": True,
                             })
                         except ValueError:
                             pass
@@ -438,7 +460,7 @@ def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
             if day_column_index >= len(row):
                 continue
 
-            day_value = _to_text(row[day_column_index]).upper()
+            day_value = _normalize_workload_day(row[day_column_index])
             if day_value not in valid_days:
                 continue
 
@@ -455,6 +477,7 @@ def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
                         "year": "",
                         "section": "",
                         "subject": "",
+                        "is_available": True,
                     }
                 )
 
@@ -479,8 +502,10 @@ def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
             
         periods = []
         if periods_raw:
-            for p in periods_raw.split(","):
-                match = re.search(r'\d+', p.strip())
+            for p in re.split(r"[\s,]+", periods_raw.strip()):
+                if not p:
+                    continue
+                match = re.search(r"\d+", p)
                 if match:
                     periods.append(int(match.group()))
                     

@@ -1,85 +1,126 @@
 import { useMemo, useState } from "react";
-import { CalendarDays, Search, Upload, Users } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Download, FileSpreadsheet, Search, Sparkles, Upload, Users, XCircle } from "lucide-react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { FileUpload } from "@/components/FileUpload";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { FileUpload } from "@/components/FileUpload";
-import { PERIODS, DAYS } from "@/data/mockData";
+import { Textarea } from "@/components/ui/textarea";
+import { PERIODS } from "@/data/mockData";
+import { readAcademicConfig } from "@/lib/academicConfig";
+import { API_BASE_URL, type BulkFacultyAvailabilityItem, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
 import { toast } from "sonner";
-import { API_BASE_URL } from "@/services/apiClient";
-import {
-  getBulkFacultyAvailability,
-  uploadFacultyAvailability,
-  uploadFacultyAvailabilityQuery,
-  BulkFacultyAvailabilityItem
-} from "@/services/apiClient";
-import { getAllSectionKeys, readAcademicConfig } from "@/lib/academicConfig";
 
-const actualPeriods = PERIODS.filter((p) => typeof p.period === "number") as { period: number; time: string }[];
+type PeriodInfo = { period: number; time: string };
+type SummaryStat = { label: string; value: string | number; hint: string; tone: string };
 
-const config = readAcademicConfig();
-const ALL_YEAR_OPTIONS = Array.from(new Set(getAllSectionKeys(config).map((item) => item.year))).map((year) => ({
-  label: year,
-  value: year,
-  type: "year" as const,
-}));
-const ALL_SECTION_OPTIONS: { label: string; value: string; type: "section" }[] = getAllSectionKeys(config).map((item) => ({
-  label: `${item.year.replace(" Year", "")}${item.section}`,
-  value: `${item.year}|${item.section}`,
-  type: "section",
-}));
+const actualPeriods: PeriodInfo[] = PERIODS.filter(
+  (item): item is { period: number; time: string } => typeof item.period === "number",
+).map((item) => ({ period: item.period, time: item.time.replace(/â€“|Ã¢â‚¬â€œ|ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“/g, "-") }));
 
-type AvailabilityResults = {
-  day: string;
-  periods: { period: number; time: string }[];
-  faculty: string[];
-};
+function escapeCsv(value: string | number | boolean): string {
+  const stringValue = String(value ?? "");
+  return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function formatPeriods(periods: PeriodInfo[]): string {
+  return periods.map((period) => `P${period.period}`).join(", ");
+}
+
+function normalizeText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function parseIgnoredSections(value: string): string[] {
+  return value.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function getFacultyCoverageTag(item: BulkFacultyAvailabilityItem) {
+  if (item.sufficientFaculty) return { label: "Sufficient faculty", className: "bg-emerald-100 text-emerald-700 border-emerald-200" };
+  if (item.availableFacultyCount > 0) return { label: "Insufficient faculty", className: "bg-amber-100 text-amber-700 border-amber-200" };
+  return { label: "No faculty available", className: "bg-rose-100 text-rose-700 border-rose-200" };
+}
+
+function EmptyState() {
+  return (
+    <div className="rounded-[28px] border border-border/60 bg-card p-8 shadow-sm">
+      <div className="flex min-h-[500px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.08),transparent_45%),linear-gradient(180deg,rgba(248,250,252,0.92),rgba(241,245,249,0.8))] px-6 text-center">
+        <div className="rounded-3xl bg-primary/10 p-5 text-primary"><Users className="h-10 w-10" /></div>
+        <h3 className="mt-6 text-xl font-semibold text-foreground">No report generated yet</h3>
+        <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">Upload the faculty workload file and the query file, then generate the report to see fair faculty selections, shortage details, and CSV export.</p>
+      </div>
+    </div>
+  );
+}
 
 const FacultyAvailability = () => {
+  const config = useMemo(() => readAcademicConfig(), []);
+  const yearOptions = useMemo(() => config.activeYears ?? [], [config]);
+
   const [ignoredYears, setIgnoredYears] = useState<string[]>([]);
-  const [ignoredSections, setIgnoredSections] = useState<string[]>([]);
+  const [ignoredSectionsInput, setIgnoredSectionsInput] = useState("");
   const [availabilityFile, setAvailabilityFile] = useState<File | null>(null);
-  const [availabilityFileId, setAvailabilityFileId] = useState<string>("");
+  const [availabilityFileId, setAvailabilityFileId] = useState("");
   const [queryFile, setQueryFile] = useState<File | null>(null);
-  const [queryFileId, setQueryFileId] = useState<string>("");
+  const [queryFileId, setQueryFileId] = useState("");
   const [results, setResults] = useState<BulkFacultyAvailabilityItem[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [resultSearch, setResultSearch] = useState("");
   const templateBase = `${API_BASE_URL}/templates`;
 
-  const toggleIgnoreYear = (year: string) => {
-    setIgnoredYears((prev) =>
-      prev.includes(year) ? prev.filter((y) => y !== year) : [...prev, year],
-    );
-  };
+  const ignoredSections = useMemo(() => parseIgnoredSections(ignoredSectionsInput), [ignoredSectionsInput]);
 
-  const toggleIgnoreSection = (sectionKey: string) => {
-    setIgnoredSections((prev) =>
-      prev.includes(sectionKey) ? prev.filter((s) => s !== sectionKey) : [...prev, sectionKey],
+  const filteredResults = useMemo(() => {
+    if (!results) return [];
+    const query = normalizeText(resultSearch);
+    if (!query) return results;
+    return results.filter((item) =>
+      [item.date, item.day, item.faculty.join(" "), item.message, formatPeriods(item.periods), String(item.facultyRequired), String(item.availableFacultyCount)]
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
     );
-  };
+  }, [resultSearch, results]);
 
-  const handleSearch = async () => {
-    if (!availabilityFileId || !queryFileId) {
-      toast.error("Please upload both workload and query files.");
-      return;
+  const summaryStats = useMemo<SummaryStat[]>(() => {
+    if (!results || results.length === 0) {
+      return [
+        { label: "Requests", value: 0, hint: "Rows returned from the bulk query", tone: "bg-sky-100 text-sky-700" },
+        { label: "Sufficient", value: 0, hint: "Rows where requirement was satisfied", tone: "bg-emerald-100 text-emerald-700" },
+        { label: "Insufficient", value: 0, hint: "Rows where enough faculty were not found", tone: "bg-amber-100 text-amber-700" },
+        { label: "Available", value: 0, hint: "Total selected faculty across all rows", tone: "bg-indigo-100 text-indigo-700" },
+      ];
     }
+    const sufficient = results.filter((item) => item.sufficientFaculty).length;
+    const insufficient = results.length - sufficient;
+    const totalChosen = results.reduce((sum, item) => sum + item.faculty.length, 0);
+    return [
+      { label: "Requests", value: results.length, hint: "Rows returned from the bulk query", tone: "bg-sky-100 text-sky-700" },
+      { label: "Sufficient", value: sufficient, hint: "Rows where requirement was satisfied", tone: "bg-emerald-100 text-emerald-700" },
+      { label: "Insufficient", value: insufficient, hint: "Rows where enough faculty were not found", tone: "bg-amber-100 text-amber-700" },
+      { label: "Available", value: totalChosen, hint: "Total selected faculty across all rows", tone: "bg-indigo-100 text-indigo-700" },
+    ];
+  }, [results]);
 
+  const toggleIgnoreYear = (year: string) => {
+    setIgnoredYears((previous) => previous.includes(year) ? previous.filter((value) => value !== year) : [...previous, year]);
+  };
+
+  const clearFilters = () => {
+    setIgnoredYears([]);
+    setIgnoredSectionsInput("");
+  };
+
+  const handleAvailabilityUpload = async (file: File) => {
+    setAvailabilityFile(file);
     try {
-      setSearching(true);
-      const response = await getBulkFacultyAvailability({
-        availabilityFileId,
-        queryFileId,
-        ignoredYears,
-        ignoredSections,
-      });
-      setResults(response.results);
-      toast.success("Availability report generated.");
+      const response = await uploadFacultyAvailability(file);
+      setAvailabilityFileId(response.fileId);
+      toast.success(`Uploaded "${file.name}" successfully.`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to fetch availability");
-    } finally {
-      setSearching(false);
+      setAvailabilityFileId("");
+      toast.error(error instanceof Error ? error.message : "Upload failed");
     }
   };
 
@@ -95,23 +136,42 @@ const FacultyAvailability = () => {
     }
   };
 
+  const handleSearch = async () => {
+    if (!availabilityFileId || !queryFileId) {
+      toast.error("Please upload both the faculty workload file and query file.");
+      return;
+    }
+    try {
+      setSearching(true);
+      const response = await getBulkFacultyAvailability({ availabilityFileId, queryFileId, ignoredYears, ignoredSections });
+      setResults(response.results);
+      setResultSearch("");
+      toast.success("Availability report generated.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to fetch availability");
+    } finally {
+      setSearching(false);
+    }
+  };
+
   const handleDownloadCsv = () => {
-    if (!results || results.length === 0) return;
-    
-    const headers = ["Date", "Day", "Periods", "Faculty Required", "Available Faculty Found", "Available Faculty Names"];
-    const rows = results.map(r => {
-      const periodsStr = r.periods.map(p => `P${p.period}`).join(", ");
-      const facStr = r.faculty.join(" | ");
-      return [
-        r.date || "",
-        r.day || "",
-        `"${periodsStr}"`,
-        r.facultyRequired,
-        r.faculty.length,
-        `"${facStr}"`
-      ].join(",");
-    });
-    
+    if (!results || results.length === 0) {
+      toast.error("Generate a report before downloading.");
+      return;
+    }
+    const headers = ["Date", "Day", "Periods", "Period Times", "Faculty Required", "Faculty Available", "Selected Faculty", "Sufficient Faculty", "Shortage Count", "Status Message"];
+    const rows = results.map((item) => [
+      escapeCsv(item.date),
+      escapeCsv(item.day),
+      escapeCsv(formatPeriods(item.periods)),
+      escapeCsv(item.periods.map((period) => period.time).join(", ")),
+      escapeCsv(item.facultyRequired),
+      escapeCsv(item.availableFacultyCount),
+      escapeCsv(item.faculty.join(" | ")),
+      escapeCsv(item.sufficientFaculty),
+      escapeCsv(item.shortageCount),
+      escapeCsv(item.message),
+    ].join(","));
     const csvContent = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -124,201 +184,173 @@ const FacultyAvailability = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleAvailabilityUpload = async (file: File) => {
-    setAvailabilityFile(file);
-    try {
-      const response = await uploadFacultyAvailability(file);
-      setAvailabilityFileId(response.fileId);
-      toast.success(`Uploaded "${file.name}" successfully.`);
-    } catch (error) {
-      setAvailabilityFileId("");
-      toast.error(error instanceof Error ? error.message : "Upload failed");
-    }
-  };
-
   return (
     <DashboardLayout>
       <div className="w-full space-y-6">
-        <div className="page-header">
-          <h1>Faculty Availability Bulk Finder</h1>
-          <p>Upload faculty workload sheets and find who is free for the requested dates and periods</p>
+        <div className="rounded-[30px] border border-border/70 bg-[linear-gradient(135deg,rgba(2,132,199,0.10),rgba(30,41,59,0.05),rgba(255,255,255,0.94))] p-6 shadow-sm">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] xl:items-end">
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm"><Sparkles className="h-3.5 w-3.5" />Faculty availability finder</div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight text-foreground">Faculty Availability</h1>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Upload the faculty workload workbook and the bulk query file to find available faculty for each requested date and period with fair rotation and clear shortage reporting.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><FileSpreadsheet className="h-4 w-4 text-primary" />Workload Upload</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the faculty workbook with all faculty sheets in the same format you already use.</p></div>
+                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><CalendarDays className="h-4 w-4 text-primary" />Query Upload</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the request file containing date, faculty count, and periods to check.</p></div>
+                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><Users className="h-4 w-4 text-primary" />Fair Selection</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Review balanced faculty picks, available counts, and shortages in one place.</p></div>
+              </div>
+            </div>
+
+            <div className="rounded-[26px] border border-border/70 bg-card/90 p-5 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-primary/10 p-3 text-primary"><Clock3 className="h-5 w-5" /></div>
+                <div><h2 className="text-sm font-semibold text-foreground">Report readiness</h2><p className="text-xs text-muted-foreground">The button enables after both uploads succeed.</p></div>
+              </div>
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-border/60 bg-muted/30 p-4"><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Workload file</p><p className="mt-2 text-sm font-semibold text-foreground">{availabilityFileId ? "Uploaded" : "Pending"}</p><p className="mt-1 text-xs text-muted-foreground">{availabilityFile?.name ?? "Upload the faculty workbook"}</p></div>
+                <div className="rounded-2xl border border-border/60 bg-muted/30 p-4"><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Query file</p><p className="mt-2 text-sm font-semibold text-foreground">{queryFileId ? "Uploaded" : "Pending"}</p><p className="mt-1 text-xs text-muted-foreground">{queryFile?.name ?? "Upload the query workbook"}</p></div>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)] gap-6 w-full">
+        <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
           <div className="space-y-6">
-            <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm space-y-4 border border-border/60">
-            <h3 className="text-sm font-semibold text-foreground flex items-center justify-between">
-              Search Parameters
-              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-primary/10 text-primary">
-                <Upload className="h-3.5 w-3.5" />
-                Faculty Upload Ready
-              </span>
-            </h3>
-
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Faculty Workload Upload</Label>
-              <FileUpload
-                file={availabilityFile}
-                onFileSelect={handleAvailabilityUpload}
-                onClear={() => {
-                  setAvailabilityFile(null);
-                  setAvailabilityFileId("");
-                }}
-                accept=".xlsx,.xls,.csv"
-                label="Upload faculty workload file"
-                description="Upload faculty workload sheets in the college format or a plain availability sheet"
-                icon={<Upload className="h-9 w-9 text-primary" />}
-                templateLinks={[
-                  { label: "Workload Template", href: `${templateBase}/faculty-workload` },
-                  { label: "Availability Template", href: `${templateBase}/faculty-availability` },
-                ]}
-              />
-              <p className="text-[11px] text-muted-foreground mt-1">
-                {availabilityFileId ? `Upload ID: ${availabilityFileId}` : "Upload faculty workload file to enable search."}
-              </p>
-            </div>
-
-            <div>
-              <Label className="text-xs text-muted-foreground mb-2 block">Availability Query Upload</Label>
-              <FileUpload
-                file={queryFile}
-                onFileSelect={handleQueryUpload}
-                onClear={() => {
-                  setQueryFile(null);
-                  setQueryFileId("");
-                }}
-                accept=".xlsx,.xls,.csv"
-                label="Upload query file"
-                description="Upload file with Date, Number of Faculty Required, and Periods (XLSX/CSV)"
-                icon={<CalendarDays className="h-9 w-9 text-primary" />}
-                templateLinks={[
-                  {
-                    label: "Query Template",
-                    href: `${templateBase}/faculty-availability-query`,
-                  },
-                ]}
-              />
-              <p className="text-[11px] text-muted-foreground mt-1">
-                {queryFileId ? `Query ID: ${queryFileId}` : "Upload query file containing the dates and periods to search."}
-              </p>
-            </div>
-
-            <Button onClick={handleSearch} className="w-full gap-2" disabled={searching || !availabilityFileId || !queryFileId}>
-              <Search className="h-4 w-4" /> {searching ? "Generating Report..." : "Generate Availability Report"}
-            </Button>
-          </div>
-
-            <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm space-y-4 border border-border/60">
-            <h3 className="text-sm font-semibold text-foreground">Ignore Rules (Treat as Free)</h3>
-            <p className="text-xs text-muted-foreground">
-              If a faculty is teaching any of the selected years or sections during a chosen period, treat that slot as free.
-            </p>
-
-            <div>
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Ignore Entire Year</p>
-              <div className="flex flex-wrap gap-2">
-                {ALL_YEAR_OPTIONS.map((opt) => (
-                  <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={ignoredYears.includes(opt.value)}
-                      onCheckedChange={() => toggleIgnoreYear(opt.value)}
-                    />
-                    <span className="text-sm text-foreground">{opt.label}</span>
-                  </label>
-                ))}
+            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+              <div className="mb-6 flex items-start justify-between gap-4">
+                <div><h2 className="text-lg font-semibold text-foreground">Upload Center</h2><p className="text-sm text-muted-foreground">Add both files here, then generate the availability report.</p></div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"><Upload className="h-3.5 w-3.5" />{availabilityFileId && queryFileId ? "Ready to generate" : "Waiting for uploads"}</div>
+              </div>
+              <div className="grid gap-5 xl:grid-cols-2">
+                <div className="rounded-[24px] border border-border/70 bg-muted/20 p-4">
+                  <div className="mb-4"><h3 className="text-base font-semibold text-foreground">Faculty workload upload</h3><p className="mt-1 text-sm text-muted-foreground">Upload the workbook in the same faculty workload format used by your department.</p></div>
+                  <FileUpload file={availabilityFile} onFileSelect={handleAvailabilityUpload} onClear={() => { setAvailabilityFile(null); setAvailabilityFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload faculty workload file" description="Supports the multi-sheet workload workbook format" icon={<FileSpreadsheet className="h-9 w-9 text-primary" />} />
+                  <p className="mt-3 text-xs text-muted-foreground">{availabilityFileId ? `Upload ID: ${availabilityFileId}` : "No faculty workload file uploaded yet."}</p>
+                </div>
+                <div className="rounded-[24px] border border-border/70 bg-muted/20 p-4">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div><h3 className="text-base font-semibold text-foreground">Query file upload</h3><p className="mt-1 text-sm text-muted-foreground">Upload the file with date, required faculty, and period values.</p></div>
+                    <Button variant="outline" size="sm" asChild className="gap-2"><a href={`${templateBase}/faculty-availability-query`} target="_blank" rel="noreferrer"><Download className="h-3.5 w-3.5" />Template</a></Button>
+                  </div>
+                  <FileUpload file={queryFile} onFileSelect={handleQueryUpload} onClear={() => { setQueryFile(null); setQueryFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload query file" description="Contains Date, Number of Faculty Required, and Periods" icon={<CalendarDays className="h-9 w-9 text-primary" />} />
+                  <p className="mt-3 text-xs text-muted-foreground">{queryFileId ? `Query ID: ${queryFileId}` : "No query file uploaded yet."}</p>
+                </div>
               </div>
             </div>
 
-            <div>
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Ignore Specific Sections</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {ALL_SECTION_OPTIONS.map((opt) => (
-                  <label key={opt.value} className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={ignoredSections.includes(opt.value)}
-                      onCheckedChange={() => toggleIgnoreSection(opt.value)}
-                    />
-                    <span className="text-sm text-foreground">{opt.label}</span>
-                  </label>
-                ))}
+            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+              <div className="mb-6 flex items-start justify-between gap-4">
+                <div><h2 className="text-lg font-semibold text-foreground">Ignore Rules</h2><p className="text-sm text-muted-foreground">Optional filters to treat selected loads as available while checking results.</p></div>
+                <Button variant="outline" size="sm" onClick={clearFilters} disabled={ignoredYears.length === 0 && ignoredSections.length === 0}>Clear filters</Button>
               </div>
-            </div>
-          </div>
-          </div>
-
-          <div>
-            {results ? (
-              <div className="bg-card rounded-xl p-6 xl:p-7 shadow-sm border border-border/60 min-h-full">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <Users className="h-4 w-4 text-primary" /> Report Generated ({results.length} rows)
-                </h3>
-                <Button onClick={handleDownloadCsv} size="sm" variant="secondary" className="gap-2">
-                  Download CSV
+              <div className="space-y-5">
+                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore entire year</p>
+                  <div className="flex flex-wrap gap-2">
+                    {yearOptions.map((year) => (
+                      <label key={year} className="flex cursor-pointer items-center gap-2 rounded-full border border-border/70 bg-card px-3 py-2 text-sm text-foreground transition-colors hover:border-primary/40">
+                        <Checkbox checked={ignoredYears.includes(year)} onCheckedChange={() => toggleIgnoreYear(year)} />
+                        <span>{year}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                  <Label className="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore specific sections</Label>
+                  <Textarea value={ignoredSectionsInput} onChange={(event) => setIgnoredSectionsInput(event.target.value)} placeholder={"Enter sections to ignore, separated by commas or new lines.\nExamples: 2C3, 2G4, 3C2, 3C5, 3G1"} className="min-h-28 rounded-2xl bg-card" />
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">Type sections as year plus section, like `2C3`, `2G4`, `3C2`, `3C5`, or `3G1`. Spaces after commas are also handled.</p>
+                </div>
+                {ignoredSections.length > 0 && (
+                  <div className="rounded-[22px] border border-dashed border-border bg-muted/25 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignoring sections</p>
+                    <div className="mt-3 flex flex-wrap gap-2">{ignoredSections.map((section) => <span key={section} className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">{section}</span>)}</div>
+                  </div>
+                )}
+                <Button onClick={handleSearch} className="h-12 w-full gap-2 text-sm" disabled={searching || !availabilityFileId || !queryFileId}>
+                  <Search className="h-4 w-4" />
+                  {searching ? "Generating availability report..." : "Generate availability report"}
                 </Button>
               </div>
+            </div>
 
-              <div className="bg-muted/50 rounded-lg p-4 mb-5 space-y-1">
-                {(ignoredYears.length > 0 || ignoredSections.length > 0) ? (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Ignoring:</span>
-                    <span className="font-medium text-foreground text-right flex-1 ml-4 truncate">
-                      {[
-                        ...ignoredYears,
-                        ...ignoredSections.map((s) => {
-                          const [y, sec] = s.split("|");
-                          return `${y.replace(" Year", "")}${sec}`;
-                        }),
-                      ].join(", ")}
-                    </span>
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No ignore constraints active.</p>
-                )}
-              </div>
-
-              <div className="mb-5 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                {results.slice(0, 10).map((r, i) => (
-                  <div key={i} className="mb-4 pb-4 border-b border-border last:border-0 last:mb-0 last:pb-0">
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="font-medium text-sm text-foreground">
-                        {r.date} <span className="text-muted-foreground text-xs font-normal">({r.day})</span>
-                      </div>
-                      <div className="text-xs font-medium bg-primary/10 text-primary px-2 py-0.5 rounded">
-                        Required: {r.facultyRequired}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {r.periods.map(p => (
-                         <span key={p.period} className="text-[10px] font-semibold bg-muted text-muted-foreground px-1.5 py-0.5 rounded">
-                           P{p.period} ({p.time})
-                         </span>
-                      ))}
-                    </div>
-                    {r.faculty.length > 0 ? (
-                      <p className="text-xs text-foreground mt-1">
-                        <span className="font-semibold text-primary">{r.faculty.length} found:</span> {r.faculty.join(", ")}
-                      </p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">No faculty available.</p>
-                    )}
+            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+              <div className="mb-5 flex items-center gap-3"><div className="rounded-2xl bg-primary/10 p-3 text-primary"><CalendarDays className="h-5 w-5" /></div><div><h2 className="text-base font-semibold text-foreground">Supported periods</h2><p className="text-sm text-muted-foreground">Use these timetable period numbers in the query file.</p></div></div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {actualPeriods.map((period) => (
+                  <div key={period.period} className="rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
+                    <div className="text-sm font-semibold text-foreground">Period {period.period}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{period.time}</div>
                   </div>
                 ))}
-                {results.length > 10 && (
-                  <p className="text-xs text-muted-foreground text-center pt-2">
-                    ...and {results.length - 10} more rows. Download CSV to see full report.
-                  </p>
-                )}
               </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+              {summaryStats.map((stat) => (
+                <div key={stat.label} className="stat-card">
+                  <div className={`inline-flex rounded-2xl px-3 py-1 text-xs font-semibold ${stat.tone}`}>{stat.label}</div>
+                  <p className="mt-4 text-3xl font-bold text-foreground">{stat.value}</p>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{stat.hint}</p>
+                </div>
+              ))}
+            </div>
+
+            {results ? (
+              <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+                <div className="flex flex-col gap-4 border-b border-border/70 pb-5 lg:flex-row lg:items-end lg:justify-between">
+                  <div><h2 className="text-lg font-semibold text-foreground">Availability results</h2><p className="text-sm text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p></div>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="w-full sm:w-64"><Input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Search by date, faculty, or status" className="rounded-2xl" /></div>
+                    <Button onClick={handleDownloadCsv} variant="secondary" className="gap-2"><Download className="h-4 w-4" />Download CSV</Button>
+                  </div>
+                </div>
+                <div className="mt-5 space-y-4">
+                  {filteredResults.length > 0 ? filteredResults.map((item, index) => {
+                    const coverage = getFacultyCoverageTag(item);
+                    return (
+                      <div key={`${item.date}-${item.day}-${index}`} className="rounded-[24px] border border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.95),rgba(241,245,249,0.75))] p-5">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-lg font-semibold text-foreground">{item.date}</span>
+                              <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">{item.day}</span>
+                              <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${coverage.className}`}>{coverage.label}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {item.periods.map((period) => <span key={`${item.date}-${period.period}`} className="rounded-full border border-border/60 bg-white px-3 py-1 text-xs font-medium text-foreground">P{period.period} - {period.time}</span>)}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 lg:min-w-[330px]">
+                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Required</p><p className="mt-2 text-xl font-semibold text-foreground">{item.facultyRequired}</p></div>
+                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Available</p><p className="mt-2 text-xl font-semibold text-foreground">{item.availableFacultyCount}</p></div>
+                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Shortage</p><p className="mt-2 text-xl font-semibold text-foreground">{item.shortageCount}</p></div>
+                          </div>
+                        </div>
+                        <div className={`mt-4 rounded-2xl border p-4 ${item.sufficientFaculty ? "border-emerald-200 bg-emerald-50/70" : "border-amber-200 bg-amber-50/70"}`}>
+                          <div className="flex items-start gap-2 text-sm">
+                            {item.sufficientFaculty ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-700" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-700" />}
+                            <p className={item.sufficientFaculty ? "text-emerald-800" : "text-amber-800"}>{item.message}</p>
+                          </div>
+                        </div>
+                        <div className="mt-4 rounded-2xl border border-border/60 bg-white p-4">
+                          {item.faculty.length > 0 ? (
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-2 text-sm font-medium text-foreground"><Users className="h-4 w-4 text-primary" />Selected faculty</div>
+                              <div className="flex flex-wrap gap-2">{item.faculty.map((facultyName) => <span key={`${item.date}-${facultyName}`} className="rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary">{facultyName}</span>)}</div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground"><XCircle className="h-4 w-4 text-destructive" />No faculty available for this request.</div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }) : <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">No results matched your search term.</div>}
+                </div>
               </div>
-            ) : (
-              <div className="bg-card rounded-xl p-12 shadow-sm flex flex-col items-center justify-center text-center border border-border/60 min-h-[420px]">
-                <Users className="h-12 w-12 text-muted-foreground/30 mb-4" />
-                <p className="text-sm text-muted-foreground">
-                  Upload your faculty workload file and a query file to generate a bulk report.
-                </p>
-              </div>
-            )}
+            ) : <EmptyState />}
           </div>
         </div>
       </div>
