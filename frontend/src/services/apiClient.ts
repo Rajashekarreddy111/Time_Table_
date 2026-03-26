@@ -17,6 +17,10 @@ export interface FacultyAvailabilityResponse {
   day: string;
   periods: { period: number; time: string }[];
   faculty: string[];
+  availableFacultyCount: number;
+  sufficientFaculty: boolean;
+  shortageCount: number;
+  message: string;
 }
 
 export interface BulkFacultyAvailabilityItem extends FacultyAvailabilityResponse {

@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 
 from fastapi import HTTPException
 from storage.memory_store import MemoryStore
@@ -30,14 +31,42 @@ def _is_ignored(class_info: dict, ignored_years: list[str], ignored_sections: li
     full_year = normalize_year(raw_year)
     if full_year in ignored_years:
         return True
-    section_key = f"{full_year}|{str(class_info.get('section', '')).strip()}"
-    return section_key in ignored_sections
+    section = str(class_info.get("section", "")).strip()
+    if not section:
+        return False
+    normalized_ignored = _normalize_ignored_sections(ignored_sections)
+    for candidate in _build_section_candidates(full_year, section):
+        if candidate in normalized_ignored:
+            return True
+    return False
 
 
 def _to_text(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _normalize_day(value) -> str:
+    raw = _to_text(value)
+    if not raw:
+        return ""
+    compact = re.sub(r"[^A-Z]+", "", raw.upper())
+    day_map = {
+        "MON": "Monday",
+        "MONDAY": "Monday",
+        "TUE": "Tuesday",
+        "TUESDAY": "Tuesday",
+        "WED": "Wednesday",
+        "WEDNESDAY": "Wednesday",
+        "THU": "Thursday",
+        "THURSDAY": "Thursday",
+        "FRI": "Friday",
+        "FRIDAY": "Friday",
+        "SAT": "Saturday",
+        "SATURDAY": "Saturday",
+    }
+    return day_map.get(compact, raw.capitalize())
 
 
 def _build_faculty_name_map(store: MemoryStore, faculty_id_map_file_id: str | None) -> dict[str, str]:
@@ -59,6 +88,110 @@ def _build_faculty_name_map(store: MemoryStore, faculty_id_map_file_id: str | No
     return name_map
 
 
+def _normalize_token(value: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", str(value or "").upper())
+
+
+def _build_section_candidates(full_year: str, section: str) -> set[str]:
+    section_value = str(section or "").strip()
+    if not section_value:
+        return set()
+
+    raw_year = str(full_year or "").strip()
+    year_number = "".join(ch for ch in raw_year if ch.isdigit())
+    compact = f"{year_number}{section_value}" if year_number else section_value
+    section_without_year_suffix = section_value
+    if year_number:
+        suffix_pattern = re.compile(rf"[-_/ ]?{re.escape(year_number)}$", re.IGNORECASE)
+        section_without_year_suffix = suffix_pattern.sub("", section_value).strip()
+
+    candidates = {
+        _normalize_token(section_value),
+        _normalize_token(section_without_year_suffix),
+        _normalize_token(f"{raw_year}|{section_value}"),
+        _normalize_token(f"{raw_year}|{section_without_year_suffix}"),
+        _normalize_token(f"{raw_year} {section_value}"),
+        _normalize_token(f"{raw_year} {section_without_year_suffix}"),
+        _normalize_token(compact),
+        _normalize_token(f"{year_number}{section_without_year_suffix}") if year_number else "",
+    }
+    return {candidate for candidate in candidates if candidate}
+
+
+def _normalize_ignored_sections(ignored_sections: list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for item in ignored_sections:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        normalized.add(_normalize_token(text))
+        if "|" in text:
+            _, _, tail = text.partition("|")
+            if tail.strip():
+                normalized.add(_normalize_token(tail))
+        else:
+            normalized_year = normalize_year(text)
+            if normalized_year != text:
+                normalized.add(_normalize_token(normalized_year))
+    return normalized
+
+
+def _availability_result(
+    day_name: str,
+    selected_periods: list[int],
+    selected_faculty: list[str],
+    faculty_required: int,
+    available_count: int,
+) -> dict:
+    safe_required = max(1, int(faculty_required or 1))
+    sufficient = available_count >= safe_required
+    shortage = max(0, safe_required - available_count)
+    if sufficient:
+        message = (
+            f"Sufficient faculty available. Selected {len(selected_faculty)} "
+            f"out of {available_count} available."
+        )
+    elif available_count > 0:
+        message = (
+            f"Only {available_count} faculty available; {safe_required} requested. "
+            "No sufficient faculty available."
+        )
+    else:
+        message = (
+            f"No faculty available for the selected slot(s); {safe_required} requested."
+        )
+
+    return {
+        "day": day_name,
+        "periods": [{"period": p, "time": PERIOD_TIME[p]} for p in selected_periods],
+        "faculty": selected_faculty,
+        "availableFacultyCount": available_count,
+        "sufficientFaculty": sufficient,
+        "shortageCount": shortage,
+        "message": message,
+    }
+
+
+def _fair_select_faculty(
+    available_faculty: set[str],
+    faculty_required: int,
+    selection_counts: dict[str, int] | None = None,
+) -> list[str]:
+    safe_required = max(1, int(faculty_required or 1))
+    available_list = sorted(available_faculty)
+    if selection_counts is None:
+        return available_list[:safe_required]
+
+    ranked = sorted(
+        available_list,
+        key=lambda faculty: (selection_counts.get(faculty, 0), faculty.lower(), faculty),
+    )
+    chosen = ranked[: min(safe_required, len(ranked))]
+    for faculty in chosen:
+        selection_counts[faculty] = selection_counts.get(faculty, 0) + 1
+    return chosen
+
+
 def _build_schedules_from_upload(
     store: MemoryStore,
     availability_file_id: str,
@@ -70,7 +203,7 @@ def _build_schedules_from_upload(
 
     schedules: dict[str, dict[str, dict[int, dict]]] = {}
     for row in payload.get("rows", []):
-        day = _to_text(row.get("day")).capitalize()
+        day = _normalize_day(row.get("day"))
         try:
             period = int(float(_to_text(row.get("period"))))
         except ValueError:
@@ -88,6 +221,7 @@ def _build_schedules_from_upload(
             "year": _to_text(row.get("year")),
             "section": _to_text(row.get("section")),
             "subject": _to_text(row.get("subject")),
+            "is_available": bool(row.get("is_available")),
         }
         schedules.setdefault(faculty_key, {}).setdefault(day, {})[period] = class_info
 
@@ -133,7 +267,11 @@ def get_available_faculty_for_all_periods(
         for faculty in faculty_names:
             # 1. Check uploaded availability file
             class_info = schedules.get(faculty, {}).get(day_name, {}).get(period)
-            if class_info is None or _is_ignored(class_info, ignored_years, ignored_sections):
+            if (
+                class_info is None
+                or class_info.get("is_available")
+                or _is_ignored(class_info, ignored_years, ignored_sections)
+            ):
                 period_available.add(faculty)
         common_available &= period_available
 
@@ -148,11 +286,14 @@ def get_available_faculty_for_all_periods(
                 if not _is_ignored(item, ignored_years, ignored_sections):
                     common_available.discard(faculty)
 
-    return {
-        "day": day_name,
-        "periods": [{"period": p, "time": PERIOD_TIME[p]} for p in selected_periods],
-        "faculty": sorted(common_available)[: max(1, faculty_required)],
-    }
+    selected_faculty = _fair_select_faculty(common_available, faculty_required)
+    return _availability_result(
+        day_name=day_name,
+        selected_periods=selected_periods,
+        selected_faculty=selected_faculty,
+        faculty_required=faculty_required,
+        available_count=len(common_available),
+    )
 
 
 def get_bulk_available_faculty(
@@ -182,6 +323,7 @@ def get_bulk_available_faculty(
     occupancy_details = store.get_global_faculty_occupancy_details()
 
     results = []
+    selection_counts: dict[str, int] = {}
 
     for row in query_rows:
         date_value = row.get("date")
@@ -213,7 +355,11 @@ def get_bulk_available_faculty(
             period_available: set[str] = set()
             for faculty in faculty_names:
                 class_info = schedules.get(faculty, {}).get(day_name, {}).get(period)
-                if class_info is None or _is_ignored(class_info, ignored_years, ignored_sections):
+                if (
+                    class_info is None
+                    or class_info.get("is_available")
+                    or _is_ignored(class_info, ignored_years, ignored_sections)
+                ):
                     period_available.add(faculty)
             common_available &= period_available
 
@@ -224,12 +370,21 @@ def get_bulk_available_faculty(
                     if not _is_ignored(item, ignored_years, ignored_sections):
                         common_available.discard(faculty)
 
+        selected_faculty = _fair_select_faculty(
+            common_available,
+            faculty_required,
+            selection_counts,
+        )
         results.append({
             "date": date_value,
-            "day": day_name,
-            "periods": [{"period": p, "time": PERIOD_TIME[p]} for p in selected_periods],
-            "faculty": sorted(common_available)[: max(1, faculty_required)],
-            "facultyRequired": faculty_required
+            "facultyRequired": faculty_required,
+            **_availability_result(
+                day_name=day_name,
+                selected_periods=selected_periods,
+                selected_faculty=selected_faculty,
+                faculty_required=faculty_required,
+                available_count=len(common_available),
+            ),
         })
 
     return {"results": results}

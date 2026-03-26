@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Library Management System</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        background: linear-gradient(120deg, #4facfe, #00f2fe);
+      }
+      header {
+        background: #333;
+        color: white;
+        padding: 15px;
+        text-align: center;
+        font-size: 24px;
+      }
+      .container {
+        display: flex;
+        gap: 20px;
+        padding: 20px;
+      }
+      .form,
+      .list {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        flex: 1;
+      }
+      input,
+      button {
+        width: 100%;
+        padding: 10px;
+        margin: 8px 0;
+        border-radius: 5px;
+        border: 1px solid #ccc;
+      }
+      button {
+        background: #4facfe;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #00c6ff;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 10px;
+        border-bottom: 1px solid #ddd;
+        text-align: center;
+      }
+      .delete {
+        background: red;
+      }
+      .issue {
+        background: orange;
+      }
+      .return {
+        background: green;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Library Management System</header>
+
+    <div class="container">
+      <div class="form">
+        <h2>Add Book</h2>
+        <input type="text" id="title" placeholder="Book Title" />
+        <input type="text" id="author" placeholder="Author" />
+        <input type="text" id="id" placeholder="Book ID" />
+        <button onclick="addBook()">Add Book</button>
+
+        <h2>Issue Book</h2>
+        <input type="text" id="issueId" placeholder="Book ID" />
+        <input type="text" id="student" placeholder="Student Name" />
+        <button class="issue" onclick="issueBook()">Issue Book</button>
+
+        <h2>Return Book</h2>
+        <input type="text" id="returnId" placeholder="Book ID" />
+        <button class="return" onclick="returnBook()">Return Book</button>
+      </div>
+
+      <div class="list">
+        <h2>Book List</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Title</th>
+              <th>Author</th>
+              <th>Status</th>
+              <th>Student</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="bookList"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      let books = [];
+
+      function addBook() {
+        const title = document.getElementById("title").value;
+        const author = document.getElementById("author").value;
+        const id = document.getElementById("id").value;
+
+        if (!title || !author || !id) return alert("Fill all fields");
+
+        books.push({ id, title, author, issued: false, student: "-" });
+        displayBooks();
+
+        title.value = author.value = id.value = "";
+      }
+
+      function issueBook() {
+        const id = document.getElementById("issueId").value;
+        const student = document.getElementById("student").value;
+
+        let book = books.find((b) => b.id === id);
+        if (!book) return alert("Book not found");
+        if (book.issued) return alert("Already issued");
+
+        book.issued = true;
+        book.student = student;
+        displayBooks();
+      }
+
+      function returnBook() {
+        const id = document.getElementById("returnId").value;
+
+        let book = books.find((b) => b.id === id);
+        if (!book) return alert("Book not found");
+        if (!book.issued) return alert("Book is not issued");
+
+        book.issued = false;
+        book.student = "-";
+        displayBooks();
+      }
+
+      function deleteBook(index) {
+        books.splice(index, 1);
+        displayBooks();
+      }
+
+      function displayBooks() {
+        const list = document.getElementById("bookList");
+        list.innerHTML = "";
+
+        books.forEach((book, index) => {
+          list.innerHTML += `
+                <tr>
+                    <td>${book.id}</td>
+                    <td>${book.title}</td>
+                    <td>${book.author}</td>
+                    <td>${book.issued ? "Issued" : "Available"}</td>
+                    <td>${book.student}</td>
+                    <td><button class="delete" onclick="deleteBook(${index})">Delete</button></td>
+                </tr>
+            `;
+        });
+      }
+    </script>
+  </body>
+</html>
