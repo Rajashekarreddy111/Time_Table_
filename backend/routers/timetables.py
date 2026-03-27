@@ -22,8 +22,12 @@ def _build_subject_name_map() -> dict[str, str]:
     if not payload:
         return mapping
     for row in payload.get("rows", []):
-        sid = _normalize_subject_token(row.get("subject_id", ""))
-        sname = str(row.get("subject_name", "")).strip()
+        sid = _normalize_subject_token(
+            row.get("subject_id", "") or row.get("subject id", "") or row.get("id", "")
+        )
+        sname = str(
+            row.get("subject_name", "") or row.get("subject name", "") or row.get("subject", "")
+        ).strip()
         if sid:
             mapping[sid] = sname or sid
     return mapping
@@ -56,6 +60,26 @@ def _enrich_subject_names(record: dict[str, Any]) -> dict[str, Any]:
             enrich_grid(grid)
     else:
         enrich_grid(record.get("grid"))
+
+    faculty_workloads = record.get("facultyWorkloads")
+    if isinstance(faculty_workloads, dict):
+        for _faculty, day_map in faculty_workloads.items():
+            if not isinstance(day_map, dict):
+                continue
+            for _day, slots in day_map.items():
+                if not isinstance(slots, list):
+                    continue
+                for idx, slot in enumerate(slots):
+                    if not isinstance(slot, str) or not slot.strip():
+                        continue
+                    head, sep, tail = slot.partition("(")
+                    sid = _normalize_subject_token(head)
+                    if not sid:
+                        continue
+                    subject_name = subject_map.get(sid)
+                    if not subject_name:
+                        continue
+                    slots[idx] = f"{subject_name} ({tail}" if sep else subject_name
 
     for key in ("sharedClasses", "constraintViolations", "unscheduledSubjects"):
         items = record.get(key)

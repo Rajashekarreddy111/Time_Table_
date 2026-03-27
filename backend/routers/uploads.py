@@ -172,10 +172,19 @@ def _normalize_lab_timetable(rows: list[dict]) -> list[dict]:
 def _normalize_subject_id_mapping(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
-        sub_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
+        sub_id = (
+            _to_text(row.get("subject_id"))
+            or _to_text(row.get("subject id"))
+            or _to_text(row.get("id"))
+        )
         name = _to_text(row.get("subject_name")) or _to_text(row.get("subject name")) or _to_text(row.get("subject"))
         if sub_id and name:
             normalized.append({"subject_id": sub_id, "subject_name": name})
+    if not normalized:
+        raise _validation_error(
+            "Required columns are missing",
+            [{"expectedAnyOf": [["subject_id", "subject_name"], ["id", "subject name"]]}],
+        )
     return normalized
 
 
