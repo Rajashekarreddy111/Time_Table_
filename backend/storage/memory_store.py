@@ -26,6 +26,8 @@ class MemoryStore:
         self._scoped_mappings_mem: dict[tuple[str, str], dict[str, Any]] = {}
         self._generated_timetables_mem: dict[str, dict[str, Any]] = {}
         self._faculty_occupancy_mem: list[dict[str, Any]] = []
+        self._users_mem: dict[str, dict[str, Any]] = {}
+        self._sessions_mem: dict[str, dict[str, Any]] = {}
 
         self._mongo_error = None
         try:
@@ -36,12 +38,17 @@ class MemoryStore:
             self._scoped_mappings: Collection = self._db["scoped_mappings"]
             self._generated_timetables: Collection = self._db["generated_timetables"]
             self._faculty_occupancy: Collection = self._db["faculty_occupancy"]
+            self._users: Collection = self._db["users"]
+            self._sessions: Collection = self._db["sessions"]
 
             self._uploaded_files.create_index("id", unique=True)
             self._scoped_mappings.create_index([("mapType", 1), ("scopeKey", 1)], unique=True)
             self._generated_timetables.create_index("id", unique=True)
             self._faculty_occupancy.create_index([("faculty", 1), ("day", 1), ("period", 1), ("sourceId", 1)], unique=True)
             self._faculty_occupancy.create_index("sourceId")
+            self._users.create_index("username", unique=True)
+            self._sessions.create_index("id", unique=True)
+            self._sessions.create_index("username")
             
             # Test connection immediately
             self._client.admin.command('ping')
@@ -76,6 +83,12 @@ class MemoryStore:
         sequence = self._next_sequence("timetable")
         stamp = datetime.now().strftime("%Y%m%d")
         return f"tt_{stamp}_{sequence:03d}"
+
+    def next_user_id(self) -> str:
+        return f"user_{self._next_sequence('user')}"
+
+    def next_session_id(self) -> str:
+        return f"session_{self._next_sequence('session')}"
 
     def save_file_map(self, file_id: str, payload: dict[str, Any]) -> None:
         document = {
@@ -228,6 +241,144 @@ class MemoryStore:
     @property
     def global_faculty_occupancy(self) -> dict[str, set[tuple[str, int]]]:
         return self.get_global_faculty_occupancy()
+
+    def save_user(self, username: str, payload: dict[str, Any]) -> None:
+        document = {
+            **payload,
+            "username": username,
+            "updatedAt": datetime.now(timezone.utc),
+        }
+        if not self._mongo_available:
+            self._users_mem[username] = document
+            return
+        self._users.update_one({"username": username}, {"$set": document}, upsert=True)
+
+    def create_user(self, username: str, payload: dict[str, Any]) -> bool:
+        document = {
+            **payload,
+            "username": username,
+            "updatedAt": datetime.now(timezone.utc),
+        }
+        if not self._mongo_available:
+            if username in self._users_mem:
+                return False
+            self._users_mem[username] = document
+            return True
+        try:
+            self._users.insert_one(document)
+            return True
+        except DuplicateKeyError:
+            return False
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        if not self._mongo_available:
+            return self._users_mem.get(username)
+        return self._users.find_one({"username": username}, {"_id": 0})
+
+    def list_users_by_creator(self, created_by: str, role: str | None = None) -> list[dict[str, Any]]:
+        if not self._mongo_available:
+            items = [item for item in self._users_mem.values() if item.get("createdBy") == created_by]
+            if role:
+                items = [item for item in items if item.get("role") == role]
+            return sorted(items, key=lambda item: item.get("username", ""))
+        query: dict[str, Any] = {"createdBy": created_by}
+        if role:
+            query["role"] = role
+        return list(self._users.find(query, {"_id": 0}).sort("username", 1))
+
+    def update_user_password(self, username: str, password_hash: str) -> bool:
+        if not self._mongo_available:
+            if username not in self._users_mem:
+                return False
+            self._users_mem[username]["passwordHash"] = password_hash
+            self._users_mem[username]["updatedAt"] = datetime.now(timezone.utc)
+            return True
+        result = self._users.update_one(
+            {"username": username},
+            {"$set": {"passwordHash": password_hash, "updatedAt": datetime.now(timezone.utc)}},
+        )
+        return result.matched_count > 0
+
+    def rename_user(self, old_username: str, new_username: str) -> bool:
+        if old_username == new_username:
+            return True
+        if not self._mongo_available:
+            if old_username not in self._users_mem or new_username in self._users_mem:
+                return False
+            document = dict(self._users_mem.pop(old_username))
+            document["username"] = new_username
+            document["updatedAt"] = datetime.now(timezone.utc)
+            self._users_mem[new_username] = document
+            for session in self._sessions_mem.values():
+                if session.get("username") == old_username:
+                    session["username"] = new_username
+                    session["updatedAt"] = datetime.now(timezone.utc)
+            for item in self._users_mem.values():
+                if item.get("createdBy") == old_username:
+                    item["createdBy"] = new_username
+                    item["updatedAt"] = datetime.now(timezone.utc)
+            return True
+
+        if self.get_user_by_username(new_username):
+            return False
+        user = self.get_user_by_username(old_username)
+        if not user:
+            return False
+        user["username"] = new_username
+        user["updatedAt"] = datetime.now(timezone.utc)
+        self._users.delete_one({"username": old_username})
+        try:
+            self._users.insert_one(user)
+        except DuplicateKeyError:
+            return False
+        self._sessions.update_many(
+            {"username": old_username},
+            {"$set": {"username": new_username, "updatedAt": datetime.now(timezone.utc)}},
+        )
+        self._users.update_many(
+            {"createdBy": old_username},
+            {"$set": {"createdBy": new_username, "updatedAt": datetime.now(timezone.utc)}},
+        )
+        return True
+
+    def delete_user(self, username: str) -> bool:
+        self.delete_sessions_by_username(username)
+        if not self._mongo_available:
+            return self._users_mem.pop(username, None) is not None
+        result = self._users.delete_one({"username": username})
+        return result.deleted_count > 0
+
+    def save_session(self, session_id: str, payload: dict[str, Any]) -> None:
+        document = {
+            **payload,
+            "id": session_id,
+            "updatedAt": datetime.now(timezone.utc),
+        }
+        if not self._mongo_available:
+            self._sessions_mem[session_id] = document
+            return
+        self._sessions.update_one({"id": session_id}, {"$set": document}, upsert=True)
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        if not self._mongo_available:
+            return self._sessions_mem.get(session_id)
+        return self._sessions.find_one({"id": session_id}, {"_id": 0})
+
+    def delete_session(self, session_id: str) -> None:
+        if not self._mongo_available:
+            self._sessions_mem.pop(session_id, None)
+            return
+        self._sessions.delete_one({"id": session_id})
+
+    def delete_sessions_by_username(self, username: str) -> None:
+        if not self._mongo_available:
+            self._sessions_mem = {
+                sid: item
+                for sid, item in self._sessions_mem.items()
+                if item.get("username") != username
+            }
+            return
+        self._sessions.delete_many({"username": username})
 
 
 store = MemoryStore()

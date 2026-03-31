@@ -260,13 +260,35 @@ const TimetableViewer = () => {
 
   return (
     <DashboardLayout>
-      <div className="page-header">
-        <h1>View Timetables</h1>
-        <p>Browse and export generated section timetables</p>
-      </div>
+      <section className="hero-shell mb-8">
+        <div className="relative z-10 grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_340px] xl:items-end">
+          <div className="space-y-4">
+            <div className="hero-chip">Timetable Viewing Studio</div>
+            <div className="space-y-2">
+              <h1 className="text-4xl font-bold tracking-tight text-foreground">View Timetables</h1>
+              <p className="max-w-2xl text-sm leading-7 text-muted-foreground">
+                Switch between years and sections, export polished sheets, and print the current timetable directly from one workspace.
+              </p>
+            </div>
+          </div>
+          <div className="panel-card">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Live Summary</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="panel-muted">
+                <p className="text-2xl font-bold text-foreground">{availableYears.length}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Years available</p>
+              </div>
+              <div className="panel-muted">
+                <p className="text-2xl font-bold text-foreground">{allTimetables.length}</p>
+                <p className="mt-1 text-xs text-muted-foreground">Section timetables</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {allTimetables.length > 1 && (
-        <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 mb-6 print:hidden">
+        <div className="panel-card mb-6 print:hidden">
           <h3 className="text-xs font-semibold text-primary uppercase tracking-wider mb-3">Recently Generated / Available Sections</h3>
           <div className="flex flex-wrap gap-2">
             {allTimetables.map((item, idx) => (
@@ -287,7 +309,7 @@ const TimetableViewer = () => {
         </div>
       )}
 
-      <div className="bg-card rounded-xl p-6 shadow-sm mb-6 print:hidden">
+      <div className="panel-card mb-6 print:hidden">
         <div className="flex flex-wrap items-end gap-4">
           <div className="w-48">
             <Label className="text-xs text-muted-foreground">Year</Label>
@@ -326,7 +348,7 @@ const TimetableViewer = () => {
         </div>
       </div>
 
-      <div className="bg-card rounded-xl p-6 shadow-sm print:shadow-none print:p-0">
+      <div className="panel-card print:shadow-none print:p-0">
         {timetable ? (
           <div className="space-y-4">
             <TimetableGrid

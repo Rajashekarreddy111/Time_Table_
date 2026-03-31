@@ -15,6 +15,15 @@ PERIOD_TIME = {
     6: "2:20 - 3:10",
     7: "3:10 - 4:00",
 }
+PERIOD_WINDOWS = {
+    1: (9 * 60 + 10, 10 * 60),
+    2: (10 * 60, 10 * 60 + 50),
+    3: (11 * 60, 11 * 60 + 50),
+    4: (11 * 60 + 50, 12 * 60 + 40),
+    5: (13 * 60 + 30, 14 * 60 + 20),
+    6: (14 * 60 + 20, 15 * 60 + 10),
+    7: (15 * 60 + 10, 16 * 60),
+}
 
 
 def _validation_error(message: str, details: list | None = None) -> HTTPException:
@@ -172,6 +181,55 @@ def _availability_result(
     }
 
 
+def _parse_clock_time(value) -> int | None:
+    text = _to_text(value)
+    if not text:
+        return None
+
+    normalized = re.sub(r"\s+", "", text).upper().replace(".", ":")
+    has_meridiem = normalized.endswith("AM") or normalized.endswith("PM")
+    for fmt in ("%H:%M", "%I:%M%p", "%I%p"):
+        try:
+            parsed = datetime.strptime(normalized, fmt)
+            minutes = parsed.hour * 60 + parsed.minute
+            if not has_meridiem and fmt == "%H:%M":
+                hour = parsed.hour
+                # Match the timetable display: 1:30-4:00 should be treated as afternoon slots.
+                if 1 <= hour <= 4:
+                    minutes += 12 * 60
+            return minutes
+        except ValueError:
+            continue
+    return None
+
+
+def _resolve_periods_from_time_range(start_time, end_time) -> list[int]:
+    start_minutes = _parse_clock_time(start_time)
+    end_minutes = _parse_clock_time(end_time)
+    if start_minutes is None or end_minutes is None:
+        return []
+    if end_minutes < start_minutes:
+        raise _validation_error("End time must be greater than or equal to start time", [])
+
+    start_candidates = [period for period, (period_start, _) in PERIOD_WINDOWS.items() if period_start <= start_minutes]
+    end_candidates = [period for period, (_, period_end) in PERIOD_WINDOWS.items() if period_end >= end_minutes]
+
+    if not start_candidates:
+        start_period = min(PERIOD_WINDOWS)
+    else:
+        start_period = max(start_candidates)
+
+    if not end_candidates:
+        end_period = max(PERIOD_WINDOWS)
+    else:
+        end_period = min(end_candidates)
+
+    if start_period > end_period:
+        return []
+
+    return [period for period in PERIOD_WINDOWS if start_period <= period <= end_period]
+
+
 def _fair_select_faculty(
     available_faculty: set[str],
     faculty_required: int,
@@ -196,12 +254,15 @@ def _build_schedules_from_upload(
     store: MemoryStore,
     availability_file_id: str,
     faculty_name_map: dict[str, str],
-) -> dict[str, dict[str, dict[int, dict]]]:
-    payload = store.get_file_map(availability_file_id)
+) -> tuple[dict[str, dict[str, dict[int, dict]]], dict[str, set[str]]]:
+    payload = store.get_scoped_mapping("faculty_availability", "global")
+    if not payload and availability_file_id:
+        payload = store.get_file_map(availability_file_id)
     if not payload:
         raise _validation_error("Invalid availabilityFileId", [])
 
     schedules: dict[str, dict[str, dict[int, dict]]] = {}
+    explicit_free_days: dict[str, set[str]] = {}
     for row in payload.get("rows", []):
         day = _normalize_day(row.get("day"))
         try:
@@ -224,10 +285,36 @@ def _build_schedules_from_upload(
             "is_available": bool(row.get("is_available")),
         }
         schedules.setdefault(faculty_key, {}).setdefault(day, {})[period] = class_info
+        if class_info["is_available"]:
+            explicit_free_days.setdefault(faculty_key, set()).add(day)
 
     if not schedules:
         raise _validation_error("Uploaded faculty availability file has no valid schedule rows", [])
-    return schedules
+    return schedules, explicit_free_days
+
+
+def _is_faculty_free_for_period(
+    faculty: str,
+    day_name: str,
+    period: int,
+    schedules: dict[str, dict[str, dict[int, dict]]],
+    explicit_free_days: dict[str, set[str]],
+    ignored_years: list[str],
+    ignored_sections: list[str],
+) -> bool:
+    day_schedule = schedules.get(faculty, {}).get(day_name, {})
+    class_info = day_schedule.get(period)
+
+    # Explicit availability templates/workload exports only mark free slots.
+    if day_name in explicit_free_days.get(faculty, set()):
+        if class_info is None:
+            return False
+        return bool(class_info.get("is_available")) or _is_ignored(class_info, ignored_years, ignored_sections)
+
+    # Row-wise occupied schedules only mark busy slots.
+    if class_info is None:
+        return True
+    return bool(class_info.get("is_available")) or _is_ignored(class_info, ignored_years, ignored_sections)
 
 
 def get_available_faculty_for_all_periods(
@@ -258,19 +345,21 @@ def get_available_faculty_for_all_periods(
         raise _validation_error("No valid teaching periods selected", [])
 
     faculty_name_map = _build_faculty_name_map(store, faculty_id_map_file_id)
-    schedules = _build_schedules_from_upload(store, availability_file_id, faculty_name_map)
+    schedules, explicit_free_days = _build_schedules_from_upload(store, availability_file_id, faculty_name_map)
     faculty_names = list(schedules.keys())
     common_available: set[str] = set(faculty_names)
 
     for period in selected_periods:
         period_available: set[str] = set()
         for faculty in faculty_names:
-            # 1. Check uploaded availability file
-            class_info = schedules.get(faculty, {}).get(day_name, {}).get(period)
-            if (
-                class_info is None
-                or class_info.get("is_available")
-                or _is_ignored(class_info, ignored_years, ignored_sections)
+            if _is_faculty_free_for_period(
+                faculty,
+                day_name,
+                period,
+                schedules,
+                explicit_free_days,
+                ignored_years,
+                ignored_sections,
             ):
                 period_available.add(faculty)
         common_available &= period_available
@@ -318,7 +407,7 @@ def get_bulk_available_faculty(
         raise _validation_error("Query file is empty", [])
 
     faculty_name_map = _build_faculty_name_map(store, faculty_id_map_file_id)
-    schedules = _build_schedules_from_upload(store, availability_file_id, faculty_name_map)
+    schedules, explicit_free_days = _build_schedules_from_upload(store, availability_file_id, faculty_name_map)
     faculty_names = list(schedules.keys())
     occupancy_details = store.get_global_faculty_occupancy_details()
 
@@ -329,9 +418,11 @@ def get_bulk_available_faculty(
         date_value = row.get("date")
         faculty_required = row.get("facultyRequired", 1)
         periods = row.get("periods", [])
+        start_time = row.get("startTime")
+        end_time = row.get("endTime")
 
-        if not periods:
-            continue
+        if not periods and start_time and end_time:
+            periods = _resolve_periods_from_time_range(start_time, end_time)
             
         try:
             day_name = datetime.strptime(date_value, "%Y-%m-%d").strftime("%A")
@@ -346,19 +437,20 @@ def get_bulk_available_faculty(
             continue
 
         selected_periods = sorted({p for p in periods if p in PERIOD_TIME})
-        if not selected_periods:
-            continue
 
         common_available: set[str] = set(faculty_names)
 
         for period in selected_periods:
             period_available: set[str] = set()
             for faculty in faculty_names:
-                class_info = schedules.get(faculty, {}).get(day_name, {}).get(period)
-                if (
-                    class_info is None
-                    or class_info.get("is_available")
-                    or _is_ignored(class_info, ignored_years, ignored_sections)
+                if _is_faculty_free_for_period(
+                    faculty,
+                    day_name,
+                    period,
+                    schedules,
+                    explicit_free_days,
+                    ignored_years,
+                    ignored_sections,
                 ):
                     period_available.add(faculty)
             common_available &= period_available

@@ -8,6 +8,57 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class AuthUserResponse(BaseModel):
+    id: str
+    username: str
+    role: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    role: str
+
+
+class LoginResponse(BaseModel):
+    user: AuthUserResponse
+    message: str
+
+
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str
+
+
+class ChangeUsernameRequest(BaseModel):
+    currentPassword: str
+    newUsername: str
+
+
+class CoordinatorCreateRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CoordinatorPasswordUpdateRequest(BaseModel):
+    newPassword: str
+
+
+class CoordinatorListItem(BaseModel):
+    id: str
+    username: str
+    role: str
+    createdBy: str | None = None
+
+
+class CoordinatorListResponse(BaseModel):
+    items: list[CoordinatorListItem]
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
 class PeriodInfo(BaseModel):
     period: int
     time: str
@@ -122,6 +173,7 @@ class ManualLabEntry(BaseModel):
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
+    labsOnly: bool = False
     priorTimetableIds: list[str] = Field(default_factory=list)
     manualEntries: list[ManualEntryMode] = Field(default_factory=list)
     subjects: list[SubjectEntry] = Field(default_factory=list)

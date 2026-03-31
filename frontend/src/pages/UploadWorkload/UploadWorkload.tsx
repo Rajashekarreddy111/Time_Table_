@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { FileUpload } from "@/components/FileUpload";
+import { buildTemplateLinks } from "@/utils/templateLinks";
 import { toast } from "sonner";
 import { API_BASE_URL, getFacultyIdStatus, uploadFacultyAvailability, uploadFacultyIdMap } from "@/services/apiClient";
 
@@ -77,7 +78,7 @@ const UploadWorkload = () => {
             label="Upload Faculty Workload File"
             accept=".xlsx,.xls,.csv"
             description="Upload faculty workload file (XLSX/XLS/CSV)"
-            templateLinks={[{ label: "Workload Template", href: `${templateBase}/faculty-workload` }]}
+            templateLinks={buildTemplateLinks(templateBase, "faculty-workload")}
           />
           <p className="text-xs text-muted-foreground mt-2">
             {workloadUploadId ? `Workload upload id: ${workloadUploadId}` : "No workload file uploaded yet."}
@@ -101,7 +102,7 @@ const UploadWorkload = () => {
               label="Upload Faculty ID Map"
               accept=".xlsx,.xls,.csv"
               description="Upload faculty name-id mapping file (XLSX/XLS/CSV)"
-              templateLinks={[{ label: "Faculty ID Template", href: `${templateBase}/faculty-id-map` }]}
+              templateLinks={buildTemplateLinks(templateBase, "faculty-id-map")}
             />
           )}
           <p className="text-xs text-muted-foreground mt-2">

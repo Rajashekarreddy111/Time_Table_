@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PERIODS } from "@/data/mockData";
 import { readAcademicConfig } from "@/lib/academicConfig";
+import { buildTemplateLinks } from "@/utils/templateLinks";
 import { API_BASE_URL, type BulkFacultyAvailabilityItem, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
 import { toast } from "sonner";
 
@@ -187,7 +188,7 @@ const FacultyAvailability = () => {
   return (
     <DashboardLayout>
       <div className="w-full space-y-6">
-        <div className="rounded-[30px] border border-border/70 bg-[linear-gradient(135deg,rgba(2,132,199,0.10),rgba(30,41,59,0.05),rgba(255,255,255,0.94))] p-6 shadow-sm">
+        <div className="hero-shell">
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] xl:items-end">
             <div className="space-y-4">
               <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm"><Sparkles className="h-3.5 w-3.5" />Invisilation finder</div>
@@ -202,7 +203,7 @@ const FacultyAvailability = () => {
               </div>
             </div>
 
-            <div className="rounded-[26px] border border-border/70 bg-card/90 p-5 shadow-sm">
+            <div className="panel-card">
               <div className="flex items-center gap-3">
                 <div className="rounded-2xl bg-primary/10 p-3 text-primary"><Clock3 className="h-5 w-5" /></div>
                 <div><h2 className="text-sm font-semibold text-foreground">Report readiness</h2><p className="text-xs text-muted-foreground">The button enables after both uploads succeed.</p></div>
@@ -217,7 +218,7 @@ const FacultyAvailability = () => {
 
         <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
           <div className="space-y-6">
-            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+            <div className="panel-card">
               <div className="mb-6 flex items-start justify-between gap-4">
                 <div><h2 className="text-lg font-semibold text-foreground">Upload Center</h2><p className="text-sm text-muted-foreground">Add both files here, then generate the invisilation report.</p></div>
                 <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"><Upload className="h-3.5 w-3.5" />{availabilityFileId && queryFileId ? "Ready to generate" : "Waiting for uploads"}</div>
@@ -229,17 +230,17 @@ const FacultyAvailability = () => {
                   <p className="mt-3 text-xs text-muted-foreground">{availabilityFileId ? `Upload ID: ${availabilityFileId}` : "No faculty workload file uploaded yet."}</p>
                 </div>
                 <div className="rounded-[24px] border border-border/70 bg-muted/20 p-4">
-                  <div className="mb-4 flex items-start justify-between gap-3">
-                    <div><h3 className="text-base font-semibold text-foreground">Query file upload</h3><p className="mt-1 text-sm text-muted-foreground">Upload the file with date, required faculty, and period values.</p></div>
-                    <Button variant="outline" size="sm" asChild className="gap-2"><a href={`${templateBase}/faculty-availability-query`} target="_blank" rel="noreferrer"><Download className="h-3.5 w-3.5" />Template</a></Button>
+                  <div className="mb-4">
+                    <h3 className="text-base font-semibold text-foreground">Query file upload</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">Upload the file with date, required faculty, and period values.</p>
                   </div>
-                  <FileUpload file={queryFile} onFileSelect={handleQueryUpload} onClear={() => { setQueryFile(null); setQueryFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload query file" description="Contains Date, Number of Faculty Required, and Periods" icon={<CalendarDays className="h-9 w-9 text-primary" />} />
+                  <FileUpload file={queryFile} onFileSelect={handleQueryUpload} onClear={() => { setQueryFile(null); setQueryFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload query file" description="Contains Date, Number of Faculty Required, Start Time, and End Time" icon={<CalendarDays className="h-9 w-9 text-primary" />} templateLinks={buildTemplateLinks(templateBase, "faculty-availability-query")} />
                   <p className="mt-3 text-xs text-muted-foreground">{queryFileId ? `Query ID: ${queryFileId}` : "No query file uploaded yet."}</p>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+            <div className="panel-card">
               <div className="mb-6 flex items-start justify-between gap-4">
                 <div><h2 className="text-lg font-semibold text-foreground">Ignore Rules</h2><p className="text-sm text-muted-foreground">Optional filters to treat selected loads as available while checking results.</p></div>
                 <Button variant="outline" size="sm" onClick={clearFilters} disabled={ignoredYears.length === 0 && ignoredSections.length === 0}>Clear filters</Button>
@@ -274,7 +275,7 @@ const FacultyAvailability = () => {
               </div>
             </div>
 
-            <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+            <div className="panel-card">
               <div className="mb-5 flex items-center gap-3"><div className="rounded-2xl bg-primary/10 p-3 text-primary"><CalendarDays className="h-5 w-5" /></div><div><h2 className="text-base font-semibold text-foreground">Supported periods</h2><p className="text-sm text-muted-foreground">Use these timetable period numbers in the query file.</p></div></div>
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {actualPeriods.map((period) => (
@@ -299,7 +300,7 @@ const FacultyAvailability = () => {
             </div>
 
             {results ? (
-              <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
+              <div className="panel-card">
                 <div className="flex flex-col gap-4 border-b border-border/70 pb-5 lg:flex-row lg:items-end lg:justify-between">
                   <div><h2 className="text-lg font-semibold text-foreground">Availability results</h2><p className="text-sm text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p></div>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

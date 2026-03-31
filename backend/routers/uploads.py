@@ -72,6 +72,28 @@ def _parse_period_tokens(value) -> list[int]:
     return periods
 
 
+def _parse_workload_class_details(value) -> dict[str, str]:
+    text = _to_text(value)
+    if not text:
+        return {"year": "", "section": "", "subject": ""}
+
+    compact = text.replace(" ", "")
+    match = None
+    import re
+    match = re.match(r"^(?P<year>\d)(?P<section>[A-Z]\d+)(?:-(?P<subject>.+))?$", compact, re.IGNORECASE)
+    if not match:
+        return {"year": "", "section": "", "subject": text}
+
+    year_raw = match.group("year") or ""
+    section = (match.group("section") or "").upper()
+    subject = match.group("subject") or text
+    return {
+        "year": normalize_year(year_raw),
+        "section": section,
+        "subject": subject,
+    }
+
+
 
 
 def _normalize_faculty_id_rows(rows: list[dict]) -> list[dict]:
@@ -332,22 +354,24 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                         cell_val = row.get(col_key)
                         is_empty = cell_val is None or (isinstance(cell_val, float) and math.isnan(cell_val)) or str(cell_val).strip() == ""
                         if is_empty:
-                            normalized_workload.append({
-                                "faculty_id": faculty_name,
-                                "faculty_name": faculty_name,
-                                "day": day_val,
-                                "period": p_num,
-                                "year": "",
-                                "section": "",
-                                "subject": "",
-                                "is_available": True,
-                            })
+                            continue
+                        details = _parse_workload_class_details(cell_val)
+                        normalized_workload.append({
+                            "faculty_id": faculty_name,
+                            "faculty_name": faculty_name,
+                            "day": day_val,
+                            "period": p_num,
+                            "year": details["year"],
+                            "section": details["section"],
+                            "subject": details["subject"],
+                            "is_available": False,
+                        })
                             
             if normalized_workload:
                 return normalized_workload
             else:
                 raise _validation_error(
-                    "Faculty workload format detected, but no available periods found (or faculty is fully occupied)",
+                    "Faculty workload format detected, but no scheduled periods were found",
                     []
                 )
 
@@ -490,18 +514,19 @@ def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
 
             for column_index, period in column_to_period.items():
                 cell_value = row[column_index] if column_index < len(row) else None
-                if _to_text(cell_value):
+                if not _to_text(cell_value):
                     continue
+                details = _parse_workload_class_details(cell_value)
                 normalized_rows.append(
                     {
                         "faculty_id": faculty_name or worksheet.title.strip(),
                         "faculty_name": faculty_name or worksheet.title.strip(),
                         "day": day_value,
                         "period": period,
-                        "year": "",
-                        "section": "",
-                        "subject": "",
-                        "is_available": True,
+                        "year": details["year"],
+                        "section": details["section"],
+                        "subject": details["subject"],
+                        "is_available": False,
                     }
                 )
 
@@ -515,6 +540,8 @@ def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
         date_raw = _to_text(row.get("date"))
         required_raw = _to_text(row.get("number of faculty required")) or _to_text(row.get("faculty required"))
         periods_raw = _to_text(row.get("periods")) or _to_text(row.get("select period(s)")) or _to_text(row.get("period"))
+        start_time = _to_text(row.get("start time")) or _to_text(row.get("from time")) or _to_text(row.get("start"))
+        end_time = _to_text(row.get("end time")) or _to_text(row.get("to time")) or _to_text(row.get("end"))
         
         if not date_raw:
             continue
@@ -536,13 +563,15 @@ def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
         normalized.append({
             "date": date_raw,
             "facultyRequired": required,
-            "periods": periods
+            "periods": periods,
+            "startTime": start_time,
+            "endTime": end_time,
         })
         
     if not normalized:
         raise _validation_error(
             "Required columns are missing or file is empty",
-            [{"expectedColumns": ["Date", "Number of Faculty Required", "Periods/Select Period(s)"],
+            [{"expectedColumns": ["Date", "Number of Faculty Required", "Start Time", "End Time"],
               "receivedColumns": list(rows[0].keys()) if rows else []}],
         )
     return normalized
@@ -696,29 +725,13 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
         rows = _normalize_faculty_availability_rows(dataframe_rows(dataframe))
     cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/faculty-availability")
 
-    # Merge with existing rows and deduplicate
-    existing = store.get_scoped_mapping("faculty_availability", "global")
-    if existing:
-        existing_rows = existing.get("rows", [])
-        
-        # Simple deduplication based on (faculty_id, day, period, year, section, subject)
-        seen_keys = set()
-        for r in existing_rows:
-            key = (r.get("faculty_id"), r.get("day"), r.get("period"), r.get("year"), r.get("section"), r.get("subject"))
-            seen_keys.add(key)
-            
-        merged_rows = list(existing_rows)
-        for r in rows:
-            key = (r.get("faculty_id"), r.get("day"), r.get("period"), r.get("year"), r.get("section"), r.get("subject"))
-            if key not in seen_keys:
-                merged_rows.append(r)
-                seen_keys.add(key)
-    else:
-        merged_rows = rows
+    # Treat the latest uploaded workload/availability file as the source of truth.
+    # Merging older uploads can keep stale "free" rows around and produce false positives.
+    latest_rows = rows
 
-    # Save merged to scoped
+    # Save latest file to scoped
     payload = {
-        "rows": merged_rows,
+        "rows": latest_rows,
         "lastFileName": file.filename,
         "lastSourceFile": cloudinary_file,
     }
@@ -731,15 +744,15 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
         {
             "id": file_id,
             "fileName": file.filename,
-            "rowsParsed": len(merged_rows),
-            "rows": merged_rows,
+            "rowsParsed": len(latest_rows),
+            "rows": latest_rows,
             "sourceFile": cloudinary_file,
         },
     )
     return UploadResponse(
         fileId=file_id,
         fileName=file.filename,
-        rowsParsed=len(merged_rows),
+        rowsParsed=len(latest_rows),
         message="Faculty availability file uploaded successfully",
     )
 

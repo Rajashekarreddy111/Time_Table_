@@ -1,6 +1,5 @@
-import { GraduationCap, Calendar, Users, LayoutDashboard, Clock, RotateCcw, FileText } from "lucide-react";
+import { GraduationCap, Calendar, Users, LayoutDashboard, Clock, FileText, KeyRound, LogOut, ShieldCheck } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { useLocation } from "react-router-dom";
 import {
   Sidebar,
   SidebarContent,
@@ -15,20 +14,10 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
+import { useAuth } from "@/hooks/useAuth";
 
-const navItems = [
+const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Timetable Generator", url: "/generator", icon: Calendar },
   { title: "View Timetables", url: "/timetables", icon: GraduationCap },
@@ -37,16 +26,21 @@ const navItems = [
   { title: "Invisilation Finder", url: "/availability", icon: Users },
 ];
 
+const adminNavItems = [
+  { title: "Change Password", url: "/admin/change-password", icon: KeyRound },
+  { title: "Manage Coordinators", url: "/admin/coordinators", icon: ShieldCheck },
+];
+
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
-  const location = useLocation();
+  const { user, logout } = useAuth();
+  const navItems = user?.role === "admin" ? [...baseNavItems, ...adminNavItems] : baseNavItems;
 
-  const handleReset = () => {
-    localStorage.clear();
-    sessionStorage.clear();
-    toast.success("System reset! All data has been cleared.");
-    window.location.href = "/";
+  const handleLogout = async () => {
+    await logout();
+    toast.success("Logged out successfully");
+    window.location.href = "/login";
   };
 
   return (
@@ -91,32 +85,21 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="p-3 border-t border-sidebar-border">
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size={collapsed ? "icon" : "sm"}
-              className="w-full text-sidebar-foreground hover:bg-destructive/20 hover:text-destructive gap-2"
-            >
-              <RotateCcw className="h-4 w-4 flex-shrink-0" />
-              {!collapsed && <span className="text-sm">Reset System</span>}
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Reset Entire System?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will clear all uploaded files, generated timetables, faculty workload data, extracted data, and cached data. The application will return to its initial empty state.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleReset} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                Reset Everything
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        {!collapsed && user && (
+          <div className="mb-3 rounded-xl border border-sidebar-border px-3 py-2 text-xs">
+            <div className="font-semibold text-sidebar-accent-foreground">{user.username}</div>
+            <div className="mt-1 uppercase tracking-[0.14em] text-sidebar-foreground/60">{user.role}</div>
+          </div>
+        )}
+        <Button
+          variant="ghost"
+          size={collapsed ? "icon" : "sm"}
+          className="w-full text-sidebar-foreground gap-2"
+          onClick={() => void handleLogout()}
+        >
+          <LogOut className="h-4 w-4 flex-shrink-0" />
+          {!collapsed && <span className="text-sm">Logout</span>}
+        </Button>
       </SidebarFooter>
     </Sidebar>
   );

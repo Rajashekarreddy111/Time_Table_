@@ -1,6 +1,7 @@
 from io import BytesIO
+from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from services.file_parser import create_excel_template, create_grouped_main_timetable_template
@@ -8,8 +9,12 @@ from services.file_parser import create_excel_template, create_grouped_main_time
 router = APIRouter(tags=["templates"])
 
 
-def _template_response(file_name: str, records: list[dict]) -> StreamingResponse:
-    content = create_excel_template(records)
+def _template_response(
+    file_name: str,
+    records: list[dict],
+    template_type: Literal["example", "empty"],
+) -> StreamingResponse:
+    content = create_excel_template(records, include_example_rows=template_type == "example")
     stream = BytesIO(content)
     headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
     return StreamingResponse(
@@ -19,8 +24,12 @@ def _template_response(file_name: str, records: list[dict]) -> StreamingResponse
     )
 
 
-def _grouped_template_response(file_name: str, records: list[dict]) -> StreamingResponse:
-    content = create_grouped_main_timetable_template(records)
+def _grouped_template_response(
+    file_name: str,
+    records: list[dict],
+    template_type: Literal["example", "empty"],
+) -> StreamingResponse:
+    content = create_grouped_main_timetable_template(records, include_example_rows=template_type == "example")
     stream = BytesIO(content)
     headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
     return StreamingResponse(
@@ -31,7 +40,9 @@ def _grouped_template_response(file_name: str, records: list[dict]) -> Streaming
 
 
 @router.get("/templates/main-timetable-config")
-async def main_timetable_template():
+async def main_timetable_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _grouped_template_response(
         "main-timetable-template.xlsx",
         [
@@ -205,44 +216,56 @@ async def main_timetable_template():
                 "C3_CONTINUOUS_HOURS": 2,
             },
         ],
+        template_type,
     )
 
 
 @router.get("/templates/lab-timetable")
-async def lab_timetable_template():
+async def lab_timetable_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "lab-timetable-template.xlsx",
         [
             {"YEAR": "2", "SECTION": "C1", "SUBJECT_ID": "7", "DAY": "1", "HOURS": "1,2", "VENUE": "2201"},
             {"YEAR": "2", "SECTION": "C2", "SUBJECT_ID": "10", "DAY": "1", "HOURS": "3,4", "VENUE": "2202"},
         ],
+        template_type,
     )
 
 
 @router.get("/templates/subject-id-mapping")
-async def subject_id_mapping_template():
+async def subject_id_mapping_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "subject-id-mapping-template.xlsx",
         [
             {"SUBJECT_ID": "7", "SUBJECT_NAME": "Data Structures"},
             {"SUBJECT_ID": "10", "SUBJECT_NAME": "DBMS"},
         ],
+        template_type,
     )
 
 
 @router.get("/templates/subject-continuous-rules")
-async def subject_continuous_rules_template():
+async def subject_continuous_rules_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "subject-continuous-rules-template.xlsx",
         [
             {"SUBJECT_ID": "7", "COMPULSORY_CONTINUOUS_HOURS": 2},
             {"SUBJECT_ID": "10", "COMPULSORY_CONTINUOUS_HOURS": 3},
         ],
+        template_type,
     )
 
 
 @router.get("/templates/faculty-id-map")
-async def faculty_id_template():
+async def faculty_id_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "faculty-id-map-template.xlsx",
         [
@@ -250,22 +273,28 @@ async def faculty_id_template():
             {"faculty name": "faculty-2", "id assigned": "F002"},
             {"faculty name": "faculty-3", "id assigned": "F003"},
         ],
+        template_type,
     )
 
 
 @router.get("/templates/faculty-availability")
-async def faculty_availability_template():
+async def faculty_availability_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "faculty-availability-template.xlsx",
         [
             {"Faculty ID": "F001", "Monday": "1, 2, 3", "Tuesday": "4, 5", "Wednesday": "", "Thursday": "", "Friday": "1, 2", "Saturday": ""},
             {"Faculty ID": "F002", "Monday": "", "Tuesday": "1, 2, 3, 4", "Wednesday": "5, 6, 7", "Thursday": "", "Friday": "", "Saturday": "1"},
         ],
+        template_type,
     )
 
 
 @router.get("/templates/faculty-workload")
-async def faculty_workload_template():
+async def faculty_workload_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "faculty-workload-template.xlsx",
         [
@@ -273,25 +302,32 @@ async def faculty_workload_template():
             {"id assigned": "F001", "faculty name": "faculty-1", "day": "Friday", "period": 7, "year": "4th Year", "section": "B", "subject": "OS Lab"},
             {"id assigned": "F003", "faculty name": "faculty-3", "day": "Wednesday", "period": 4, "year": "3rd Year", "section": "A", "subject": "Machine Learning"},
         ],
+        template_type,
     )
 
 @router.get("/templates/shared-classes")
-async def shared_classes_template():
+async def shared_classes_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "shared-classes-template.xlsx",
         [
             {"year": "1st Year", "sections": "B, C", "subject": "subject-3"},
             {"year": "2nd Year", "sections": "A, D", "subject": "Data Structures"},
         ],
+        template_type,
     )
 
 @router.get("/templates/faculty-availability-query")
-async def faculty_availability_query_template():
+async def faculty_availability_query_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
     return _template_response(
         "faculty-availability-query-template.xlsx",
         [
-            {"Date": "2024-03-20", "Number of Faculty Required": 1, "Periods": "1, 2, 3"},
-            {"Date": "2024-03-21", "Number of Faculty Required": 2, "Periods": "4, 5"},
-            {"Date": "Monday", "Number of Faculty Required": 1, "Periods": "1, 6"},
+            {"Date": "2026-04-01", "Number of Faculty Required": 1, "Start Time": "09:10", "End Time": "10:50"},
+            {"Date": "2026-04-02", "Number of Faculty Required": 2, "Start Time": "12:40", "End Time": "16:00"},
+            {"Date": "2026-04-03", "Number of Faculty Required": 1, "Start Time": "10:55", "End Time": "12:40"},
         ],
+        template_type,
     )

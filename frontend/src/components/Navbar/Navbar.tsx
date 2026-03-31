@@ -3,10 +3,12 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { GraduationCap, Server } from "lucide-react";
 
 import { getBackendHealth } from "@/services/apiClient";
+import { useAuth } from "@/hooks/useAuth";
 
 export function Navbar() {
   const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
   const [backendDetail, setBackendDetail] = useState<string>("");
+  const { user } = useAuth();
 
   useEffect(() => {
     let mounted = true;
@@ -73,7 +75,7 @@ export function Navbar() {
           </span>
         </div>
         <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-          <span className="text-[10px] font-semibold text-primary-foreground">NEC</span>
+          <span className="text-[10px] font-semibold text-primary-foreground">{user?.username?.slice(0, 3).toUpperCase() ?? "NEC"}</span>
         </div>
       </div>
     </header>

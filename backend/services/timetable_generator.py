@@ -670,6 +670,15 @@ def _latest_timetable_ids_by_year(
     return selected
 
 
+def _is_lab_seed_record(record: dict | None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if bool(record.get("labSeed")):
+        return True
+    generation_meta = record.get("generationMeta")
+    return isinstance(generation_meta, dict) and bool(generation_meta.get("labSeed"))
+
+
 def _build_global_section_subject_faculty_index(
     rows: list[dict],
     faculty_id_to_name: dict[str, str],
@@ -1819,6 +1828,43 @@ def generate_timetable(
                 "source": "lab",
             }
         )
+
+    if request_data.labsOnly:
+        all_grids = _serialize_section_grids(year, all_sections, schedules)
+        faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
+        timetable_id = store.next_timetable_id()
+        selected_section = request_data.section if request_data.section in all_grids else all_sections[0]
+        store.save_timetable(
+            timetable_id,
+            {
+                "id": timetable_id,
+                "year": year,
+                "section": selected_section,
+                "grid": all_grids.get(selected_section, {day: [None] * len(PERIODS) for day in DAYS}),
+                "allGrids": all_grids,
+                "facultyWorkloads": faculty_workloads,
+                "sharedClasses": [
+                    session for session in session_log
+                    if session.get("source") == "lab"
+                ],
+                "constraintViolations": _group_issue_records(constraint_violations),
+                "unscheduledSubjects": [],
+                "hasValidTimetable": False,
+                "hasConstraintViolations": bool(constraint_violations),
+                "labSeed": True,
+                "generatedFiles": {},
+                "generationMeta": {
+                    "labSeed": True,
+                    "timeoutSeconds": None,
+                    "timeoutDisabled": True,
+                    "retryStrategies": 0,
+                    "attemptStrategies": [],
+                    "deterministic": True,
+                },
+            },
+        )
+        _persist_faculty_occupancy(store, timetable_id, session_log)
+        return {"timetableId": timetable_id, "message": "Lab slots seeded successfully."}
 
     requirements: list[Requirement] = []
     covered_shared_subjects: set[tuple[str, str]] = set()

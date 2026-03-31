@@ -64,10 +64,33 @@ const Dashboard = () => {
 
   return (
     <DashboardLayout>
-      <div className="page-header">
-        <h1>Dashboard</h1>
-        <p>Welcome to {ACADEMIC_METADATA.COLLEGE_NAME} - Timetable Management System</p>
-      </div>
+      <section className="hero-shell mb-8">
+        <div className="relative z-10 grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_360px] xl:items-end">
+          <div className="space-y-5">
+            <div className="hero-chip">Campus Scheduling Command Center</div>
+            <div className="space-y-3">
+              <h1 className="text-4xl font-bold tracking-tight text-foreground">Dashboard</h1>
+              <p className="max-w-3xl text-sm leading-7 text-muted-foreground">
+                Track timetable coverage, faculty load movement, and the most recent generation activity for {ACADEMIC_METADATA.COLLEGE_NAME}.
+              </p>
+            </div>
+          </div>
+          <div className="panel-card">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Snapshot</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {stats.slice(0, 4).map((s) => (
+                <div key={s.label} className="panel-muted">
+                  <div className={`inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-white ${s.color}`}>
+                    <s.icon className="h-5 w-5" />
+                  </div>
+                  <p className="mt-3 text-2xl font-bold text-foreground">{s.value}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{s.label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {stats.map((s) => (
@@ -85,12 +108,12 @@ const Dashboard = () => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
         <div className="lg:col-span-2 space-y-6">
-          <div className="page-header">
+          <div className="page-header mb-0">
             <h2 className="text-lg font-semibold text-foreground">Section Coverage</h2>
             <p className="text-xs text-muted-foreground mt-1">Percentage of required periods assigned for each year</p>
           </div>
           
-          <div className="bg-card rounded-xl p-6 shadow-sm space-y-6">
+          <div className="panel-card space-y-6">
             {["2nd Year", "3rd Year", "4th Year"].map(year => {
               const yearRecords = records.filter(r => r.year === year);
               const sectionKeys = getAllSectionKeys(readAcademicConfig()).filter(k => k.year === year);
@@ -121,10 +144,10 @@ const Dashboard = () => {
         </div>
 
         <div className="space-y-6">
-          <div className="page-header">
+          <div className="page-header mb-0">
             <h2 className="text-lg font-semibold text-foreground">Recent Activity</h2>
           </div>
-          <div className="bg-card rounded-xl p-4 shadow-sm space-y-4">
+          <div className="panel-card space-y-4">
             {records.slice(0, 3).length > 0 ? records.slice(0, 3).map((r, i) => (
               <div key={r.id} className="flex items-center gap-3 pb-3 border-b border-border last:border-0 last:pb-0">
                 <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary text-[10px] font-bold">
@@ -145,7 +168,7 @@ const Dashboard = () => {
         </div>
       </div>
 
-      <div className="page-header">
+      <div className="page-header mb-0">
         <h2 className="text-lg font-semibold text-foreground">Quick Actions</h2>
       </div>
 

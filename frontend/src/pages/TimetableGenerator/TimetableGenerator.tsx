@@ -56,6 +56,7 @@ import {
   saveAcademicConfig,
   type AcademicConfig,
 } from "@/lib/academicConfig";
+import { buildTemplateLinks } from "@/utils/templateLinks";
 
 type FacultyWeeklyAvailability = {
   facultyId: string;
@@ -636,18 +637,40 @@ const TimetableGenerator = () => {
 
   return (
     <DashboardLayout>
-      <div className="page-header">
-        <h1>Timetable Generator</h1>
-        <p>Configure constraints and generate timetables</p>
-      </div>
+      <section className="hero-shell mb-8">
+        <div className="relative z-10 grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_380px] xl:items-end">
+          <div className="space-y-4">
+            <div className="hero-chip">Constraint Planning Workspace</div>
+            <div className="space-y-2">
+              <h1 className="text-4xl font-bold tracking-tight text-foreground">Timetable Generator</h1>
+              <p className="max-w-3xl text-sm leading-7 text-muted-foreground">
+                Configure academic structure, lock fixed inputs, and generate single-year or multi-year timetable runs from one orchestrated screen.
+              </p>
+            </div>
+          </div>
+          <div className="panel-card">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Current Focus</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="panel-muted">
+                <p className="text-xs text-muted-foreground">Selected year</p>
+                <p className="mt-2 text-2xl font-bold text-foreground">{selectedYear}</p>
+              </div>
+              <div className="panel-muted">
+                <p className="text-xs text-muted-foreground">Selected section</p>
+                <p className="mt-2 text-2xl font-bold text-foreground">{selectedSection}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {generating ? (
-        <div className="bg-card rounded-xl p-8 shadow-sm">
+        <div className="panel-card p-8">
           <LoadingSpinner message="Generating timetable... Applying constraints and resolving conflicts\n\nNote: Generating large sets might take some time finding valid combinations." />
         </div>
       ) : (
         <div className="space-y-6 w-full">
-          <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
+          <div className="panel-card">
             <h2 className="text-base font-semibold text-foreground mb-4">Academic Structure</h2>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               <div>
@@ -735,7 +758,7 @@ const TimetableGenerator = () => {
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
+          <div className="panel-card">
             <h2 className="text-base font-semibold text-foreground mb-4">Select Year and Section</h2>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 w-full max-w-3xl">
               <div>
@@ -771,7 +794,7 @@ const TimetableGenerator = () => {
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl p-6 shadow-sm border border-border/60">
+          <div className="panel-card">
             <h2 className="text-base font-semibold text-foreground mb-4">Data Input Method</h2>
             <div className="flex flex-wrap gap-3">
               <Button variant={inputMode === "manual" ? "default" : "outline"} onClick={() => setInputMode("manual")} className="gap-2">
@@ -784,7 +807,7 @@ const TimetableGenerator = () => {
           </div>
 
           {inputMode === "file" && (
-            <div className="bg-card rounded-xl p-6 shadow-sm space-y-5 border border-border/60">
+            <div className="panel-card space-y-5">
               <p className="text-xs text-muted-foreground">
                 Follow the Excel-driven process exactly. All uploaded files in this section are stored globally and reused across timetable generation, including Main Config, Lab Timetable, Shared Classes, and Faculty Availability.
               </p>
@@ -797,7 +820,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.facultyIdMapFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={facultyIdFile} onFileSelect={uploadFacultyId} onClear={() => setFacultyIdFile(null)} label="Upload Faculty Map" templateLinks={[{ label: "Download Template", href: `${templateBase}/faculty-id-map` }]} />
+                    <FileUpload file={facultyIdFile} onFileSelect={uploadFacultyId} onClear={() => setFacultyIdFile(null)} label="Upload Faculty Map" templateLinks={buildTemplateLinks(templateBase, "faculty-id-map")} />
                   )}
                 </div>
 
@@ -808,7 +831,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.mainTimetableConfigFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={mainTimetableFile} onFileSelect={handleUploadMainTimetable} onClear={() => setMainTimetableFile(null)} label="Upload Main Timetable" templateLinks={[{ label: "Download Template", href: `${templateBase}/main-timetable-config` }]} />
+                    <FileUpload file={mainTimetableFile} onFileSelect={handleUploadMainTimetable} onClear={() => setMainTimetableFile(null)} label="Upload Main Timetable" templateLinks={buildTemplateLinks(templateBase, "main-timetable-config")} />
                   )}
                 </div>
 
@@ -819,7 +842,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.labTimetableConfigFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={labTimetableFile} onFileSelect={handleUploadLabTimetable} onClear={() => setLabTimetableFile(null)} label="Upload Lab Timetable" templateLinks={[{ label: "Download Template", href: `${templateBase}/lab-timetable` }]} />
+                    <FileUpload file={labTimetableFile} onFileSelect={handleUploadLabTimetable} onClear={() => setLabTimetableFile(null)} label="Upload Lab Timetable" templateLinks={buildTemplateLinks(templateBase, "lab-timetable")} />
                   )}
                 </div>
 
@@ -830,7 +853,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.subjectIdMappingFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={subjectIdMappingFile} onFileSelect={handleUploadSubjectIdMapping} onClear={() => setSubjectIdMappingFile(null)} label="Upload Subject ID Map" templateLinks={[{ label: "Download Template", href: `${templateBase}/subject-id-mapping` }]} />
+                    <FileUpload file={subjectIdMappingFile} onFileSelect={handleUploadSubjectIdMapping} onClear={() => setSubjectIdMappingFile(null)} label="Upload Subject ID Map" templateLinks={buildTemplateLinks(templateBase, "subject-id-mapping")} />
                   )}
                 </div>
 
@@ -841,7 +864,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.subjectContinuousRulesFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={subjectContinuousRulesFile} onFileSelect={handleUploadSubjectContinuousRules} onClear={() => setSubjectContinuousRulesFile(null)} label="Upload Continuous Rules" templateLinks={[{ label: "Download Template", href: `${templateBase}/subject-continuous-rules` }]} />
+                    <FileUpload file={subjectContinuousRulesFile} onFileSelect={handleUploadSubjectContinuousRules} onClear={() => setSubjectContinuousRulesFile(null)} label="Upload Continuous Rules" templateLinks={buildTemplateLinks(templateBase, "subject-continuous-rules")} />
                   )}
                 </div>
 
@@ -852,7 +875,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.sharedClassesFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={sharedClassesFile} onFileSelect={uploadSharedClassesDoc} onClear={() => setSharedClassesFile(null)} label="Upload Shared Classes" templateLinks={[{ label: "Download Template", href: `${templateBase}/shared-classes` }]} />
+                    <FileUpload file={sharedClassesFile} onFileSelect={uploadSharedClassesDoc} onClear={() => setSharedClassesFile(null)} label="Upload Shared Classes" templateLinks={buildTemplateLinks(templateBase, "shared-classes")} />
                   )}
                 </div>
 
@@ -863,7 +886,7 @@ const TimetableGenerator = () => {
                       Uploaded: <span className="font-medium">{mappingStatus.facultyAvailabilityFileName}</span>
                     </div>
                   ) : (
-                    <FileUpload file={facultyAvailabilityFile} onFileSelect={uploadFacultyAvailabilityDoc} onClear={() => setFacultyAvailabilityFile(null)} label="Upload Faculty Availability" templateLinks={[{ label: "Download Template", href: `${templateBase}/faculty-availability` }]} />
+                    <FileUpload file={facultyAvailabilityFile} onFileSelect={uploadFacultyAvailabilityDoc} onClear={() => setFacultyAvailabilityFile(null)} label="Upload Faculty Availability" templateLinks={buildTemplateLinks(templateBase, "faculty-availability")} />
                   )}
                 </div>
               </div>
@@ -920,7 +943,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="subjectRules" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="subjectRules" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Subject ID and Compulsory Continuous Hours</h3>
                   <Button variant="outline" size="sm" onClick={addSubjectContinuousRule}>
@@ -966,7 +989,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="subjectMapping" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="subjectMapping" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Subject ID and Name Mapping</h3>
                   <Button variant="outline" size="sm" onClick={addSubjectIdNameMapping}>
@@ -1010,7 +1033,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="labs" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="labs" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Lab Timetable Input</h3>
                   <Button variant="outline" size="sm" onClick={addManualLabEntry}>
@@ -1130,7 +1153,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="facultyId" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="facultyId" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Faculty ID Mapping</h3>
                   <Button variant="outline" size="sm" onClick={addFacultyIdMapping}><Plus className="h-3.5 w-3.5 mr-1" /> Add Mapping</Button>
@@ -1154,7 +1177,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="sharedClasses" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="sharedClasses" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Shared Classes</h3>
                   <Button variant="outline" size="sm" onClick={addSharedClass}><Plus className="h-3.5 w-3.5 mr-1" /> Add Shared Class</Button>
@@ -1197,7 +1220,7 @@ const TimetableGenerator = () => {
                 </div>
               </TabsContent>
 
-              <TabsContent value="availability" className="bg-card rounded-xl p-6 shadow-sm mt-4 border border-border/60">
+              <TabsContent value="availability" className="panel-card mt-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold">Faculty Availability</h3>
                   <Button variant="outline" size="sm" onClick={addFacultyAvailabilityInput}><Plus className="h-3.5 w-3.5 mr-1" /> Add Faculty</Button>
@@ -1227,7 +1250,7 @@ const TimetableGenerator = () => {
             </Tabs>
           )}
 
-          <div className="flex justify-end gap-3 mt-8">
+          <div className="panel-card flex justify-end gap-3 mt-8">
             {getYearOptions(academicConfig).length > 1 && (
               <Button onClick={handleGenerateAll} size="lg" variant="outline" className="gap-2">
                 <Wand2 className="h-4 w-4" /> Generate All Years

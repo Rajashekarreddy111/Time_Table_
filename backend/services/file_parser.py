@@ -279,15 +279,20 @@ def read_upload_bytes(file: UploadFile) -> bytes:
     return content
 
 
-def create_excel_template(records: list[dict]) -> bytes:
+def create_excel_template(records: list[dict], include_example_rows: bool = True) -> bytes:
     frame = pd.DataFrame(records)
+    if not include_example_rows:
+        frame = frame.head(0)
     stream = BytesIO()
     frame.to_excel(stream, index=False, engine="openpyxl")
     stream.seek(0)
     return stream.read()
 
 
-def create_grouped_main_timetable_template(records: list[dict]) -> bytes:
+def create_grouped_main_timetable_template(
+    records: list[dict],
+    include_example_rows: bool = True,
+) -> bytes:
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = "Main Timetable"
@@ -315,16 +320,17 @@ def create_grouped_main_timetable_template(records: list[dict]) -> bytes:
         worksheet.cell(row=2, column=current_column + 2, value="CONTINUOUS HOURS")
         current_column += 3
 
-    for row_index, row in enumerate(normalized_records, start=3):
-        worksheet.cell(row=row_index, column=1, value=row.get("YEAR"))
-        worksheet.cell(row=row_index, column=2, value=row.get("SUBJECT_ID") or row.get("SUBJECT"))
+    if include_example_rows:
+        for row_index, row in enumerate(normalized_records, start=3):
+            worksheet.cell(row=row_index, column=1, value=row.get("YEAR"))
+            worksheet.cell(row=row_index, column=2, value=row.get("SUBJECT_ID") or row.get("SUBJECT"))
 
-        current_column = 3
-        for section_name in section_names:
-            worksheet.cell(row=row_index, column=current_column, value=row.get(f"{section_name}_HOURS"))
-            worksheet.cell(row=row_index, column=current_column + 1, value=row.get(f"{section_name}_FACULTY_ID"))
-            worksheet.cell(row=row_index, column=current_column + 2, value=row.get(f"{section_name}_CONTINUOUS_HOURS"))
-            current_column += 3
+            current_column = 3
+            for section_name in section_names:
+                worksheet.cell(row=row_index, column=current_column, value=row.get(f"{section_name}_HOURS"))
+                worksheet.cell(row=row_index, column=current_column + 1, value=row.get(f"{section_name}_FACULTY_ID"))
+                worksheet.cell(row=row_index, column=current_column + 2, value=row.get(f"{section_name}_CONTINUOUS_HOURS"))
+                current_column += 3
 
     for row in worksheet.iter_rows():
         for cell in row:

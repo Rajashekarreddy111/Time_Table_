@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -8,7 +9,9 @@ from fastapi.responses import JSONResponse
 
 from services.cloudinary_storage import is_cloudinary_enabled
 from services.env_config import load_backend_env
-from routers import faculty, templates, timetables, uploads
+from routers import auth, faculty, templates, timetables, uploads
+from services.auth import ensure_default_admin, get_current_user
+from fastapi import Depends
 from storage.memory_store import store
 
 load_backend_env()
@@ -22,7 +25,18 @@ def error_payload(error: str, message: str, details: list | None = None) -> dict
     }
 
 
-app = FastAPI(title="Class Scheduler Pro Backend", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    ensure_default_admin()
+    # Warmup check only; health endpoint reports current Mongo status.
+    try:
+        store.ping()
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="Class Scheduler Pro Backend", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,20 +54,11 @@ async def log_requests(request, call_next):
     print(f"INFO: Response status: {response.status_code}")
     return response
 
-app.include_router(uploads.router, prefix="/api")
-app.include_router(templates.router, prefix="/api")
-app.include_router(faculty.router, prefix="/api")
-app.include_router(timetables.router, prefix="/api")
-
-
-@app.on_event("startup")
-async def startup_check() -> None:
-    # Warmup check only; health endpoint reports current Mongo status.
-    try:
-        store.ping()
-    except Exception:
-        pass
-
+app.include_router(auth.router, prefix="/api")
+app.include_router(uploads.router, prefix="/api", dependencies=[Depends(get_current_user)])
+app.include_router(templates.router, prefix="/api", dependencies=[Depends(get_current_user)])
+app.include_router(faculty.router, prefix="/api", dependencies=[Depends(get_current_user)])
+app.include_router(timetables.router, prefix="/api", dependencies=[Depends(get_current_user)])
 
 @app.get("/api/health")
 async def health_check() -> dict:

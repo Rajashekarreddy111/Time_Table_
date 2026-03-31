@@ -101,6 +101,7 @@ export interface ManualLabEntry {
 export interface GenerateTimetableRequest {
   year: string;
   section: string;
+  labsOnly?: boolean;
   priorTimetableIds?: string[];
   manualEntries?: ManualEntryMode[];
   subjects?: { subject: string; faculty: string }[];
@@ -237,6 +238,7 @@ async function apiRequest<T>(
 ): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
     },
@@ -304,6 +306,7 @@ export async function uploadFacultyIdMap(file: File): Promise<UploadResponse> {
   const path = "/uploads/faculty-id-map";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -323,6 +326,7 @@ export async function uploadMainTimetableConfig(
   const path = "/uploads/main-timetable-config";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -342,6 +346,7 @@ export async function uploadLabTimetable(
   const path = "/uploads/lab-timetable";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -361,6 +366,7 @@ export async function uploadSubjectIdMapping(
   const path = "/uploads/subject-id-mapping";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -380,6 +386,7 @@ export async function uploadSubjectContinuousRules(
   const path = "/uploads/subject-continuous-rules";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -399,6 +406,7 @@ export async function uploadFacultyAvailability(
   const path = "/uploads/faculty-availability";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -416,6 +424,7 @@ export async function uploadSharedClasses(file: File): Promise<UploadResponse> {
   const path = "/uploads/shared-classes";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -453,6 +462,7 @@ export async function uploadFacultyAvailabilityQuery(
   const path = "/uploads/faculty-availability-query";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body: formData,
   });
 
@@ -512,6 +522,7 @@ export const deleteTimetable = async (
 ): Promise<{ message: string }> => {
   const response = await fetch(`${API_BASE_URL}/timetables/${timetableId}`, {
     method: "DELETE",
+    credentials: "include",
   });
   if (!response.ok) {
     const error = await response.json();
