@@ -153,6 +153,12 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
 }
 
 function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[] {
+  const latestRecordsByYear = records.reduce<TimetableRecord[]>((acc, record) => {
+    if (!record.year) return acc;
+    if (acc.some((item) => item.year === record.year)) return acc;
+    acc.push(record);
+    return acc;
+  }, []);
   const mergedWorkloads: Record<string, Record<string, (FacultyScheduleEntry[] | null)[]>> = {};
 
   const ensureFacultySchedule = (facultyName: string) => {
@@ -165,7 +171,7 @@ function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[
     return mergedWorkloads[facultyName];
   };
 
-  records.forEach((record) => {
+  latestRecordsByYear.forEach((record) => {
     const grids = record.allGrids ?? { [record.section]: record.grid };
 
     for (const [section, grid] of Object.entries(grids)) {

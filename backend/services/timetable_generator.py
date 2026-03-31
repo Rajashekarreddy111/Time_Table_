@@ -108,11 +108,40 @@ def _normalize_faculty_field(raw_faculty_id: str | int | float | None) -> str:
     return ",".join(_split_faculty_tokens(str(raw_faculty_id or "")))
 
 
+def _faculty_alias_to_id_map(faculty_id_to_name: dict[str, str]) -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    for faculty_id, faculty_name in faculty_id_to_name.items():
+        normalized_id = _normalize_id_token(faculty_id)
+        if normalized_id:
+            alias_map[normalized_id] = normalized_id
+            alias_map[normalized_id.lower()] = normalized_id
+        normalized_name = str(faculty_name).strip()
+        if normalized_name:
+            alias_map[normalized_name] = normalized_id or normalized_name
+            alias_map[normalized_name.lower()] = normalized_id or normalized_name
+    return alias_map
+
+
+def _canonicalize_faculty_token(
+    value: str | int | float | None,
+    faculty_id_to_name: dict[str, str],
+) -> str:
+    token = _normalize_id_token(value)
+    if not token:
+        return ""
+    alias_map = _faculty_alias_to_id_map(faculty_id_to_name)
+    return alias_map.get(token, alias_map.get(token.lower(), token))
+
+
 def _resolve_faculty_display(
     faculty_ids: tuple[str, ...],
     faculty_id_to_name: dict[str, str],
 ) -> tuple[str, str]:
-    ids = tuple(_normalize_id_token(fid) for fid in faculty_ids if _normalize_id_token(fid))
+    ids = tuple(
+        _canonicalize_faculty_token(fid, faculty_id_to_name)
+        for fid in faculty_ids
+        if _canonicalize_faculty_token(fid, faculty_id_to_name)
+    )
     names = tuple(faculty_id_to_name.get(fid, fid) for fid in ids)
     return ",".join(ids), ", ".join(names)
 
@@ -195,11 +224,11 @@ def _build_faculty_availability(
     }
 
     def resolve_faculty_key(raw_id: str, raw_name: str = "") -> str:
-        faculty_id = _normalize_faculty_field(raw_id)
+        faculty_id = _canonicalize_faculty_token(_normalize_faculty_field(raw_id), faculty_id_to_name)
         if faculty_id:
             return faculty_id
         faculty_name = str(raw_name).strip()
-        return reverse_faculty_name_map.get(faculty_name, faculty_name)
+        return _canonicalize_faculty_token(reverse_faculty_name_map.get(faculty_name, faculty_name), faculty_id_to_name)
 
     uploaded_payload = store.get_scoped_mapping("faculty_availability", "global")
     if uploaded_payload:
@@ -239,10 +268,14 @@ def _resolve_faculty_pool(
 ) -> tuple[str, ...]:
     faculty_raw = str(raw_faculty_id or "").strip()
     if any(delimiter in faculty_raw for delimiter in [",", "/", "|", "+", "&"]):
-        split_pool = _split_faculty_tokens(faculty_raw)
+        split_pool = tuple(
+            _canonicalize_faculty_token(token, faculty_id_to_name)
+            for token in _split_faculty_tokens(faculty_raw)
+            if _canonicalize_faculty_token(token, faculty_id_to_name)
+        )
         if split_pool:
             return tuple(sorted(set(split_pool)))
-    faculty_token = _normalize_id_token(faculty_raw)
+    faculty_token = _canonicalize_faculty_token(faculty_raw, faculty_id_to_name)
     if not faculty_token:
         return ()
     if faculty_token in faculty_id_to_name or faculty_token in faculty_availability:
@@ -256,7 +289,11 @@ def _resolve_faculty_pool(
     if normalized_matches:
         return tuple(sorted(set(normalized_matches)))
 
-    cleaned_split = _split_faculty_tokens(faculty_token)
+    cleaned_split = tuple(
+        _canonicalize_faculty_token(token, faculty_id_to_name)
+        for token in _split_faculty_tokens(faculty_token)
+        if _canonicalize_faculty_token(token, faculty_id_to_name)
+    )
     if len(cleaned_split) > 1:
         return tuple(sorted(set(cleaned_split)))
     return (faculty_token,)
@@ -560,6 +597,13 @@ def _requirement_faculty_tokens(requirement: Requirement) -> tuple[str, ...]:
 
 
 def _extract_faculty_occupancy_from_timetable(record: dict | None) -> dict[str, set[tuple[str, int]]]:
+    return _extract_faculty_occupancy_from_timetable_with_map(record, {})
+
+
+def _extract_faculty_occupancy_from_timetable_with_map(
+    record: dict | None,
+    faculty_id_to_name: dict[str, str],
+) -> dict[str, set[tuple[str, int]]]:
     occupancy: dict[str, set[tuple[str, int]]] = {}
     if not record:
         return occupancy
@@ -580,8 +624,18 @@ def _extract_faculty_occupancy_from_timetable(record: dict | None) -> dict[str, 
             for period_index, slot in enumerate(slots, start=1):
                 if period_index not in PERIODS or not isinstance(slot, dict):
                     continue
-                faculty_value = slot.get("facultyId") or slot.get("faculty") or ""
-                for faculty_id in _split_faculty_tokens(str(faculty_value)):
+                raw_faculty_values = [
+                    slot.get("facultyId") or "",
+                    slot.get("facultyName") or "",
+                    slot.get("faculty") or "",
+                ]
+                canonical_tokens: set[str] = set()
+                for raw_value in raw_faculty_values:
+                    for token in _split_faculty_tokens(str(raw_value)):
+                        canonical = _canonicalize_faculty_token(token, faculty_id_to_name)
+                        if canonical:
+                            canonical_tokens.add(canonical)
+                for faculty_id in canonical_tokens:
                     occupancy.setdefault(faculty_id, set()).add((day, period_index))
     return occupancy
 
@@ -589,13 +643,76 @@ def _extract_faculty_occupancy_from_timetable(record: dict | None) -> dict[str, 
 def _build_prior_faculty_occupancy(
     timetable_ids: list[str],
     store: MemoryStore,
+    faculty_id_to_name: dict[str, str],
 ) -> dict[str, set[tuple[str, int]]]:
     occupancy: dict[str, set[tuple[str, int]]] = {}
     for timetable_id in timetable_ids:
         record = store.get_timetable(str(timetable_id).strip())
-        extracted = _extract_faculty_occupancy_from_timetable(record)
+        extracted = _extract_faculty_occupancy_from_timetable_with_map(record, faculty_id_to_name)
         for faculty_id, slots in extracted.items():
             occupancy.setdefault(faculty_id, set()).update(slots)
+    return occupancy
+
+
+def _latest_timetable_ids_by_year(
+    store: MemoryStore,
+    exclude_year: str = "",
+) -> list[str]:
+    selected: list[str] = []
+    seen_years: set[str] = set()
+    for record in store.list_timetables():
+        year = normalize_year(str(record.get("year", "")))
+        timetable_id = str(record.get("id", "")).strip()
+        if not timetable_id or not year or year == exclude_year or year in seen_years:
+            continue
+        seen_years.add(year)
+        selected.append(timetable_id)
+    return selected
+
+
+def _build_global_section_subject_faculty_index(
+    rows: list[dict],
+    faculty_id_to_name: dict[str, str],
+) -> dict[tuple[str, str, str], str]:
+    index: dict[tuple[str, str, str], str] = {}
+    for row in rows:
+        year = normalize_year(str(row.get("year", "")))
+        section = str(row.get("section", "")).strip()
+        subject_id = _normalize_id_token(row.get("subject_id", ""))
+        faculty_id = ",".join(
+            _canonicalize_faculty_token(token, faculty_id_to_name)
+            for token in _split_faculty_tokens(str(row.get("faculty_id", "")))
+            if _canonicalize_faculty_token(token, faculty_id_to_name)
+        )
+        if year and section and subject_id and faculty_id:
+            index[(year, section, subject_id)] = faculty_id
+    return index
+
+
+def _build_global_lab_occupancy(
+    all_main_rows: list[dict],
+    all_lab_rows: list[dict],
+    current_year: str,
+    faculty_id_to_name: dict[str, str],
+    faculty_availability: dict[str, dict[str, set[int]]],
+) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    faculty_index = _build_global_section_subject_faculty_index(all_main_rows, faculty_id_to_name)
+
+    for row in all_lab_rows:
+        lab_year = normalize_year(str(row.get("year", "")))
+        if not lab_year or lab_year == current_year:
+            continue
+        section = str(row.get("section", "")).strip()
+        subject_id = _normalize_id_token(row.get("subject_id", ""))
+        day = _normalize_day(int(row.get("day", 0) or 0))
+        periods = [int(period) for period in row.get("hours", []) if int(period) in PERIODS]
+        if not section or not subject_id or not day or not periods:
+            continue
+        raw_faculty_id = faculty_index.get((lab_year, section, subject_id), "")
+        faculty_ids = _resolve_faculty_pool(raw_faculty_id, faculty_id_to_name, faculty_availability)
+        for faculty_id in faculty_ids:
+            occupancy.setdefault(faculty_id, set()).update((day, period) for period in periods)
     return occupancy
 
 
@@ -1273,14 +1390,16 @@ def generate_timetable(
 
     subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
 
+    all_main_rows = list(main_payload.get("rows", []) if main_payload else [])
+    all_lab_rows = list(lab_payload.get("rows", []) if lab_payload else [])
     raw_main_rows = [
         row
-        for row in (main_payload.get("rows", []) if main_payload else [])
+        for row in all_main_rows
         if normalize_year(str(row.get("year", ""))) == year
     ]
     raw_lab_rows = [
         row
-        for row in (lab_payload.get("rows", []) if lab_payload else [])
+        for row in all_lab_rows
         if normalize_year(str(row.get("year", ""))) == year
     ]
 
@@ -1288,7 +1407,11 @@ def generate_timetable(
         entry_year = normalize_year(entry.year)
         if entry_year != year:
             continue
-        fid = _normalize_faculty_field(entry.facultyId)
+        fid = ",".join(
+            _canonicalize_faculty_token(token, faculty_id_to_name)
+            for token in _split_faculty_tokens(str(entry.facultyId))
+            if _canonicalize_faculty_token(token, faculty_id_to_name)
+        )
         subject_token = _normalize_id_token(entry.subjectId)
         
         raw_main_rows.append(
@@ -1301,6 +1424,7 @@ def generate_timetable(
                 "continuous_hours": int(entry.continuousHours or 1),
             }
         )
+        all_main_rows.append(raw_main_rows[-1])
         if entry.compulsoryContinuousHours:
             compulsory_continuous[subject_token] = max(1, int(entry.compulsoryContinuousHours))
 
@@ -1317,6 +1441,7 @@ def generate_timetable(
                 "venue": str(lab.venue).strip(),
             }
         )
+        all_lab_rows.append(raw_lab_rows[-1])
 
     if not raw_main_rows:
         raise HTTPException(status_code=400, detail="No configurable sections found for the specified year.")
@@ -1327,7 +1452,11 @@ def generate_timetable(
     for row in raw_main_rows:
         section = str(row.get("section", "")).strip()
         subject_id = _normalize_id_token(row.get("subject_id", ""))
-        faculty_id = _normalize_faculty_field(row.get("faculty_id", ""))
+        faculty_id = ",".join(
+            _canonicalize_faculty_token(token, faculty_id_to_name)
+            for token in _split_faculty_tokens(str(row.get("faculty_id", "")))
+            if _canonicalize_faculty_token(token, faculty_id_to_name)
+        )
             
         hours = int(row.get("hours", 0) or 0)
         continuous_hours = max(1, int(row.get("continuous_hours", 1) or 1))
@@ -1375,15 +1504,31 @@ def generate_timetable(
 
     all_faculties = {
         token
-        for item in main_rows_by_section_subject.values()
+    for item in main_rows_by_section_subject.values()
         for token in _split_faculty_tokens(str(item.get("faculty_id", "")).strip())
         if token
     }
     faculty_availability = _build_faculty_availability(request_data, store, all_faculties, faculty_id_to_name)
-    prior_faculty_busy = _build_prior_faculty_occupancy(request_data.priorTimetableIds, store)
+    prior_timetable_ids = [
+        str(timetable_id).strip()
+        for timetable_id in request_data.priorTimetableIds
+        if str(timetable_id).strip()
+    ]
+    if not prior_timetable_ids:
+        prior_timetable_ids = _latest_timetable_ids_by_year(store, exclude_year=year)
+    global_lab_busy = _build_global_lab_occupancy(
+        all_main_rows,
+        all_lab_rows,
+        year,
+        faculty_id_to_name,
+        faculty_availability,
+    )
+    prior_faculty_busy = _build_prior_faculty_occupancy(prior_timetable_ids, store, faculty_id_to_name)
     faculty_busy: dict[str, set[tuple[str, int]]] = {
         faculty_id: slots.copy() for faculty_id, slots in prior_faculty_busy.items()
     }
+    for faculty_id, slots in global_lab_busy.items():
+        faculty_busy.setdefault(faculty_id, set()).update(slots)
     session_log: list[dict] = []
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
@@ -1960,8 +2105,6 @@ def generate_timetable(
     ]
     unscheduled_subjects: list[dict] = []
     initial_log_length = len(session_log)
-    per_attempt_budgets = [float("inf")] * 6
-
     def _reset_non_lab_assignments() -> None:
         while len(session_log) > initial_log_length:
             session = session_log.pop()
@@ -2035,12 +2178,14 @@ def generate_timetable(
         return backtrack()
 
     solved = False
+    attempt = 0
     attempt_strategy_names: list[str] = []
-    for attempt in range(len(per_attempt_budgets)):
+    while not solved:
         _reset_non_lab_assignments()
 
         strategy_name, strategy_key = strategy_orderings[min(attempt, len(strategy_orderings) - 1)]
-        attempt_strategy_names.append(strategy_name)
+        if len(attempt_strategy_names) < 25:
+            attempt_strategy_names.append(strategy_name)
         requirements.sort(key=strategy_key)
 
         if attempt >= len(retry_orders):
@@ -2055,11 +2200,11 @@ def generate_timetable(
         # Increase candidate diversity so scarce-slot constraints can still be satisfied
         # without waiting for timeout-level backtracking.
         candidate_limit = min(52, 16 + attempt * 8)
-        attempt_budget = per_attempt_budgets[min(attempt, len(per_attempt_budgets) - 1)]
-        attempt_deadline = time.perf_counter() + attempt_budget
+        attempt_deadline = float("inf")
         if _solve_with_orders(days_order, periods_order, candidate_limit, attempt_deadline):
             solved = True
             break
+        attempt += 1
 
     if not solved:
         _reset_non_lab_assignments()
@@ -2201,7 +2346,7 @@ def generate_timetable(
             "generationMeta": {
                 "timeoutSeconds": timeout_seconds,
                 "timeoutDisabled": True,
-                "retryStrategies": len(per_attempt_budgets),
+                "retryStrategies": attempt + 1,
                 "attemptStrategies": attempt_strategy_names,
                 "deterministic": False,
             },
