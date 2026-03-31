@@ -34,7 +34,7 @@ const navItems = [
   { title: "View Timetables", url: "/timetables", icon: GraduationCap },
   { title: "Faculty Workload", url: "/workload", icon: Clock },
   { title: "Generated Outputs", url: "/outputs", icon: FileText },
-  { title: "Faculty Availability", url: "/availability", icon: Users },
+  { title: "Invisilation Finder", url: "/availability", icon: Users },
 ];
 
 export function AppSidebar() {

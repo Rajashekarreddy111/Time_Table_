@@ -146,9 +146,9 @@ const FacultyAvailability = () => {
       const response = await getBulkFacultyAvailability({ availabilityFileId, queryFileId, ignoredYears, ignoredSections });
       setResults(response.results);
       setResultSearch("");
-      toast.success("Availability report generated.");
+      toast.success("Invisilation report generated.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to fetch availability");
+      toast.error(error instanceof Error ? error.message : "Failed to fetch invisilation report");
     } finally {
       setSearching(false);
     }
@@ -177,7 +177,7 @@ const FacultyAvailability = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.setAttribute("download", "faculty_availability_report.csv");
+    link.setAttribute("download", "invisilation_finder_report.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -190,10 +190,10 @@ const FacultyAvailability = () => {
         <div className="rounded-[30px] border border-border/70 bg-[linear-gradient(135deg,rgba(2,132,199,0.10),rgba(30,41,59,0.05),rgba(255,255,255,0.94))] p-6 shadow-sm">
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] xl:items-end">
             <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm"><Sparkles className="h-3.5 w-3.5" />Faculty availability finder</div>
+              <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm"><Sparkles className="h-3.5 w-3.5" />Invisilation finder</div>
               <div className="space-y-2">
-                <h1 className="text-3xl font-bold tracking-tight text-foreground">Faculty Availability</h1>
-                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Upload the faculty workload workbook and the bulk query file to find available faculty for each requested date and period with fair rotation and clear shortage reporting.</p>
+                <h1 className="text-3xl font-bold tracking-tight text-foreground">Invisilation Finder</h1>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Upload the faculty workload workbook and the bulk query file to find available faculty for each requested date and period with fair rotation and clear shortage reporting for invisilation planning.</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><FileSpreadsheet className="h-4 w-4 text-primary" />Workload Upload</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the faculty workbook with all faculty sheets in the same format you already use.</p></div>
@@ -219,7 +219,7 @@ const FacultyAvailability = () => {
           <div className="space-y-6">
             <div className="rounded-[28px] border border-border/60 bg-card p-6 shadow-sm">
               <div className="mb-6 flex items-start justify-between gap-4">
-                <div><h2 className="text-lg font-semibold text-foreground">Upload Center</h2><p className="text-sm text-muted-foreground">Add both files here, then generate the availability report.</p></div>
+                <div><h2 className="text-lg font-semibold text-foreground">Upload Center</h2><p className="text-sm text-muted-foreground">Add both files here, then generate the invisilation report.</p></div>
                 <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"><Upload className="h-3.5 w-3.5" />{availabilityFileId && queryFileId ? "Ready to generate" : "Waiting for uploads"}</div>
               </div>
               <div className="grid gap-5 xl:grid-cols-2">
@@ -269,7 +269,7 @@ const FacultyAvailability = () => {
                 )}
                 <Button onClick={handleSearch} className="h-12 w-full gap-2 text-sm" disabled={searching || !availabilityFileId || !queryFileId}>
                   <Search className="h-4 w-4" />
-                  {searching ? "Generating availability report..." : "Generate availability report"}
+                  {searching ? "Generating invisilation report..." : "Generate invisilation report"}
                 </Button>
               </div>
             </div>

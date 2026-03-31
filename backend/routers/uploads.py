@@ -46,6 +46,32 @@ def _normalize_workload_day(value) -> str:
     return day_map.get(compact, "")
 
 
+def _normalize_token_id(value) -> str:
+    token = _to_text(value)
+    return token[:-2] if token.endswith(".0") else token
+
+
+def _parse_period_tokens(value) -> list[int]:
+    text = _to_text(value)
+    if not text:
+        return []
+    periods: list[int] = []
+    seen: set[int] = set()
+    for part in text.replace(";", ",").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            period = int(float(token))
+        except ValueError:
+            continue
+        if period in seen:
+            continue
+        seen.add(period)
+        periods.append(period)
+    return periods
+
+
 
 
 def _normalize_faculty_id_rows(rows: list[dict]) -> list[dict]:
@@ -355,28 +381,17 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
                     continue
                 k_upper = str(k).upper().strip()
                 if k_upper in VALID_DAYS:
-                    periods_raw = _to_text(v)
-                    if not periods_raw:
-                        continue
-                    
-                    parts = [p.strip() for p in periods_raw.split(",")]
-                    for p in parts:
-                        if not p:
-                            continue
-                        try:
-                            period_num = int(float(p))
-                            normalized_grid.append({
-                                "faculty_id": faculty_id,
-                                "faculty_name": faculty_id,
-                                "day": k_upper[:3],
-                                "period": period_num,
-                                "year": "",
-                                "section": "",
-                                "subject": "",
-                                "is_available": True,
-                            })
-                        except ValueError:
-                            pass
+                    for period_num in _parse_period_tokens(v):
+                        normalized_grid.append({
+                            "faculty_id": _normalize_token_id(faculty_id),
+                            "faculty_name": faculty_id,
+                            "day": k_upper[:3],
+                            "period": period_num,
+                            "year": "",
+                            "section": "",
+                            "subject": "",
+                            "is_available": True,
+                        })
         
         if not normalized_grid:
             raise _validation_error(
@@ -407,7 +422,7 @@ def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
             )
         normalized.append(
             {
-                "faculty_id": faculty_id,
+                "faculty_id": _normalize_token_id(faculty_id),
                 "faculty_name": faculty_name,
                 "day": day,
                 "period": period,

@@ -122,6 +122,7 @@ class ManualLabEntry(BaseModel):
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
+    priorTimetableIds: list[str] = Field(default_factory=list)
     manualEntries: list[ManualEntryMode] = Field(default_factory=list)
     subjects: list[SubjectEntry] = Field(default_factory=list)
     labs: list[LabEntry] = Field(default_factory=list)

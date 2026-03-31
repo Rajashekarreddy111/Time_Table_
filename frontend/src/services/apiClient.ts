@@ -101,6 +101,7 @@ export interface ManualLabEntry {
 export interface GenerateTimetableRequest {
   year: string;
   section: string;
+  priorTimetableIds?: string[];
   manualEntries?: ManualEntryMode[];
   subjects?: { subject: string; faculty: string }[];
   labs?: { lab: string; faculty: string[] }[];

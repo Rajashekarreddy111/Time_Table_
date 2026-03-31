@@ -29,6 +29,7 @@ class Requirement:
     min_consecutive_hours: int
     max_consecutive_hours: int
     shared: bool
+    common_faculty: bool = False
     phase: int = 4
 
 
@@ -202,6 +203,7 @@ def _build_faculty_availability(
 
     uploaded_payload = store.get_scoped_mapping("faculty_availability", "global")
     if uploaded_payload:
+        uploaded_faculties: set[str] = set()
         for row in uploaded_payload.get("rows", []):
             faculty_key = resolve_faculty_key(row.get("faculty_id", ""), row.get("faculty_name", ""))
             faculty_keys = _split_faculty_tokens(faculty_key) or ((faculty_key,) if faculty_key else ())
@@ -211,6 +213,9 @@ def _build_faculty_availability(
                 continue
             for key in faculty_keys:
                 availability.setdefault(key, {name: set(PERIODS) for name in DAYS})
+                if key not in uploaded_faculties:
+                    availability[key] = {name: set() for name in DAYS}
+                    uploaded_faculties.add(key)
                 availability[key][day].add(period)
 
     for entry in request_data.facultyAvailability:
@@ -489,26 +494,31 @@ def _section_capacity_is_feasible(
 def _compute_timeout_seconds(section_count: int, requirement_count: int) -> int:
     # §18: adaptive timeout – 30s small, 90s medium, 180s large
     if section_count <= 5:
-        base = 45
-    elif section_count <= 10:
         base = 120
+    elif section_count <= 10:
+        base = 300
     else:
-        base = 240
+        base = 600
     if requirement_count >= 20:
-        base += 30
+        base += 180
     if requirement_count >= 35:
-        base += 40
-    return min(300, base)
+        base += 180
+    if requirement_count >= 50:
+        base += 240
+    if requirement_count >= 70:
+        base += 180
+    return min(1200, base)
 
 
 def _requirement_priority(
     requirement: Requirement,
     faculty_availability: dict[str, dict[str, set[int]]],
-) -> tuple[int, int, int, int, str, str]:
+) -> tuple[int, int, int, int, int, str, str]:
     weekly_capacity = _requirement_weekly_capacity(requirement, faculty_availability)
     strict_availability = len(DAYS) * len(PERIODS) - weekly_capacity
     return (
         requirement.phase,
+        0 if requirement.common_faculty else 1,
         -requirement.hours,
         -requirement.min_consecutive_hours,
         -strict_availability,
@@ -531,6 +541,105 @@ def _determine_requirement_phase(
     if min_consecutive_hours > 1:
         return 3
     return 4
+
+
+def _requirement_faculty_tokens(requirement: Requirement) -> tuple[str, ...]:
+    if requirement.faculty_team:
+        return tuple(
+            _normalize_id_token(faculty_id)
+            for faculty_id in requirement.faculty_team
+            if _normalize_id_token(faculty_id)
+        )
+    if requirement.faculty_options:
+        return tuple(
+            _normalize_id_token(faculty_id)
+            for faculty_id in requirement.faculty_options
+            if _normalize_id_token(faculty_id)
+        )
+    return _split_faculty_tokens(requirement.faculty_id)
+
+
+def _extract_faculty_occupancy_from_timetable(record: dict | None) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    if not record:
+        return occupancy
+
+    all_grids = record.get("allGrids")
+    if not isinstance(all_grids, dict):
+        section = str(record.get("section", "")).strip()
+        grid = record.get("grid")
+        all_grids = {section: grid} if section and isinstance(grid, dict) else {}
+
+    for grid in all_grids.values():
+        if not isinstance(grid, dict):
+            continue
+        for raw_day, slots in grid.items():
+            day = _normalize_day(str(raw_day))
+            if not day or not isinstance(slots, list):
+                continue
+            for period_index, slot in enumerate(slots, start=1):
+                if period_index not in PERIODS or not isinstance(slot, dict):
+                    continue
+                faculty_value = slot.get("facultyId") or slot.get("faculty") or ""
+                for faculty_id in _split_faculty_tokens(str(faculty_value)):
+                    occupancy.setdefault(faculty_id, set()).add((day, period_index))
+    return occupancy
+
+
+def _build_prior_faculty_occupancy(
+    timetable_ids: list[str],
+    store: MemoryStore,
+) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    for timetable_id in timetable_ids:
+        record = store.get_timetable(str(timetable_id).strip())
+        extracted = _extract_faculty_occupancy_from_timetable(record)
+        for faculty_id, slots in extracted.items():
+            occupancy.setdefault(faculty_id, set()).update(slots)
+    return occupancy
+
+
+def _persist_faculty_occupancy(
+    store: MemoryStore,
+    timetable_id: str,
+    session_log: list[dict],
+) -> None:
+    store.delete_occupancy_by_source(timetable_id)
+    persisted: set[tuple[str, str, int]] = set()
+    for session in session_log:
+        day = _normalize_day(str(session.get("day", "")))
+        if not day:
+            continue
+        periods = [int(period) for period in session.get("periods", []) if int(period) in PERIODS]
+        if not periods:
+            continue
+        faculty_ids = [
+            _normalize_id_token(faculty_id)
+            for faculty_id in session.get("faculty_ids", [])
+            if _normalize_id_token(faculty_id)
+        ]
+        if not faculty_ids:
+            faculty_ids = list(_split_faculty_tokens(str(session.get("faculty_id", ""))))
+        if not faculty_ids:
+            continue
+        section_label = ",".join(
+            sorted(str(section).strip() for section in session.get("sections", []) if str(section).strip())
+        )
+        year_label = str(session.get("year", "")).strip() or None
+        for faculty_id in faculty_ids:
+            for period in periods:
+                marker = (faculty_id, day, period)
+                if marker in persisted:
+                    continue
+                persisted.add(marker)
+                store.mark_faculty_busy(
+                    faculty=faculty_id,
+                    day=day,
+                    period=period,
+                    source_id=timetable_id,
+                    year=year_label,
+                    section=section_label or None,
+                )
 
 
 def _score_slot_candidate(
@@ -717,7 +826,7 @@ def _select_next_requirement(
 ) -> tuple[int | None, list[SlotCandidate]]:
     best_idx: int | None = None
     best_candidates: list[SlotCandidate] = []
-    best_key: tuple[int, int, int, int, str, str] | None = None
+    best_key: tuple[int, int, int, int, int, str, str] | None = None
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
@@ -748,6 +857,7 @@ def _select_next_requirement(
         )
         key = (
             len(candidates),
+            0 if requirement.common_faculty else 1,
             -requirement.min_consecutive_hours,
             -remaining,
             len(DAYS) * len(PERIODS) - _requirement_weekly_capacity(requirement, faculty_availability),
@@ -1270,7 +1380,10 @@ def generate_timetable(
         if token
     }
     faculty_availability = _build_faculty_availability(request_data, store, all_faculties, faculty_id_to_name)
-    faculty_busy: dict[str, set[tuple[str, int]]] = {}
+    prior_faculty_busy = _build_prior_faculty_occupancy(request_data.priorTimetableIds, store)
+    faculty_busy: dict[str, set[tuple[str, int]]] = {
+        faculty_id: slots.copy() for faculty_id, slots in prior_faculty_busy.items()
+    }
     session_log: list[dict] = []
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
@@ -1717,6 +1830,12 @@ def generate_timetable(
             )
         )
 
+    prior_faculty_ids = set(prior_faculty_busy)
+    for requirement in requirements:
+        requirement.common_faculty = any(
+            faculty_id in prior_faculty_ids for faculty_id in _requirement_faculty_tokens(requirement)
+        )
+
     requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
 
     # Rebalance minimal overload to keep solver from collapsing into global no-free-slot
@@ -1804,8 +1923,8 @@ def generate_timetable(
     requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
 
 
-    timeout_seconds = _compute_timeout_seconds(len(all_sections), len(requirements))
-    total_deadline = time.perf_counter() + timeout_seconds
+    timeout_seconds = None
+    total_deadline = float("inf")
     retry_orders: list[tuple[list[str], list[int]]] = [
         (list(DAYS), list(PERIODS)),
         (list(DAYS), list(reversed(PERIODS))),
@@ -1841,14 +1960,7 @@ def generate_timetable(
     ]
     unscheduled_subjects: list[dict] = []
     initial_log_length = len(session_log)
-    per_attempt_budgets = [
-        max(15, timeout_seconds // 8),
-        max(20, timeout_seconds // 6),
-        max(25, timeout_seconds // 5),
-        max(30, timeout_seconds // 4),
-        max(35, timeout_seconds // 3),
-        timeout_seconds,
-    ]
+    per_attempt_budgets = [float("inf")] * 6
 
     def _reset_non_lab_assignments() -> None:
         while len(session_log) > initial_log_length:
@@ -1877,8 +1989,6 @@ def generate_timetable(
         remaining_by_req.update({req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)})
 
         def backtrack() -> bool:
-            if time.perf_counter() >= attempt_deadline:
-                return False
             if not _section_capacity_is_feasible(requirements, remaining_by_req, schedules, year):
                 return False
             next_req_idx, candidates = _select_next_requirement(
@@ -1927,8 +2037,6 @@ def generate_timetable(
     solved = False
     attempt_strategy_names: list[str] = []
     for attempt in range(len(per_attempt_budgets)):
-        if time.perf_counter() >= total_deadline:
-            break
         _reset_non_lab_assignments()
 
         strategy_name, strategy_key = strategy_orderings[min(attempt, len(strategy_orderings) - 1)]
@@ -1948,7 +2056,7 @@ def generate_timetable(
         # without waiting for timeout-level backtracking.
         candidate_limit = min(52, 16 + attempt * 8)
         attempt_budget = per_attempt_budgets[min(attempt, len(per_attempt_budgets) - 1)]
-        attempt_deadline = min(total_deadline, time.perf_counter() + attempt_budget)
+        attempt_deadline = time.perf_counter() + attempt_budget
         if _solve_with_orders(days_order, periods_order, candidate_limit, attempt_deadline):
             solved = True
             break
@@ -1961,8 +2069,6 @@ def generate_timetable(
                 continue
             if not requirement.faculty_id:
                 reason = "missing faculty mapping"
-            elif time.perf_counter() >= total_deadline:
-                reason = "solver timeout"
             else:
                 reason = _infer_failure_reason(requirement, schedules, faculty_busy, faculty_availability, year)
             
@@ -2094,12 +2200,14 @@ def generate_timetable(
             "generatedFiles": generated_files,
             "generationMeta": {
                 "timeoutSeconds": timeout_seconds,
+                "timeoutDisabled": True,
                 "retryStrategies": len(per_attempt_budgets),
                 "attemptStrategies": attempt_strategy_names,
                 "deterministic": False,
             },
         },
     )
+    _persist_faculty_occupancy(store, timetable_id, session_log)
 
     message = (
         "Timetable generated successfully."

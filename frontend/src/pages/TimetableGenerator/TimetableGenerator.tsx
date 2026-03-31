@@ -430,7 +430,7 @@ const TimetableGenerator = () => {
     }
   };
 
-  const buildPayload = (yearOverride?: string, sectionOverride?: string) => {
+  const buildPayload = (yearOverride?: string, sectionOverride?: string, priorTimetableIds: string[] = []) => {
     const targetYear = yearOverride || selectedYear;
     const targetSection = sectionOverride || selectedSection;
 
@@ -455,6 +455,7 @@ const TimetableGenerator = () => {
     return {
       year: targetYear,
       section: targetSection,
+      priorTimetableIds,
       manualEntries: manualEntries
         .filter((m) => m.subjectId && m.facultyId)
         .map(m => ({
@@ -541,9 +542,16 @@ const TimetableGenerator = () => {
   };
 
   const handleGenerateAll = async () => {
-    const yearOrder = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
     const configuredYears = getYearOptions(academicConfig);
-    const allYears = yearOrder.filter((year) => configuredYears.includes(year) || year !== "1st Year");
+    const allYears = [...configuredYears].sort((left, right) => {
+      const sectionDelta =
+        getSectionOptionsForYear(academicConfig, right).length -
+        getSectionOptionsForYear(academicConfig, left).length;
+      if (sectionDelta !== 0) {
+        return sectionDelta;
+      }
+      return configuredYears.indexOf(left) - configuredYears.indexOf(right);
+    });
     if (allYears.length < 2) {
       await handleGenerate();
       return;
@@ -553,6 +561,7 @@ const TimetableGenerator = () => {
     let firstTimetableId: string | null = null;
     let successCount = 0;
     const errors: string[] = [];
+    const generatedTimetableIds: string[] = [];
 
     try {
       for (const year of allYears) {
@@ -578,7 +587,7 @@ const TimetableGenerator = () => {
         }
 
         const primarySection = yearSections[0];
-        const payload = buildPayload(year, primarySection);
+        const payload = buildPayload(year, primarySection, generatedTimetableIds);
 
         if (inputMode === "manual" && payload.manualEntries?.length === 0 && payload.facultyIdNameMapping.length === 0) {
           errors.push(`${year}: No manual configurations found`);
@@ -595,6 +604,7 @@ const TimetableGenerator = () => {
           if (!firstTimetableId) {
             firstTimetableId = response.timetableId;
           }
+          generatedTimetableIds.push(response.timetableId);
           successCount++;
         } catch (error) {
           const msg = error instanceof ApiError
