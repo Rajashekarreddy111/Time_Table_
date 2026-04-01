@@ -144,6 +144,12 @@ class MemoryStore:
             return self._scoped_mappings_mem.get((map_type, scope_key))
         return self._scoped_mappings.find_one({"mapType": map_type, "scopeKey": scope_key}, {"_id": 0})
 
+    def delete_scoped_mapping(self, map_type: str, scope_key: str) -> bool:
+        if not self._mongo_available:
+            return self._scoped_mappings_mem.pop((map_type, scope_key), None) is not None
+        result = self._scoped_mappings.delete_one({"mapType": map_type, "scopeKey": scope_key})
+        return result.deleted_count > 0
+
     def save_timetable(self, timetable_id: str, payload: dict[str, Any]) -> None:
         document = {
             **payload,

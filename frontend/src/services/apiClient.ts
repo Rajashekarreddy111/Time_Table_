@@ -519,6 +519,13 @@ export function getFacultyIdStatus() {
 export function getBackendHealth() {
   return apiRequest<BackendHealthResponse>("/health", "GET");
 }
+
+export function deleteUploadedMapping(mappingType: string) {
+  return apiRequest<{ message: string }>(
+    `/uploads/mappings/${encodeURIComponent(mappingType)}`,
+    "DELETE",
+  );
+}
 export const deleteTimetable = async (
   timetableId: string,
 ): Promise<{ message: string }> => {

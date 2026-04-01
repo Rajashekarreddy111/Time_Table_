@@ -4,7 +4,7 @@ from pathlib import Path
 import openpyxl
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
-from models.schemas import UploadResponse
+from models.schemas import MessageResponse, UploadResponse
 from services.cloudinary_storage import upload_source_file
 from services.file_parser import dataframe_rows, parse_tabular_upload, read_upload_bytes
 from services.utils import normalize_year
@@ -895,3 +895,25 @@ async def get_faculty_id_status():
         "facultyIdMapUploaded": bool(faculty_map),
         "facultyIdMapFileName": faculty_map.get("fileName") if faculty_map else None,
     }
+
+
+@router.delete("/uploads/mappings/{mapping_type}", response_model=MessageResponse)
+async def delete_uploaded_mapping(mapping_type: str):
+    mapping_map = {
+        "faculty-id-map": "faculty_id_map",
+        "main-timetable-config": "main_timetable_config",
+        "lab-timetable-config": "lab_timetable_config",
+        "subject-id-mapping": "subject_id_mapping",
+        "subject-continuous-rules": "subject_continuous_rules",
+        "shared-classes": "shared_classes",
+        "faculty-availability": "faculty_availability",
+    }
+    resolved_type = mapping_map.get(mapping_type)
+    if not resolved_type:
+        raise _validation_error("Invalid mapping type", [{"mappingType": mapping_type}])
+
+    removed = store.delete_scoped_mapping(resolved_type, _scope_key_global())
+    if not removed:
+        raise _validation_error("No uploaded file found for the selected mapping type", [{"mappingType": mapping_type}])
+
+    return MessageResponse(message="Uploaded file removed successfully")

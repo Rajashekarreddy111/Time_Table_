@@ -31,6 +31,7 @@ import { toast } from "sonner";
 import {
   API_BASE_URL,
   checkTimetableFeasibility,
+  deleteUploadedMapping,
   generateTimetable,
   getMappingStatus,
   uploadFacultyIdMap,
@@ -79,6 +80,15 @@ type MappingStatus = {
   facultyAvailabilityUploaded?: boolean;
   facultyAvailabilityFileName?: string | null;
 };
+
+type MappingUploadType =
+  | "faculty-id-map"
+  | "main-timetable-config"
+  | "lab-timetable-config"
+  | "subject-id-mapping"
+  | "subject-continuous-rules"
+  | "shared-classes"
+  | "faculty-availability";
 
 const EMPTY_MAPPING_STATUS: MappingStatus = {
   facultyIdMapUploaded: false,
@@ -151,6 +161,23 @@ const TimetableGenerator = () => {
   const mappingStatusRequestRef = useRef(0);
 
   const templateBase = `${API_BASE_URL}/templates`;
+
+  const clearUploadState = () => {
+    setFacultyIdFile(null);
+    setMainTimetableFile(null);
+    setLabTimetableFile(null);
+    setSubjectIdMappingFile(null);
+    setSubjectContinuousRulesFile(null);
+    setSharedClassesFile(null);
+    setFacultyAvailabilityFile(null);
+    setMappingFileIds({
+      facultyIdMap: "",
+      mainTimetableConfig: "",
+      labTimetableConfig: "",
+      subjectIdMapping: "",
+      subjectContinuousRules: "",
+    });
+  };
 
   const addManualEntry = () =>
     setManualEntries([...manualEntries, { year: selectedYear, section: selectedSection, subjectId: "", facultyId: "", noOfHours: 4, continuousHours: 1, compulsoryContinuousHours: 1 }]);
@@ -278,14 +305,7 @@ const TimetableGenerator = () => {
   useEffect(() => {
     setMappingStatus(EMPTY_MAPPING_STATUS);
     loadMappingStatus(selectedYear);
-
-    setFacultyIdFile(null);
-    setMainTimetableFile(null);
-    setLabTimetableFile(null);
-    setSubjectIdMappingFile(null);
-    setSubjectContinuousRulesFile(null);
-    setSharedClassesFile(null);
-    setFacultyAvailabilityFile(null);
+    clearUploadState();
   }, [selectedYear, selectedSection]);
 
   const showDetailedError = (error: unknown, fallbackMessage: string) => {
@@ -431,6 +451,46 @@ const TimetableGenerator = () => {
     }
   };
 
+  const handleRemoveUploadedFile = async (
+    mappingType: MappingUploadType,
+    onLocalClear: () => void,
+    successMessage: string,
+  ) => {
+    try {
+      await deleteUploadedMapping(mappingType);
+      onLocalClear();
+      await loadMappingStatus(selectedYear);
+      toast.success(successMessage);
+    } catch (error) {
+      showDetailedError(error, "Failed to remove uploaded file");
+    }
+  };
+
+  const clearAllUploadedFiles = async () => {
+    const mappingTypes: MappingUploadType[] = [
+      "faculty-id-map",
+      "main-timetable-config",
+      "lab-timetable-config",
+      "subject-id-mapping",
+      "subject-continuous-rules",
+      "shared-classes",
+      "faculty-availability",
+    ];
+
+    await Promise.all(
+      mappingTypes.map(async (mappingType) => {
+        try {
+          await deleteUploadedMapping(mappingType);
+        } catch {
+          // Ignore missing uploads during automatic cleanup.
+        }
+      }),
+    );
+
+    clearUploadState();
+    await loadMappingStatus(selectedYear);
+  };
+
   const buildPayload = (yearOverride?: string, sectionOverride?: string, priorTimetableIds: string[] = []) => {
     const targetYear = yearOverride || selectedYear;
     const targetSection = sectionOverride || selectedSection;
@@ -531,6 +591,7 @@ const TimetableGenerator = () => {
       const response = await generateTimetable(payload);
       localStorage.setItem("latestTimetableId", response.timetableId);
       const reportOnly = response.message.toLowerCase().includes("report");
+      await clearAllUploadedFiles();
       toast.success(response.message);
       navigate(reportOnly
         ? `/outputs?timetableId=${encodeURIComponent(response.timetableId)}`
@@ -621,6 +682,7 @@ const TimetableGenerator = () => {
     }
 
     if (successCount > 0) {
+      await clearAllUploadedFiles();
       if (errors.length > 0) {
         toast.warning(`Generated ${successCount} year(s). Issues: ${errors.join("; ")}`, { duration: 8000 });
       } else {
@@ -783,14 +845,11 @@ const TimetableGenerator = () => {
               </div>
               <div>
                 <Label className="text-xs text-muted-foreground">Section</Label>
-                <Select value={selectedSection} onValueChange={setSelectedSection}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {getSectionOptionsForYear(academicConfig, selectedYear).map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Input
+                  value={selectedSection}
+                  onChange={(e) => setSelectedSection(e.target.value)}
+                  placeholder="Type section name"
+                />
               </div>
             </div>
           </div>
@@ -815,78 +874,78 @@ const TimetableGenerator = () => {
               <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Faculty Name/ID Mapping (Global)</p>
-                  {mappingStatus.facultyIdMapUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.facultyIdMapFileName}</span>
+                  <FileUpload file={facultyIdFile} onFileSelect={uploadFacultyId} onClear={() => setFacultyIdFile(null)} label="Upload Faculty Map" templateLinks={buildTemplateLinks(templateBase, "faculty-id-map")} />
+                  {mappingStatus.facultyIdMapUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.facultyIdMapFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("faculty-id-map", () => { setFacultyIdFile(null); setMappingFileIds((prev) => ({ ...prev, facultyIdMap: "" })); }, "Faculty ID map removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={facultyIdFile} onFileSelect={uploadFacultyId} onClear={() => setFacultyIdFile(null)} label="Upload Faculty Map" templateLinks={buildTemplateLinks(templateBase, "faculty-id-map")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Main Config (Global)</p>
-                  {mappingStatus.mainTimetableConfigUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.mainTimetableConfigFileName}</span>
+                  <FileUpload file={mainTimetableFile} onFileSelect={handleUploadMainTimetable} onClear={() => setMainTimetableFile(null)} label="Upload Main Timetable" templateLinks={buildTemplateLinks(templateBase, "main-timetable-config")} />
+                  {mappingStatus.mainTimetableConfigUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.mainTimetableConfigFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("main-timetable-config", () => { setMainTimetableFile(null); setMappingFileIds((prev) => ({ ...prev, mainTimetableConfig: "" })); }, "Main timetable config removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={mainTimetableFile} onFileSelect={handleUploadMainTimetable} onClear={() => setMainTimetableFile(null)} label="Upload Main Timetable" templateLinks={buildTemplateLinks(templateBase, "main-timetable-config")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Lab Timetable (Global)</p>
-                  {mappingStatus.labTimetableConfigUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.labTimetableConfigFileName}</span>
+                  <FileUpload file={labTimetableFile} onFileSelect={handleUploadLabTimetable} onClear={() => setLabTimetableFile(null)} label="Upload Lab Timetable" templateLinks={buildTemplateLinks(templateBase, "lab-timetable")} />
+                  {mappingStatus.labTimetableConfigUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.labTimetableConfigFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("lab-timetable-config", () => { setLabTimetableFile(null); setMappingFileIds((prev) => ({ ...prev, labTimetableConfig: "" })); }, "Lab timetable config removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={labTimetableFile} onFileSelect={handleUploadLabTimetable} onClear={() => setLabTimetableFile(null)} label="Upload Lab Timetable" templateLinks={buildTemplateLinks(templateBase, "lab-timetable")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Subject ID Mapping (Global)</p>
-                  {mappingStatus.subjectIdMappingUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.subjectIdMappingFileName}</span>
+                  <FileUpload file={subjectIdMappingFile} onFileSelect={handleUploadSubjectIdMapping} onClear={() => setSubjectIdMappingFile(null)} label="Upload Subject ID Map" templateLinks={buildTemplateLinks(templateBase, "subject-id-mapping")} />
+                  {mappingStatus.subjectIdMappingUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.subjectIdMappingFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("subject-id-mapping", () => { setSubjectIdMappingFile(null); setMappingFileIds((prev) => ({ ...prev, subjectIdMapping: "" })); }, "Subject ID mapping removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={subjectIdMappingFile} onFileSelect={handleUploadSubjectIdMapping} onClear={() => setSubjectIdMappingFile(null)} label="Upload Subject ID Map" templateLinks={buildTemplateLinks(templateBase, "subject-id-mapping")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Clock3 className="h-4 w-4 text-primary inline-block mr-1" /> Subject Continuous Rules (Global)</p>
-                  {mappingStatus.subjectContinuousRulesUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.subjectContinuousRulesFileName}</span>
+                  <FileUpload file={subjectContinuousRulesFile} onFileSelect={handleUploadSubjectContinuousRules} onClear={() => setSubjectContinuousRulesFile(null)} label="Upload Continuous Rules" templateLinks={buildTemplateLinks(templateBase, "subject-continuous-rules")} />
+                  {mappingStatus.subjectContinuousRulesUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.subjectContinuousRulesFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("subject-continuous-rules", () => { setSubjectContinuousRulesFile(null); setMappingFileIds((prev) => ({ ...prev, subjectContinuousRules: "" })); }, "Subject continuous rules removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={subjectContinuousRulesFile} onFileSelect={handleUploadSubjectContinuousRules} onClear={() => setSubjectContinuousRulesFile(null)} label="Upload Continuous Rules" templateLinks={buildTemplateLinks(templateBase, "subject-continuous-rules")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Shared Classes (Global)</p>
-                  {mappingStatus.sharedClassesUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.sharedClassesFileName}</span>
+                  <FileUpload file={sharedClassesFile} onFileSelect={uploadSharedClassesDoc} onClear={() => setSharedClassesFile(null)} label="Upload Shared Classes" templateLinks={buildTemplateLinks(templateBase, "shared-classes")} />
+                  {mappingStatus.sharedClassesUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.sharedClassesFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("shared-classes", () => setSharedClassesFile(null), "Shared classes file removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={sharedClassesFile} onFileSelect={uploadSharedClassesDoc} onClear={() => setSharedClassesFile(null)} label="Upload Shared Classes" templateLinks={buildTemplateLinks(templateBase, "shared-classes")} />
                   )}
                 </div>
 
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Faculty Availability (Global)</p>
-                  {mappingStatus.facultyAvailabilityUploaded ? (
-                    <div className="rounded-lg border border-border/70 bg-background p-4 text-xs">
-                      Uploaded: <span className="font-medium">{mappingStatus.facultyAvailabilityFileName}</span>
+                  <FileUpload file={facultyAvailabilityFile} onFileSelect={uploadFacultyAvailabilityDoc} onClear={() => setFacultyAvailabilityFile(null)} label="Upload Faculty Availability" templateLinks={buildTemplateLinks(templateBase, "faculty-availability")} />
+                  {mappingStatus.facultyAvailabilityUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.facultyAvailabilityFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("faculty-availability", () => setFacultyAvailabilityFile(null), "Faculty availability file removed.")}>Remove</Button>
                     </div>
-                  ) : (
-                    <FileUpload file={facultyAvailabilityFile} onFileSelect={uploadFacultyAvailabilityDoc} onClear={() => setFacultyAvailabilityFile(null)} label="Upload Faculty Availability" templateLinks={buildTemplateLinks(templateBase, "faculty-availability")} />
                   )}
                 </div>
               </div>
