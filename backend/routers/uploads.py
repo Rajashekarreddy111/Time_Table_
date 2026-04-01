@@ -533,6 +533,28 @@ def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
     return normalized_rows
 
 
+def _extract_workload_faculty_names(file_bytes: bytes) -> list[str]:
+    workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    faculty_names: list[str] = []
+
+    for worksheet in workbook.worksheets:
+        faculty_name = ""
+        for row in worksheet.iter_rows(min_row=1, max_row=12, values_only=True):
+            for value in row:
+                text = _to_text(value)
+                if "FACULTY WORKLOAD" in text.upper():
+                    faculty_name = text.split(":", 1)[1].strip() if ":" in text else text
+                    break
+            if faculty_name:
+                break
+
+        fallback_name = faculty_name or worksheet.title.strip()
+        if fallback_name and fallback_name not in faculty_names:
+            faculty_names.append(fallback_name)
+
+    return faculty_names
+
+
 def _normalize_faculty_availability_query_rows(rows: list[dict]) -> list[dict]:
     import re
     normalized: list[dict] = []
@@ -718,11 +740,21 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
 
     file_bytes = read_upload_bytes(file)
     rows: list[dict] = []
+    faculty_names: list[str] = []
     if suffix == ".xlsx":
         rows = _parse_workload_sheet_rows(file_bytes)
+        faculty_names = _extract_workload_faculty_names(file_bytes)
     if not rows:
         dataframe = parse_tabular_upload(file.filename, file_bytes)
         rows = _normalize_faculty_availability_rows(dataframe_rows(dataframe))
+    if not faculty_names:
+        faculty_names = sorted(
+            {
+                _to_text(row.get("faculty_name")) or _to_text(row.get("faculty_id"))
+                for row in rows
+                if _to_text(row.get("faculty_name")) or _to_text(row.get("faculty_id"))
+            }
+        )
     cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/faculty-availability")
 
     # Treat the latest uploaded workload/availability file as the source of truth.
@@ -732,6 +764,7 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
     # Save latest file to scoped
     payload = {
         "rows": latest_rows,
+        "facultyNames": faculty_names,
         "lastFileName": file.filename,
         "lastSourceFile": cloudinary_file,
     }
@@ -746,6 +779,7 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
             "fileName": file.filename,
             "rowsParsed": len(latest_rows),
             "rows": latest_rows,
+            "facultyNames": faculty_names,
             "sourceFile": cloudinary_file,
         },
     )

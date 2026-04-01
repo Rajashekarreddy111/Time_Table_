@@ -67,6 +67,8 @@ class PeriodInfo(BaseModel):
 class FacultyAvailabilityRequest(BaseModel):
     date: str
     periods: list[int] = Field(default_factory=list)
+    startTime: str | None = None
+    endTime: str | None = None
     facultyRequired: int = 3
     ignoredYears: list[str] = Field(default_factory=list)
     ignoredSections: list[str] = Field(default_factory=list)

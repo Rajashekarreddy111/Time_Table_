@@ -13,6 +13,8 @@ async def faculty_availability(payload: FacultyAvailabilityRequest):
         store=store,
         date_value=payload.date,
         periods=payload.periods,
+        start_time=payload.startTime,
+        end_time=payload.endTime,
         faculty_required=payload.facultyRequired,
         ignored_years=payload.ignoredYears,
         ignored_sections=payload.ignoredSections,

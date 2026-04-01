@@ -6,6 +6,8 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 export interface FacultyAvailabilityRequest {
   date: string;
   periods: number[];
+  startTime?: string;
+  endTime?: string;
   facultyRequired: number;
   ignoredYears: string[];
   ignoredSections: string[];
