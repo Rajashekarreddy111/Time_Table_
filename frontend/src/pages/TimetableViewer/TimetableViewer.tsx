@@ -24,6 +24,7 @@ import {
   type GeneratedWorkbookFile,
   type TimetableRecord,
   deleteTimetable,
+  getAllSectionsWorkbook,
   getSectionWorkbook,
 } from "@/services/apiClient";
 import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
@@ -443,25 +444,8 @@ const TimetableViewer = () => {
 
   const handleExportAllTimetables = async () => {
     try {
-      const response = await fetch("/timetables/all-sections-workbook");
-
-      if (!response.ok) {
-        throw new Error(
-          `Download failed: ${response.status} ${response.statusText}`,
-        );
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "All_Class_Timetables_Format.xlsx";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
-
+      const workbook = await getAllSectionsWorkbook();
+      downloadGeneratedWorkbook(workbook);
       toast.success("All class timetables exported.");
     } catch (error) {
       toast.error(

@@ -45,6 +45,7 @@ MEDIUM_BORDER = Border(
     bottom=Side(style="medium"),
 )
 CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
+LEFT_ALIGNMENT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 BOLD_FONT = Font(bold=True)
 
 
@@ -1371,6 +1372,43 @@ def _style_range(
                 cell.font = font
 
 
+def _apply_border_sides(
+    cell,
+    *,
+    left: Side | None = None,
+    right: Side | None = None,
+    top: Side | None = None,
+    bottom: Side | None = None,
+) -> None:
+    current = cell.border
+    cell.border = Border(
+        left=left or current.left,
+        right=right or current.right,
+        top=top or current.top,
+        bottom=bottom or current.bottom,
+    )
+
+
+def _apply_merged_range_outline(
+    worksheet,
+    start_row: int,
+    end_row: int,
+    start_column: int,
+    end_column: int,
+    *,
+    border: Border,
+) -> None:
+    for row_idx in range(start_row, end_row + 1):
+        for col_idx in range(start_column, end_column + 1):
+            _apply_border_sides(
+                worksheet.cell(row=row_idx, column=col_idx),
+                left=border.left if col_idx == start_column else None,
+                right=border.right if col_idx == end_column else None,
+                top=border.top if row_idx == start_row else None,
+                bottom=border.bottom if row_idx == end_row else None,
+            )
+
+
 def _build_subject_legend_for_section(
     section_schedule: dict[str, dict[int, dict | None]],
 ) -> list[tuple[str, str]]:
@@ -1564,6 +1602,7 @@ def _apply_formatted_sheet_layout(
     worksheet,
     *,
     legend_row_count: int,
+    legend_start_row: int,
     day_start_row: int,
     top_rows: int,
 ) -> None:
@@ -1594,6 +1633,19 @@ def _apply_formatted_sheet_layout(
         anchor = worksheet.cell(row=merged_range.min_row, column=merged_range.min_col)
         anchor.alignment = CENTER_ALIGNMENT
         anchor.border = MEDIUM_BORDER
+        _apply_merged_range_outline(
+            worksheet,
+            merged_range.min_row,
+            merged_range.max_row,
+            merged_range.min_col,
+            merged_range.max_col,
+            border=MEDIUM_BORDER,
+        )
+
+    if legend_row_count > 0:
+        for row_idx in range(legend_start_row, legend_start_row + legend_row_count):
+            worksheet.cell(row=row_idx, column=1).alignment = LEFT_ALIGNMENT
+            worksheet.cell(row=row_idx, column=6).alignment = LEFT_ALIGNMENT
 
 
 def _build_section_timetables_workbook_from_schedule_map(
@@ -1671,7 +1723,7 @@ def _build_section_timetables_workbook_from_schedule_map(
         merge_vertical_marker(4, "BREAK", break_overlap_rows)
         merge_vertical_marker(7, "LUNCH", lunch_overlap_rows)
 
-        legend_start_row = 16
+        legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
@@ -1681,6 +1733,7 @@ def _build_section_timetables_workbook_from_schedule_map(
         _apply_formatted_sheet_layout(
             worksheet,
             legend_row_count=(len(legend) + 1) // 2,
+            legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=6,
         )
@@ -1746,7 +1799,7 @@ def _build_faculty_workload_workbook_from_details(
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
-        legend_start_row = 15
+        legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
@@ -1756,6 +1809,7 @@ def _build_faculty_workload_workbook_from_details(
         _apply_formatted_sheet_layout(
             worksheet,
             legend_row_count=(len(legend) + 1) // 2,
+            legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=5,
         )
@@ -1839,7 +1893,7 @@ def _build_faculty_workload_workbook_from_saved_workloads(
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
-        legend_start_row = 15
+        legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
@@ -1849,6 +1903,7 @@ def _build_faculty_workload_workbook_from_saved_workloads(
         _apply_formatted_sheet_layout(
             worksheet,
             legend_row_count=(len(legend) + 1) // 2,
+            legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=5,
         )

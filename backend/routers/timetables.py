@@ -1,8 +1,6 @@
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from io import BytesIO
 from openpyxl import Workbook
 
 from models.schemas import GenerateTimetableRequest, GenerateTimetableResponse
@@ -193,20 +191,15 @@ def _extract_section_grids_from_record(
     section = str(record.get("section", "")).strip()
     result: dict[tuple[str, str], dict[str, list[Any]]] = {}
     all_grids = record.get("allGrids")
-    print(f"DEBUG: Record {record.get('id')}: year='{year}', section='{section}', all_grids type={type(all_grids)}, value keys={list(all_grids.keys()) if isinstance(all_grids, dict) else 'N/A'}")
-    
+
     if isinstance(all_grids, dict) and all_grids:
         for sec, grid in all_grids.items():
-            print(f"DEBUG: Checking section '{sec}', grid type={type(grid)}, require_data={require_data}")
             if isinstance(grid, dict) and (not require_data or _grid_has_data(grid)):
                 result[(year, str(sec).strip())] = grid
-                print(f"DEBUG: Added grid for {(year, str(sec).strip())}")
         return result
     single_grid = record.get("grid")
-    print(f"DEBUG: No all_grids, checking single_grid type={type(single_grid)}")
     if year and section and isinstance(single_grid, dict) and (not require_data or _grid_has_data(single_grid)):
         result[(year, section)] = single_grid
-        print(f"DEBUG: Added single grid for {(year, section)}")
     return result
 
 
@@ -256,6 +249,25 @@ async def check_timetable_feasibility(payload: GenerateTimetableRequest):
 async def list_generated_timetables():
     items = [_enrich_subject_names(item) for item in store.list_timetables()]
     return {"items": items}
+
+
+@router.get("/timetables/all-sections-workbook")
+async def get_all_sections_workbook():
+    records = store.list_timetables()
+    section_grids = _latest_section_grids(records)
+
+    if not section_grids:
+        workbook = Workbook()
+        ws = workbook.active
+        ws.title = "No Timetables"
+        ws.append(["No Timetables Found"])
+        ws.append([f"Total records in database: {len(records)}"])
+        ws.append(["Please generate timetables first before downloading."])
+    else:
+        schedules = _section_schedules_from_grids(section_grids)
+        workbook = _build_section_timetables_workbook_from_schedule_map(schedules)
+
+    return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
 
 
 @router.get("/timetables/{timetable_id}")
@@ -314,18 +326,9 @@ async def get_all_sections_workbook():
         workbook = _build_section_timetables_workbook_from_schedule_map(schedules)
 
     # ✅ CRITICAL: Write to stream properly
-    stream = BytesIO()
-    workbook.save(stream)
-    stream.seek(0)
+    return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
 
     # ✅ Return as downloadable file
-    return StreamingResponse(
-        stream,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": "attachment; filename=All_Class_Timetables_Format.xlsx"
-        },
-    )
 
 
 @router.get("/faculty-workloads/workbook")
