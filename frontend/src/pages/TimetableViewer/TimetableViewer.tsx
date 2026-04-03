@@ -446,7 +446,9 @@ const TimetableViewer = () => {
       const response = await fetch("/timetables/all-sections-workbook");
 
       if (!response.ok) {
-        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Download failed: ${response.status} ${response.statusText}`,
+        );
       }
 
       const blob = await response.blob();
