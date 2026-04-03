@@ -24,7 +24,6 @@ import {
   type GeneratedWorkbookFile,
   type TimetableRecord,
   deleteTimetable,
-  getAllSectionsWorkbook,
   getSectionWorkbook,
 } from "@/services/apiClient";
 import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
@@ -296,16 +295,40 @@ function extractSectionTimetables(
   for (const record of records) {
     if (record.allGrids) {
       for (const [section, grid] of Object.entries(record.allGrids)) {
-        items.push({ year: record.year, section, grid });
+        // Only include grids that have at least one non-empty day
+        if (grid && typeof grid === "object" && Object.keys(grid).length > 0) {
+          const hasData = Object.values(grid).some(
+            (daySlots) =>
+              Array.isArray(daySlots) &&
+              daySlots.some((slot) => slot !== null && slot !== undefined),
+          );
+          if (hasData) {
+            items.push({ year: record.year, section, grid });
+          }
+        }
       }
       continue;
     }
     if (record.grid) {
-      items.push({
-        year: record.year,
-        section: record.section,
-        grid: record.grid,
-      });
+      // Only include grids that have at least one non-empty day
+      if (
+        record.grid &&
+        typeof record.grid === "object" &&
+        Object.keys(record.grid).length > 0
+      ) {
+        const hasData = Object.values(record.grid).some(
+          (daySlots) =>
+            Array.isArray(daySlots) &&
+            daySlots.some((slot) => slot !== null && slot !== undefined),
+        );
+        if (hasData) {
+          items.push({
+            year: record.year,
+            section: record.section,
+            grid: record.grid,
+          });
+        }
+      }
     }
   }
   return items;
@@ -419,22 +442,31 @@ const TimetableViewer = () => {
   };
 
   const handleExportAllTimetables = async () => {
-    if (allTimetables.length === 0) {
-      toast.error("No timetables available.");
-      return;
-    }
     try {
-      const workbook = await getAllSectionsWorkbook();
-      downloadGeneratedWorkbook(workbook);
+      const response = await fetch("/timetables/all-sections-workbook");
+
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "All_Class_Timetables_Format.xlsx";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+
       toast.success("All class timetables exported.");
-      return;
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to download all timetables",
       );
-      return;
     }
   };
 

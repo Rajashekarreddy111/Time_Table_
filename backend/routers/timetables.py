@@ -1,6 +1,9 @@
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+from openpyxl import Workbook
 
 from models.schemas import GenerateTimetableRequest, GenerateTimetableResponse
 from services.timetable_generator import (
@@ -172,29 +175,52 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
         record["generatedFiles"] = generated_files
 
 
-def _extract_section_grids_from_record(record: dict[str, Any]) -> dict[tuple[str, str], dict[str, list[Any]]]:
+def _grid_has_data(grid: dict[str, list[Any]]) -> bool:
+    """Check if a grid has any non-null data."""
+    if not isinstance(grid, dict):
+        return False
+    for day_slots in grid.values():
+        if isinstance(day_slots, list) and any(slot is not None for slot in day_slots):
+            return True
+    return False
+
+
+def _extract_section_grids_from_record(
+    record: dict[str, Any],
+    require_data: bool = True,
+) -> dict[tuple[str, str], dict[str, list[Any]]]:
     year = str(record.get("year", "")).strip()
     section = str(record.get("section", "")).strip()
     result: dict[tuple[str, str], dict[str, list[Any]]] = {}
     all_grids = record.get("allGrids")
+    print(f"DEBUG: Record {record.get('id')}: year='{year}', section='{section}', all_grids type={type(all_grids)}, value keys={list(all_grids.keys()) if isinstance(all_grids, dict) else 'N/A'}")
+    
     if isinstance(all_grids, dict) and all_grids:
         for sec, grid in all_grids.items():
-            if isinstance(grid, dict):
+            print(f"DEBUG: Checking section '{sec}', grid type={type(grid)}, require_data={require_data}")
+            if isinstance(grid, dict) and (not require_data or _grid_has_data(grid)):
                 result[(year, str(sec).strip())] = grid
+                print(f"DEBUG: Added grid for {(year, str(sec).strip())}")
         return result
     single_grid = record.get("grid")
-    if year and section and isinstance(single_grid, dict):
+    print(f"DEBUG: No all_grids, checking single_grid type={type(single_grid)}")
+    if year and section and isinstance(single_grid, dict) and (not require_data or _grid_has_data(single_grid)):
         result[(year, section)] = single_grid
+        print(f"DEBUG: Added single grid for {(year, section)}")
     return result
 
 
-def _latest_section_grids(records: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, list[Any]]]:
+def _latest_section_grids(
+    records: list[dict[str, Any]],
+    include_invalid: bool = False,
+    require_data: bool = True,
+) -> dict[tuple[str, str], dict[str, list[Any]]]:
     latest: dict[tuple[str, str], dict[str, list[Any]]] = {}
     for raw_record in records:
         record = _enrich_subject_names(raw_record)
-        if record.get("hasValidTimetable") is False:
+        if not include_invalid and record.get("hasValidTimetable") is False:
             continue
-        for key, grid in _extract_section_grids_from_record(record).items():
+        for key, grid in _extract_section_grids_from_record(record, require_data).items():
             if key not in latest:
                 latest[key] = grid
     return latest
@@ -270,16 +296,35 @@ async def get_section_workbook(timetable_id: str, section: str):
 
 @router.get("/timetables/all-sections-workbook")
 async def get_all_sections_workbook():
-    section_grids = _latest_section_grids(store.list_timetables())
+    records = store.list_timetables()
+
+    # ✅ Get valid grids only (remove include_invalid and require_data parameters)
+    section_grids = _latest_section_grids(records)
+
+    # ✅ Build workbook safely
     if not section_grids:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "NotFound", "message": "No timetables available", "details": []},
-        )
-    schedules = _section_schedules_from_grids(section_grids)
-    return _encode_workbook(
-        "All_Class_Timetables_Format.xlsx",
-        _build_section_timetables_workbook_from_schedule_map(schedules),
+        workbook = Workbook()
+        ws = workbook.active
+        ws.title = "No Timetables"
+        ws.append(["No Timetables Found"])
+        ws.append([f"Total records in database: {len(records)}"])
+        ws.append(["Please generate timetables first before downloading."])
+    else:
+        schedules = _section_schedules_from_grids(section_grids)
+        workbook = _build_section_timetables_workbook_from_schedule_map(schedules)
+
+    # ✅ CRITICAL: Write to stream properly
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+
+    # ✅ Return as downloadable file
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=All_Class_Timetables_Format.xlsx"
+        },
     )
 
 

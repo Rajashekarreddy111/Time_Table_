@@ -29,16 +29,6 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { resetAllTimetables } from "@/services/apiClient";
 import { useState } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -63,7 +53,6 @@ export function AppSidebar() {
   const collapsed = state === "collapsed";
   const { user, logout } = useAuth();
   const [isResetting, setIsResetting] = useState(false);
-  const [showResetDialog, setShowResetDialog] = useState(false);
   const navItems =
     user?.role === "admin" ? [...baseNavItems, ...adminNavItems] : baseNavItems;
 
@@ -73,12 +62,12 @@ export function AppSidebar() {
     window.location.href = "/login";
   };
 
-  const handleReset = () => {
-    setShowResetDialog(true);
-  };
+  const handleReset = async () => {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete ALL timetables? This action cannot be undone.",
+    );
+    if (!confirmed) return;
 
-  const handleConfirmReset = async () => {
-    setShowResetDialog(false);
     setIsResetting(true);
     try {
       const result = await resetAllTimetables();
@@ -178,22 +167,6 @@ export function AppSidebar() {
           {!collapsed && <span className="text-sm">Logout</span>}
         </Button>
       </SidebarFooter>
-      <AlertDialog open={showResetDialog} onOpenChange={setShowResetDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Reset All Timetables</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete ALL timetables? This action cannot be undone and will permanently remove all generated timetables from the database.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmReset} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Delete All
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Sidebar>
   );
 }

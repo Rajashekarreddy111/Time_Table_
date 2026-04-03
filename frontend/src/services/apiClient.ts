@@ -521,13 +521,6 @@ export function getSectionWorkbook(timetableId: string, section: string) {
   );
 }
 
-export function getAllSectionsWorkbook() {
-  return apiRequest<GeneratedWorkbookFile>(
-    "/timetables/all-sections-workbook",
-    "GET",
-  );
-}
-
 export function getFacultyWorkloadWorkbook(facultyName?: string) {
   const query = facultyName
     ? `?facultyName=${encodeURIComponent(facultyName)}`

@@ -1,10 +1,5 @@
 import { type TimetableCell } from "@/data/mockData";
-import {
-  buildLegend,
-  DISPLAY_DAYS,
-  getCellByPeriod,
-  PERIOD_TEMPLATE,
-} from "@/lib/timetableFormat";
+import { buildLegend, DISPLAY_DAYS } from "@/lib/timetableFormat";
 
 interface TimetableGridProps {
   grid: Record<string, (TimetableCell | null)[]>;
@@ -37,42 +32,11 @@ function areGridCellsEquivalent(
   );
 }
 
-type Run = {
-  start: number;
-  end: number;
-  cell: TimetableCell | null | undefined;
-};
-
-function buildDayRuns(
-  day: string,
-  grid: Record<string, (TimetableCell | null)[]>,
-): Run[] {
-  const runs: Run[] = [];
-  let period = 1;
-
-  while (period <= 7) {
-    const current = getCellByPeriod(grid, day, period);
-    let end = period;
-
-    while (end < 7) {
-      const next = getCellByPeriod(grid, day, end + 1);
-      if (!areGridCellsEquivalent(current, next)) break;
-      if ((end === 2 || end === 4) && !Boolean(current?.isLab)) break;
-      end += 1;
-    }
-
-    runs.push({ start: period, end, cell: current });
-    period = end + 1;
-  }
-
-  return runs;
-}
-
 export function TimetableGrid({ grid, header }: TimetableGridProps) {
   const legendRows = buildLegend(grid);
 
-  const renderDayRow = (day: string) => {
-    const runs = buildDayRuns(day, grid);
+  const renderDayRow = (day: string, rowIndex: number) => {
+    const dayCells = grid[day] ?? [];
     const cells: JSX.Element[] = [
       <td
         key={`${day}-label`}
@@ -82,50 +46,94 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
       </td>,
     ];
 
-    runs.forEach((run, index) => {
-      const containsBreak = run.start <= 2 && run.end >= 3;
-      const containsLunch = run.start <= 4 && run.end >= 5;
-      const span =
-        run.end -
-        run.start +
-        1 +
-        (containsBreak ? 1 : 0) +
-        (containsLunch ? 1 : 0);
+    // Helper function to render a cell or merged cells
+    const renderPeriodCells = (startPeriod: number, endPeriod: number) => {
+      const periodCells = [];
+      let currentGroup: {
+        cell: TimetableCell | null;
+        start: number;
+        count: number;
+      } | null = null;
 
+      for (let i = startPeriod; i <= endPeriod; i++) {
+        const cell = dayCells[i];
+        const cellLabel = getCellLabel(cell);
+
+        if (currentGroup && areGridCellsEquivalent(currentGroup.cell, cell)) {
+          // Extend current group
+          currentGroup.count++;
+        } else {
+          // Render previous group if exists
+          if (currentGroup) {
+            periodCells.push(
+              <td
+                key={`${day}-period-${currentGroup.start + 1}-${currentGroup.start + currentGroup.count}`}
+                colSpan={currentGroup.count}
+                className={currentGroup.cell?.isLab ? "lab-cell" : ""}
+              >
+                <div className="font-semibold text-[11px] leading-tight">
+                  {getCellLabel(currentGroup.cell)}
+                </div>
+              </td>,
+            );
+          }
+          // Start new group
+          currentGroup = { cell, start: i, count: 1 };
+        }
+      }
+
+      // Render last group
+      if (currentGroup) {
+        periodCells.push(
+          <td
+            key={`${day}-period-${currentGroup.start + 1}-${currentGroup.start + currentGroup.count}`}
+            colSpan={currentGroup.count}
+            className={currentGroup.cell?.isLab ? "lab-cell" : ""}
+          >
+            <div className="font-semibold text-[11px] leading-tight">
+              {getCellLabel(currentGroup.cell)}
+            </div>
+          </td>,
+        );
+      }
+
+      return periodCells;
+    };
+
+    // Periods 1-2 (before break)
+    cells.push(...renderPeriodCells(0, 1));
+
+    // Break cell (only on first row)
+    if (rowIndex === 0) {
       cells.push(
         <td
-          key={`${day}-run-${run.start}-${run.end}`}
-          colSpan={span}
-          className={run.cell?.isLab ? "lab-cell" : ""}
+          key="break-cell"
+          rowSpan={DISPLAY_DAYS.length}
+          className="break-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7"
         >
-          <div className="font-semibold text-[11px] leading-tight">
-            {getCellLabel(run.cell)}
-          </div>
+          {"B\nR\nE\nA\nK"}
         </td>,
       );
+    }
 
-      if (run.end === 2 && index < runs.length - 1) {
-        cells.push(
-          <td
-            key={`${day}-break-${index}`}
-            className="break-cell font-semibold text-[10px] tracking-widest whitespace-pre leading-7"
-          >
-            {"B\nR\nE\nA\nK"}
-          </td>,
-        );
-      }
+    // Periods 3-4 (after break, before lunch)
+    cells.push(...renderPeriodCells(2, 3));
 
-      if (run.end === 4 && index < runs.length - 1) {
-        cells.push(
-          <td
-            key={`${day}-lunch-${index}`}
-            className="lunch-cell font-semibold text-[10px] tracking-widest whitespace-pre leading-7"
-          >
-            {"L\nU\nN\nC\nH"}
-          </td>,
-        );
-      }
-    });
+    // Lunch cell (only on first row)
+    if (rowIndex === 0) {
+      cells.push(
+        <td
+          key="lunch-cell"
+          rowSpan={DISPLAY_DAYS.length}
+          className="lunch-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7"
+        >
+          {"L\nU\nN\nC\nH"}
+        </td>,
+      );
+    }
+
+    // Periods 5-7 (after lunch)
+    cells.push(...renderPeriodCells(4, 6));
 
     return <tr key={day}>{cells}</tr>;
   };
@@ -171,28 +179,30 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
             <th className="min-w-[40px]" rowSpan={2}>
               DAY
             </th>
-            {PERIOD_TEMPLATE.map((slot, idx) => (
-              <th
-                key={`slot-num-${idx}`}
-                className={`min-w-[90px] ${slot.period === "BREAK" ? "break-header" : slot.period === "LUNCH" ? "lunch-header" : ""}`}
-              >
-                {typeof slot.period === "number" ? slot.period : ""}
-              </th>
-            ))}
+            <th className="min-w-[90px]">1</th>
+            <th className="min-w-[90px]">2</th>
+            <th className="min-w-[90px] break-header"></th>
+            <th className="min-w-[90px]">3</th>
+            <th className="min-w-[90px]">4</th>
+            <th className="min-w-[90px] lunch-header"></th>
+            <th className="min-w-[90px]">5</th>
+            <th className="min-w-[90px]">6</th>
+            <th className="min-w-[90px]">7</th>
           </tr>
           <tr>
-            {PERIOD_TEMPLATE.map((slot, idx) => (
-              <th
-                key={`slot-time-${idx}`}
-                className={`text-[10px] ${slot.period === "BREAK" ? "break-header" : slot.period === "LUNCH" ? "lunch-header" : ""}`}
-              >
-                {slot.time}
-              </th>
-            ))}
+            <th className="text-[10px]">9.10-10.00</th>
+            <th className="text-[10px]">10.00-10.50</th>
+            <th className="text-[10px] break-header">10.50-11.00</th>
+            <th className="text-[10px]">11.00-11.50</th>
+            <th className="text-[10px]">11.50-12.40</th>
+            <th className="text-[10px] lunch-header">12.40-1.30</th>
+            <th className="text-[10px]">1.30-2.20</th>
+            <th className="text-[10px]">2.20-3.10</th>
+            <th className="text-[10px]">3.10-4.00</th>
           </tr>
         </thead>
         <tbody>
-          {DISPLAY_DAYS.map((day) => renderDayRow(day.full))}
+          {DISPLAY_DAYS.map((day, idx) => renderDayRow(day.full, idx))}
 
           {legendRows.length > 0 && (
             <>
