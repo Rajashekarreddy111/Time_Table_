@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -172,9 +174,16 @@ class ManualLabEntry(BaseModel):
     venue: str = ""
 
 
+class TimetableMetadata(BaseModel):
+    academicYear: str = Field(pattern=r"^\d{4}-\d{4}$")
+    semester: Literal[1, 2]
+    withEffectFrom: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
+    timetableMetadata: TimetableMetadata
     labsOnly: bool = False
     priorTimetableIds: list[str] = Field(default_factory=list)
     manualEntries: list[ManualEntryMode] = Field(default_factory=list)

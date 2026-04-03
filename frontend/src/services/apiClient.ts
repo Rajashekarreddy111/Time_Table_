@@ -100,9 +100,16 @@ export interface ManualLabEntry {
   venue: string;
 }
 
+export interface TimetableMetadata {
+  academicYear: string;
+  semester: 1 | 2;
+  withEffectFrom: string;
+}
+
 export interface GenerateTimetableRequest {
   year: string;
   section: string;
+  timetableMetadata: TimetableMetadata;
   labsOnly?: boolean;
   priorTimetableIds?: string[];
   manualEntries?: ManualEntryMode[];
@@ -157,6 +164,7 @@ export interface TimetableRecord {
   id: string;
   year: string;
   section: string;
+  timetableMetadata?: TimetableMetadata;
   hasValidTimetable?: boolean;
   grid: Record<
     string,

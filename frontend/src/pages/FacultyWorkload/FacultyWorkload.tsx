@@ -10,10 +10,16 @@ import { DISPLAY_DAYS } from "@/lib/timetableFormat";
 import {
   listTimetables,
   type GeneratedWorkbookFile,
+  type TimetableMetadata,
   type TimetableRecord,
   getFacultyWorkloadWorkbook,
 } from "@/services/apiClient";
-import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
+import {
+  ACADEMIC_METADATA,
+  formatSemesterLabel,
+  formatWithEffectFrom,
+  toAcademicYear,
+} from "@/lib/academicMetadata";
 
 type FacultyScheduleEntry = {
   subject: string;
@@ -105,7 +111,13 @@ function appendMergedWorkloadRuns(
   }
 }
 
-function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
+function buildWorkloadWorksheet(
+  workload: FacultyWorkloadType,
+  metadata?: TimetableMetadata,
+) {
+  const resolvedAcademicYear = metadata?.academicYear ?? toAcademicYear(new Date());
+  const resolvedSemester = formatSemesterLabel(metadata?.semester ?? 2);
+  const resolvedWithEffectFrom = formatWithEffectFrom(metadata?.withEffectFrom);
   const legend = getWorkloadLegend(workload.schedule);
   const data: string[][] = [];
   const merges: XLSX.Range[] = [];
@@ -113,9 +125,9 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
   data.push(padRow([ACADEMIC_METADATA.COLLEGE_NAME]));
   data.push(padRow(["(AUTONOMOUS)"]));
   data.push(padRow([ACADEMIC_METADATA.DEPARTMENT_NAME]));
-  data.push(padRow([`ACADEMIC YEAR : ${toAcademicYear(new Date())} ${ACADEMIC_METADATA.SEMESTER}`]));
+  data.push(padRow([`ACADEMIC YEAR : ${resolvedAcademicYear} ${resolvedSemester}`]));
   data.push(padRow([`FACULTY WORKLOAD : ${workload.name}`]));
-  data.push(padRow(["Room No :", "", "", "", "", "With effect from :"]));
+  data.push(padRow(["Room No :", "", "", "", "", `With effect from : ${resolvedWithEffectFrom}`]));
 
   const tableHeaderRow = data.length;
   data.push(padRow(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"]));
@@ -276,6 +288,10 @@ const FacultyWorkload = () => {
     () => records.filter((record) => record.hasValidTimetable !== false),
     [records],
   );
+  const workloadMetadata = validRecords[0]?.timetableMetadata;
+  const resolvedAcademicYear = workloadMetadata?.academicYear ?? toAcademicYear(new Date());
+  const resolvedSemester = formatSemesterLabel(workloadMetadata?.semester ?? 2);
+  const resolvedWithEffectFrom = formatWithEffectFrom(workloadMetadata?.withEffectFrom);
   const workloads = useMemo(() => validRecords.length > 0 ? parseFacultyWorkloads(validRecords) : [], [validRecords]);
   const facultyNames = useMemo(() => workloads.map((item) => item.name), [workloads]);
 
@@ -302,7 +318,7 @@ const FacultyWorkload = () => {
       return;
     }
     const wb = XLSX.utils.book_new();
-    const ws = buildWorkloadWorksheet(workload);
+    const ws = buildWorkloadWorksheet(workload, workloadMetadata);
     XLSX.utils.book_append_sheet(wb, ws, selectedFaculty.replace(/\s/g, "_"));
     XLSX.writeFile(wb, `Workload_${selectedFaculty.replace(/\s/g, "_")}_Format.xlsx`);
     toast.success("Workload exported in timetable format.");
@@ -323,7 +339,7 @@ const FacultyWorkload = () => {
     }
     const wb = XLSX.utils.book_new();
     workloads.forEach((item, idx) => {
-      const ws = buildWorkloadWorksheet(item);
+      const ws = buildWorkloadWorksheet(item, workloadMetadata);
       const base = item.name.replace(/[^A-Za-z0-9]/g, "_").slice(0, 25) || `Faculty_${idx + 1}`;
       const sheetName = `${idx + 1}_${base}`.slice(0, 31);
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
@@ -424,8 +440,12 @@ const FacultyWorkload = () => {
                 <h3 className="text-base font-semibold uppercase leading-tight border-b border-border py-1">{ACADEMIC_METADATA.COLLEGE_NAME}</h3>
                 <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">(AUTONOMOUS)</p>
                 <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
-                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {toAcademicYear(new Date())} {ACADEMIC_METADATA.SEMESTER}</div>
+                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {resolvedAcademicYear} {resolvedSemester}</div>
                 <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
+                <div className="grid grid-cols-2 text-xs font-semibold text-center">
+                  <div className="px-2 py-0.5 border-r border-border">Room No :</div>
+                  <div className="px-2 py-0.5">With effect from : {resolvedWithEffectFrom}</div>
+                </div>
               </div>
 
               <table className="timetable-grid rounded-none overflow-hidden min-w-[980px]">

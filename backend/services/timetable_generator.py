@@ -52,17 +52,49 @@ BOLD_FONT = Font(bold=True)
 def _academic_year_label() -> str:
     now = datetime.now()
     start_year = now.year if now.month >= 6 else now.year - 1
-    return f"{start_year} - {str(start_year + 1)[-2:]}"
+    return f"{start_year}-{start_year + 1}"
 
 
-def _class_title(year: str, section: str) -> str:
+def _semester_label(value: int | str | None) -> str:
+    semester = str(value or "").strip()
+    if semester == "1":
+        return "I SEMESTER"
+    if semester == "2":
+        return "II SEMESTER"
+    return ACADEMIC_METADATA["semester"]
+
+
+def _display_effective_date(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except ValueError:
+        return raw
+
+
+def _resolve_timetable_metadata(raw_meta: dict[str, Any] | None) -> dict[str, str]:
+    meta = raw_meta or {}
+    academic_year = str(meta.get("academicYear") or "").strip() or _academic_year_label()
+    semester = _semester_label(meta.get("semester"))
+    with_effect_from = str(meta.get("withEffectFrom") or "").strip()
+    return {
+        "academicYear": academic_year,
+        "semester": semester,
+        "withEffectFrom": with_effect_from,
+        "withEffectFromDisplay": _display_effective_date(with_effect_from),
+    }
+
+
+def _class_title(year: str, section: str, semester_label: str | None = None) -> str:
     year_map = {
         "2nd Year": "II B.Tech",
         "3rd Year": "III B.Tech",
         "4th Year": "IV B.Tech",
     }
     normalized = year_map.get(year, year)
-    return f"{normalized} [CSE - {section}] {ACADEMIC_METADATA['semester']} TIME TABLE"
+    return f"{normalized} [CSE - {section}] {semester_label or ACADEMIC_METADATA['semester']} TIME TABLE"
 
 
 @dataclass
@@ -1389,6 +1421,10 @@ def _apply_border_sides(
     )
 
 
+def _clear_cell_border(cell) -> None:
+    cell.border = Border()
+
+
 def _apply_merged_range_outline(
     worksheet,
     start_row: int,
@@ -1400,8 +1436,10 @@ def _apply_merged_range_outline(
 ) -> None:
     for row_idx in range(start_row, end_row + 1):
         for col_idx in range(start_column, end_column + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            _clear_cell_border(cell)
             _apply_border_sides(
-                worksheet.cell(row=row_idx, column=col_idx),
+                cell,
                 left=border.left if col_idx == start_column else None,
                 right=border.right if col_idx == end_column else None,
                 top=border.top if row_idx == start_row else None,
@@ -1466,22 +1504,12 @@ def _merge_section_day_row(
         end_period = period
         while end_period + 1 <= 7 and _same_section_entry(current, section_schedule[day][end_period + 1]):
             next_period = end_period + 1
-            # Merge across the break or lunch gaps only for labs
-            if not (current and bool(current.get("isLab"))):
-                if (end_period == 2 and next_period == 3) or (end_period == 4 and next_period == 5):
-                    break
+            if (end_period == 2 and next_period == 3) or (end_period == 4 and next_period == 5):
+                break
             end_period += 1
 
         start_col = display_columns[start_period]
         end_col = display_columns[end_period]
-
-        if current and bool(current.get("isLab")):
-            if start_period <= 2 and end_period >= 3:
-                end_col = max(end_col, 6)
-                break_overlap = True
-            if start_period <= 4 and end_period >= 5:
-                end_col = max(end_col, 10)
-                lunch_overlap = True
 
         if not isinstance(worksheet.cell(row=row_idx, column=start_col), MergedCell):
             worksheet.cell(row=row_idx, column=start_col, value=_section_cell_text(current))
@@ -1650,17 +1678,19 @@ def _apply_formatted_sheet_layout(
 
 def _build_section_timetables_workbook_from_schedule_map(
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     workbook = Workbook()
     workbook.remove(workbook.active)
+    metadata = _resolve_timetable_metadata(timetable_metadata)
     for year, section in sorted(schedules.keys(), key=lambda item: (item[0], item[1])):
         worksheet = workbook.create_sheet(title=f"{year}_{section}"[:31])
         worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
         worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {_academic_year_label()} {ACADEMIC_METADATA['semester']}"] + [""] * 9)
-        worksheet.append([_class_title(year, section)] + [""] * 9)
-        worksheet.append(["Room No :"] + [""] * 4 + ["With effect from :"] + [""] * 4)
+        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
+        worksheet.append([_class_title(year, section, metadata["semester"])] + [""] * 9)
+        worksheet.append(["Room No :"] + [""] * 4 + [f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * 4)
         worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
         worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
 
@@ -1678,6 +1708,7 @@ def _build_section_timetables_workbook_from_schedule_map(
                 lunch_overlap_rows.append(row_idx)
 
         worksheet.append([""] * 10)
+        legend_separator_row = worksheet.max_row
         legend = _build_subject_legend_for_section(section_schedule)
         for idx in range(0, len(legend), 2):
             left = legend[idx]
@@ -1689,6 +1720,7 @@ def _build_section_timetables_workbook_from_schedule_map(
                 + [""] * 4
             )
         worksheet.append([""] * 10)
+        signature_separator_row = worksheet.max_row
         worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
 
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
@@ -1723,10 +1755,13 @@ def _build_section_timetables_workbook_from_schedule_map(
         merge_vertical_marker(4, "BREAK", break_overlap_rows)
         merge_vertical_marker(7, "LUNCH", lunch_overlap_rows)
 
+        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
         legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
 
@@ -1744,29 +1779,32 @@ def _build_section_timetables_workbook(
     year: str,
     sections: list[str],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     filtered = {
         (year, section): schedules[(year, section)]
         for section in sections
         if (year, section) in schedules
     }
-    return _build_section_timetables_workbook_from_schedule_map(filtered)
+    return _build_section_timetables_workbook_from_schedule_map(filtered, timetable_metadata)
 
 
 def _build_faculty_workload_workbook_from_details(
     faculty_schedules: dict[str, dict[str, list[list[dict] | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     workbook = Workbook()
     workbook.remove(workbook.active)
     if not faculty_schedules:
         return workbook
+    metadata = _resolve_timetable_metadata(timetable_metadata)
 
     for faculty_name, schedule in sorted(faculty_schedules.items()):
         worksheet = workbook.create_sheet(title=_normalize_faculty_sheet_name(faculty_name))
         worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
         worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {_academic_year_label()} {ACADEMIC_METADATA['semester']}"] + [""] * 9)
+        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
         worksheet.append([f"FACULTY WORKLOAD : {faculty_name}"] + [""] * 9)
         worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
         worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
@@ -1782,12 +1820,14 @@ def _build_faculty_workload_workbook_from_details(
             _merge_faculty_run(worksheet, row_idx, [schedule[day][4], schedule[day][5], schedule[day][6]], [8, 9, 10])
 
         worksheet.append([""] * 10)
+        legend_separator_row = worksheet.max_row
         legend = _build_faculty_legend(schedule)
         for idx in range(0, len(legend), 2):
             left = legend[idx]
             right = legend[idx + 1] if idx + 1 < len(legend) else ""
             worksheet.append([left] + [""] * 4 + [right] + [""] * 4)
         worksheet.append([""] * 10)
+        signature_separator_row = worksheet.max_row
         worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
 
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
@@ -1799,10 +1839,13 @@ def _build_faculty_workload_workbook_from_details(
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
+        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
         legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
 
@@ -1819,25 +1862,28 @@ def _build_faculty_workload_workbook_from_details(
 def _build_faculty_workload_workbook(
     sessions: list[dict],
     faculty_id_to_name: dict[str, str],
+    timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     faculty_schedules = _build_faculty_schedule_details(sessions, faculty_id_to_name)
-    return _build_faculty_workload_workbook_from_details(faculty_schedules)
+    return _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata)
 
 
 def _build_faculty_workload_workbook_from_saved_workloads(
     faculty_workloads: dict[str, dict[str, list[str | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     workbook = Workbook()
     workbook.remove(workbook.active)
     if not faculty_workloads:
         return workbook
+    metadata = _resolve_timetable_metadata(timetable_metadata)
 
     for faculty_name, schedule in sorted(faculty_workloads.items()):
         worksheet = workbook.create_sheet(title=_normalize_faculty_sheet_name(faculty_name))
         worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
         worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {_academic_year_label()} {ACADEMIC_METADATA['semester']}"] + [""] * 9)
+        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
         worksheet.append([f"FACULTY WORKLOAD : {faculty_name}"] + [""] * 9)
         worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
         worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
@@ -1876,12 +1922,14 @@ def _build_faculty_workload_workbook_from_saved_workloads(
                     idx = end + 1
 
         worksheet.append([""] * 10)
+        legend_separator_row = worksheet.max_row
         legend = sorted(legend_values)
         for idx in range(0, len(legend), 2):
             left = legend[idx]
             right = legend[idx + 1] if idx + 1 < len(legend) else ""
             worksheet.append([left] + [""] * 4 + [right] + [""] * 4)
         worksheet.append([""] * 10)
+        signature_separator_row = worksheet.max_row
         worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
 
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
@@ -1893,10 +1941,13 @@ def _build_faculty_workload_workbook_from_saved_workloads(
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
+        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
         legend_start_row = day_start_row + len(DAYS) + 1
         for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
             worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
             worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
         worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
 
@@ -2000,6 +2051,7 @@ def generate_timetable(
 ) -> dict:
     request_data.year = normalize_year(request_data.year)
     year = request_data.year
+    timetable_metadata = request_data.timetableMetadata.model_dump()
 
     main_payload = store.get_scoped_mapping("main_timetable_config", "global")
     lab_payload = store.get_scoped_mapping("lab_timetable_config", "global")
@@ -2472,6 +2524,7 @@ def generate_timetable(
                 "hasConstraintViolations": bool(constraint_violations),
                 "labSeed": True,
                 "generatedFiles": {},
+                "timetableMetadata": timetable_metadata,
                 "generationMeta": {
                     "labSeed": True,
                     "timeoutSeconds": None,
@@ -2981,8 +3034,8 @@ def generate_timetable(
     generated_files = {
         "sharedClassesReport": _encode_workbook("shared_classes_report.xlsx", shared_workbook),
     }
-    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules)
-    faculty_workbook = _build_faculty_workload_workbook(session_log, faculty_id_to_name)
+    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules, timetable_metadata)
+    faculty_workbook = _build_faculty_workload_workbook(session_log, faculty_id_to_name, timetable_metadata)
     generated_files["sectionTimetables"] = _encode_workbook("section_timetables.xlsx", section_workbook)
     generated_files["facultyWorkload"] = _encode_workbook("faculty_workload.xlsx", faculty_workbook)
     if constraint_violations or unscheduled_subjects:
@@ -3008,6 +3061,7 @@ def generate_timetable(
             "hasValidTimetable": not has_constraint_failures,
             "hasConstraintViolations": has_constraint_failures,
             "generatedFiles": generated_files,
+            "timetableMetadata": timetable_metadata,
             "generationMeta": {
                 "timeoutSeconds": timeout_seconds,
                 "timeoutDisabled": True,

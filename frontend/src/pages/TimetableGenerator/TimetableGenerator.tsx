@@ -109,6 +109,9 @@ const TimetableGenerator = () => {
   const initialSections = getSectionOptionsForYear(academicConfig, initialYear);
   const [selectedYear, setSelectedYear] = useState<string>(initialYear);
   const [selectedSection, setSelectedSection] = useState<string>(initialSections[0] ?? "A");
+  const [academicYearInput, setAcademicYearInput] = useState("");
+  const [semesterInput, setSemesterInput] = useState<"1" | "2">("2");
+  const [withEffectFromInput, setWithEffectFromInput] = useState("");
 
   const [manualEntries, setManualEntries] = useState<ManualEntryMode[]>([
     { year: initialYear, section: initialSections[0] ?? "A", subjectId: "", facultyId: "", noOfHours: 4, continuousHours: 1, compulsoryContinuousHours: 1 },
@@ -287,6 +290,8 @@ const TimetableGenerator = () => {
       .map((item) => Number(item.trim()))
       .filter((num) => Number.isInteger(num) && num >= 1 && num <= 7);
   };
+
+  const isAcademicYearValid = (value: string) => /^\d{4}-\d{4}$/.test(value);
 
   const loadMappingStatus = async (year: string) => {
     const requestId = ++mappingStatusRequestRef.current;
@@ -516,6 +521,11 @@ const TimetableGenerator = () => {
     return {
       year: targetYear,
       section: targetSection,
+      timetableMetadata: {
+        academicYear: academicYearInput.trim(),
+        semester: Number(semesterInput) as 1 | 2,
+        withEffectFrom: withEffectFromInput,
+      },
       priorTimetableIds,
       manualEntries: manualEntries
         .filter((m) => m.subjectId && m.facultyId)
@@ -561,6 +571,16 @@ const TimetableGenerator = () => {
   };
 
   const handleGenerate = async () => {
+    if (!isAcademicYearValid(academicYearInput.trim())) {
+      toast.error("Academic year is required in yyyy-yyyy format.");
+      return;
+    }
+
+    if (!withEffectFromInput) {
+      toast.error("With effect from date is required.");
+      return;
+    }
+
     if (
       inputMode === "file" &&
       (!mappingStatus.facultyIdMapUploaded ||
@@ -604,6 +624,16 @@ const TimetableGenerator = () => {
   };
 
   const handleGenerateAll = async () => {
+    if (!isAcademicYearValid(academicYearInput.trim())) {
+      toast.error("Academic year is required in yyyy-yyyy format.");
+      return;
+    }
+
+    if (!withEffectFromInput) {
+      toast.error("With effect from date is required.");
+      return;
+    }
+
     const configuredYears = getYearOptions(academicConfig);
     const allYears = [...configuredYears].sort((left, right) => {
       const sectionDelta =
@@ -850,6 +880,40 @@ const TimetableGenerator = () => {
                   onChange={(e) => setSelectedSection(e.target.value)}
                   placeholder="Type section name"
                 />
+              </div>
+            </div>
+            <div className="mt-5">
+              <h3 className="text-sm font-semibold text-foreground mb-3">Timetable Metadata</h3>
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 w-full max-w-4xl">
+                <div>
+                  <Label className="text-xs text-muted-foreground">Academic Year</Label>
+                  <Input
+                    value={academicYearInput}
+                    onChange={(e) => setAcademicYearInput(e.target.value)}
+                    placeholder="2026-2027"
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Required. Format: `yyyy-yyyy`
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Semester</Label>
+                  <Select value={semesterInput} onValueChange={(value: "1" | "2") => setSemesterInput(value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">1</SelectItem>
+                      <SelectItem value="2">2</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">With Effect From</Label>
+                  <Input
+                    type="date"
+                    value={withEffectFromInput}
+                    onChange={(e) => setWithEffectFromInput(e.target.value)}
+                  />
+                </div>
               </div>
             </div>
           </div>

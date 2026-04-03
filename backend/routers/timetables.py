@@ -118,6 +118,7 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
     section = str(record.get("section", "")).strip()
     all_grids = record.get("allGrids")
     single_grid = record.get("grid")
+    timetable_metadata = record.get("timetableMetadata")
     if not year:
         return
 
@@ -148,7 +149,7 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
         sections = [sec for _, sec in schedules.keys()]
         generated_files["sectionTimetables"] = _encode_workbook(
             "section_timetables.xlsx",
-            _build_section_timetables_workbook(year, sections, schedules),
+            _build_section_timetables_workbook(year, sections, schedules, timetable_metadata),
         )
 
     if schedules:
@@ -166,7 +167,7 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
         if faculty_schedules:
             generated_files["facultyWorkload"] = _encode_workbook(
                 "faculty_workload.xlsx",
-                _build_faculty_workload_workbook_from_details(faculty_schedules),
+                _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata),
             )
 
     if generated_files:
@@ -302,7 +303,7 @@ async def get_section_workbook(timetable_id: str, section: str):
     schedules = _section_schedules_from_grids({(year, target_section): target_grid})
     return _encode_workbook(
         f"Timetable_{year.replace(' ', '_')}_{target_section}_Format.xlsx",
-        _build_section_timetables_workbook(year, [target_section], schedules),
+        _build_section_timetables_workbook(year, [target_section], schedules, record.get("timetableMetadata")),
     )
 
 
@@ -323,7 +324,10 @@ async def get_all_sections_workbook():
         ws.append(["Please generate timetables first before downloading."])
     else:
         schedules = _section_schedules_from_grids(section_grids)
-        workbook = _build_section_timetables_workbook_from_schedule_map(schedules)
+        workbook = _build_section_timetables_workbook_from_schedule_map(
+            schedules,
+            records[0].get("timetableMetadata") if records else None,
+        )
 
     # ✅ CRITICAL: Write to stream properly
     return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
@@ -333,7 +337,8 @@ async def get_all_sections_workbook():
 
 @router.get("/faculty-workloads/workbook")
 async def get_faculty_workload_workbook(facultyName: str | None = None):
-    section_grids = _latest_section_grids(store.list_timetables())
+    records = store.list_timetables()
+    section_grids = _latest_section_grids(records)
     if not section_grids:
         raise HTTPException(
             status_code=404,
@@ -355,7 +360,10 @@ async def get_faculty_workload_workbook(facultyName: str | None = None):
 
     return _encode_workbook(
         file_name,
-        _build_faculty_workload_workbook_from_details(faculty_schedules),
+        _build_faculty_workload_workbook_from_details(
+            faculty_schedules,
+            records[0].get("timetableMetadata") if records else None,
+        ),
     )
 
 

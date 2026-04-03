@@ -10,6 +10,7 @@ interface TimetableGridProps {
     semester?: string;
     section?: string;
     room?: string;
+    withEffectFrom?: string;
   };
 }
 
@@ -167,7 +168,7 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
               {header.room && <span>Room No : {header.room}</span>}
             </div>
             <div className="px-2 py-0.5">
-              <span>With effect from :</span>
+              <span>With effect from : {header.withEffectFrom ?? ""}</span>
             </div>
           </div>
         </div>

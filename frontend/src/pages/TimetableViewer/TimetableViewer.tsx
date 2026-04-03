@@ -23,23 +23,37 @@ import {
   listTimetables,
   type GeneratedWorkbookFile,
   type TimetableRecord,
+  type TimetableMetadata,
   deleteTimetable,
   getAllSectionsWorkbook,
   getSectionWorkbook,
 } from "@/services/apiClient";
-import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
+import {
+  ACADEMIC_METADATA,
+  formatSemesterLabel,
+  formatWithEffectFrom,
+  toAcademicYear,
+} from "@/lib/academicMetadata";
 import { useSearchParams } from "react-router-dom";
 
 const TOTAL_COLUMNS = 10;
 
-function toClassLine(year: string, section: string): string {
+function toClassLine(year: string, section: string, semesterLabel?: string): string {
   const yearMap: Record<string, string> = {
     "2nd Year": "II B.Tech",
     "3rd Year": "III B.Tech",
     "4th Year": "IV B.Tech",
   };
   const normalized = yearMap[year] ?? year;
-  return `${normalized} [CSE - ${section}] ${ACADEMIC_METADATA.SEMESTER} TIME TABLE`;
+  return `${normalized} [CSE - ${section}] ${semesterLabel ?? ACADEMIC_METADATA.SEMESTER} TIME TABLE`;
+}
+
+function getResolvedMetadata(metadata?: TimetableMetadata) {
+  return {
+    academicYear: metadata?.academicYear ?? toAcademicYear(new Date()),
+    semester: formatSemesterLabel(metadata?.semester ?? 2),
+    withEffectFrom: formatWithEffectFrom(metadata?.withEffectFrom),
+  };
 }
 
 function padRow(values: string[]): string[] {
@@ -105,7 +119,7 @@ function buildDayRuns(
       end + 1 < cells.length &&
       areCellsEquivalent(current, cells[end + 1])
     ) {
-      if ((end === 1 || end === 3) && !Boolean(current?.isLab)) break;
+      if (end === 1 || end === 3) break;
       end += 1;
     }
 
@@ -127,14 +141,7 @@ function appendMergedRowWithBreakLunch(
 
   runs.forEach((run, index) => {
     const label = getSubjectLabel(run.cell);
-    const containsBreak = run.start <= 2 && run.end >= 3;
-    const containsLunch = run.start <= 4 && run.end >= 5;
-    const span =
-      run.end -
-      run.start +
-      1 +
-      (containsBreak ? 1 : 0) +
-      (containsLunch ? 1 : 0);
+    const span = run.end - run.start + 1;
 
     row.push(label);
     for (let i = 1; i < span; i += 1) {
@@ -162,7 +169,11 @@ function appendMergedRowWithBreakLunch(
   });
 }
 
-function buildTimetableWorksheet(timetable: SectionTimetable) {
+function buildTimetableWorksheet(
+  timetable: SectionTimetable,
+  metadata?: TimetableMetadata,
+) {
+  const resolvedMetadata = getResolvedMetadata(metadata);
   const legend = buildLegend(timetable.grid);
   const data: string[][] = [];
   const merges: XLSX.Range[] = [];
@@ -172,11 +183,11 @@ function buildTimetableWorksheet(timetable: SectionTimetable) {
   data.push(padRow([ACADEMIC_METADATA.DEPARTMENT_NAME]));
   data.push(
     padRow([
-      `ACADEMIC YEAR : ${toAcademicYear(new Date())} ${ACADEMIC_METADATA.SEMESTER}`,
+      `ACADEMIC YEAR : ${resolvedMetadata.academicYear} ${resolvedMetadata.semester}`,
     ]),
   );
-  data.push(padRow([toClassLine(timetable.year, timetable.section)]));
-  data.push(padRow(["Room No :", "", "", "", "", "With effect from :"]));
+  data.push(padRow([toClassLine(timetable.year, timetable.section, resolvedMetadata.semester)]));
+  data.push(padRow(["Room No :", "", "", "", "", `With effect from : ${resolvedMetadata.withEffectFrom}`]));
 
   const tableHeaderRow = data.length;
   data.push(padRow(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"]));
@@ -418,6 +429,7 @@ const TimetableViewer = () => {
         record.allGrids[selectedSection],
       ),
   );
+  const resolvedMetadata = getResolvedMetadata(activeRecord?.timetableMetadata);
 
   const handleExportExcel = async () => {
     if (!timetable) return;
@@ -627,10 +639,11 @@ const TimetableViewer = () => {
               header={{
                 college: ACADEMIC_METADATA.COLLEGE_NAME,
                 department: ACADEMIC_METADATA.DEPARTMENT_NAME,
-                year: toAcademicYear(new Date()),
-                semester: ACADEMIC_METADATA.SEMESTER,
-                section: toClassLine(selectedYear, selectedSection),
+                year: resolvedMetadata.academicYear,
+                semester: resolvedMetadata.semester,
+                section: toClassLine(selectedYear, selectedSection, resolvedMetadata.semester),
                 room: selectedSection,
+                withEffectFrom: resolvedMetadata.withEffectFrom,
               }}
             />
           </div>
