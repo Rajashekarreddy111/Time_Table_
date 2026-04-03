@@ -7,7 +7,12 @@ import { Label } from "@/components/ui/label";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { DISPLAY_DAYS } from "@/lib/timetableFormat";
-import { listTimetables, type TimetableRecord } from "@/services/apiClient";
+import {
+  listTimetables,
+  type GeneratedWorkbookFile,
+  type TimetableRecord,
+  getFacultyWorkloadWorkbook,
+} from "@/services/apiClient";
 import { ACADEMIC_METADATA, toAcademicYear } from "@/lib/academicMetadata";
 
 type FacultyScheduleEntry = {
@@ -23,19 +28,27 @@ type FacultyWorkloadType = {
 
 const TOTAL_COLUMNS = 10;
 
-function subjectCode(subject: string): string {
-  const words = subject.replace(/[^A-Za-z0-9 ]/g, " ").trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "SUB";
-  if (words.length === 1) {
-    const word = words[0].toUpperCase();
-    return word.length <= 4 ? word : word.slice(0, 4);
-  }
-  return words.map((word) => word[0].toUpperCase()).join("").slice(0, 5);
+function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
+  const binary = atob(file.contentBase64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: file.contentType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
-function entryCode(entry: FacultyScheduleEntry): string {
-  const yearShort = entry.year.replace(/[^0-9]/g, "") || entry.year;
-  return `${yearShort}${entry.section}-${subjectCode(entry.subject)}`;
+function formatWorkloadEntry(entry: FacultyScheduleEntry): string {
+  return `${entry.subject}\n${entry.year} ${entry.section}`;
+}
+
+function buildWorkloadCellText(entries: FacultyScheduleEntry[] | null | undefined): string {
+  if (!entries || entries.length === 0) return "";
+  return entries.map(formatWorkloadEntry).join("\n\n");
 }
 
 function padRow(values: string[]): string[] {
@@ -44,33 +57,65 @@ function padRow(values: string[]): string[] {
 }
 
 function getWorkloadLegend(schedule: Record<string, (FacultyScheduleEntry[] | null)[]>) {
-  const byKey = new Map<string, { code: string; label: string }>();
+  const labels = new Set<string>();
   for (const day of DISPLAY_DAYS) {
     for (const entries of schedule[day.full] ?? []) {
       if (!entries) continue;
       for (const entry of entries) {
-        const key = `${entry.year}|${entry.section}|${entry.subject}`;
-        if (byKey.has(key)) continue;
-        byKey.set(key, {
-          code: entryCode(entry),
-          label: `${entry.year} ${entry.section} - ${entry.subject}`,
-        });
+        labels.add(`${entry.year} ${entry.section} - ${entry.subject}`);
       }
     }
   }
-  return Array.from(byKey.values()).sort((a, b) => a.code.localeCompare(b.code));
+  return Array.from(labels).sort((a, b) => a.localeCompare(b));
+}
+
+function areEntryGroupsEquivalent(
+  left: FacultyScheduleEntry[] | null | undefined,
+  right: FacultyScheduleEntry[] | null | undefined,
+): boolean {
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((entry, idx) => formatWorkloadEntry(entry) === formatWorkloadEntry(right[idx]));
+}
+
+function appendMergedWorkloadRuns(
+  row: string[],
+  entries: Array<FacultyScheduleEntry[] | null | undefined>,
+  displayColumns: number[],
+  worksheetRow: number,
+  merges: XLSX.Range[],
+) {
+  let idx = 0;
+  while (idx < entries.length) {
+    const current = entries[idx];
+    let end = idx;
+    while (end + 1 < entries.length && areEntryGroupsEquivalent(current, entries[end + 1])) {
+      end += 1;
+    }
+    row.push(buildWorkloadCellText(current));
+    for (let filler = idx + 1; filler <= end; filler += 1) {
+      row.push("");
+    }
+    if (end > idx) {
+      merges.push({
+        s: { r: worksheetRow, c: displayColumns[idx] },
+        e: { r: worksheetRow, c: displayColumns[end] },
+      });
+    }
+    idx = end + 1;
+  }
 }
 
 function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
   const legend = getWorkloadLegend(workload.schedule);
   const data: string[][] = [];
+  const merges: XLSX.Range[] = [];
 
   data.push(padRow([ACADEMIC_METADATA.COLLEGE_NAME]));
   data.push(padRow(["(AUTONOMOUS)"]));
   data.push(padRow([ACADEMIC_METADATA.DEPARTMENT_NAME]));
   data.push(padRow([`ACADEMIC YEAR : ${toAcademicYear(new Date())} ${ACADEMIC_METADATA.SEMESTER}`]));
   data.push(padRow([`FACULTY WORKLOAD : ${workload.name}`]));
-  data.push(padRow(["Room No :", "", "", "", "", `With effect from : ${ACADEMIC_METADATA.EFFECTIVE_DATE}`]));
+  data.push(padRow(["Room No :", "", "", "", "", "With effect from :"]));
 
   const tableHeaderRow = data.length;
   data.push(padRow(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"]));
@@ -79,25 +124,14 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
   const dayStartRow = data.length;
   DISPLAY_DAYS.forEach((day, dayIdx) => {
     const dayEntries = workload.schedule[day.full] ?? [];
-    const getCode = (entries: FacultyScheduleEntry[] | null | undefined) => {
-      if (!entries || entries.length === 0) return "";
-      return entries.map(entryCode).join(" | ");
-    };
-
-    data.push(
-      padRow([
-        day.shortVertical,
-        getCode(dayEntries[0]),
-        getCode(dayEntries[1]),
-        dayIdx === 0 ? "BREAK" : "",
-        getCode(dayEntries[2]),
-        getCode(dayEntries[3]),
-        dayIdx === 0 ? "LUNCH" : "",
-        getCode(dayEntries[4]),
-        getCode(dayEntries[5]),
-        getCode(dayEntries[6]),
-      ]),
-    );
+    const worksheetRow = data.length;
+    const row = [day.shortVertical];
+    appendMergedWorkloadRuns(row, [dayEntries[0], dayEntries[1]], [1, 2], worksheetRow, merges);
+    row.push(dayIdx === 0 ? "BREAK" : "");
+    appendMergedWorkloadRuns(row, [dayEntries[2], dayEntries[3]], [4, 5], worksheetRow, merges);
+    row.push(dayIdx === 0 ? "LUNCH" : "");
+    appendMergedWorkloadRuns(row, [dayEntries[4], dayEntries[5], dayEntries[6]], [7, 8, 9], worksheetRow, merges);
+    data.push(padRow(row));
   });
 
   data.push(padRow([""]));
@@ -106,9 +140,9 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
     const left = legend[idx];
     const right = legend[idx + 1];
     data.push(padRow([
-      left ? `${left.code} : ${left.label}` : "",
+      left ?? "",
       "", "", "", "",
-      right ? `${right.code} : ${right.label}` : "",
+      right ?? "",
       "", "", "", "",
     ]));
   }
@@ -147,18 +181,23 @@ function buildWorkloadWorksheet(workload: FacultyWorkloadType) {
     }),
     { s: { r: data.length - 1, c: 0 }, e: { r: data.length - 1, c: 4 } },
     { s: { r: data.length - 1, c: 5 }, e: { r: data.length - 1, c: 9 } },
+    ...merges,
   ];
 
   return ws;
 }
 
 function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[] {
-  const latestRecordsByYear = records.reduce<TimetableRecord[]>((acc, record) => {
-    if (!record.year) return acc;
-    if (acc.some((item) => item.year === record.year)) return acc;
-    acc.push(record);
-    return acc;
-  }, []);
+  const latestSections = new Map<string, { year: string; section: string; grid: TimetableRecord["grid"] }>();
+  records.forEach((record) => {
+    const grids = record.allGrids ?? { [record.section]: record.grid };
+    for (const [section, grid] of Object.entries(grids)) {
+      const key = `${record.year}::${section}`;
+      if (!latestSections.has(key)) {
+        latestSections.set(key, { year: record.year, section, grid });
+      }
+    }
+  });
   const mergedWorkloads: Record<string, Record<string, (FacultyScheduleEntry[] | null)[]>> = {};
 
   const ensureFacultySchedule = (facultyName: string) => {
@@ -171,45 +210,41 @@ function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[
     return mergedWorkloads[facultyName];
   };
 
-  latestRecordsByYear.forEach((record) => {
-    const grids = record.allGrids ?? { [record.section]: record.grid };
+  latestSections.forEach(({ year, section, grid }) => {
+    for (const day of DISPLAY_DAYS) {
+      const cells = grid[day.full] ?? [];
+      cells.forEach((cell, idx) => {
+        if (!cell || idx >= 7) return;
 
-    for (const [section, grid] of Object.entries(grids)) {
-      for (const day of DISPLAY_DAYS) {
-        const cells = grid[day.full] ?? [];
-        cells.forEach((cell, idx) => {
-          if (!cell || idx >= 7) return;
+        const facultyName = cell.facultyName ?? cell.faculty;
+        const subjectName = cell.subjectName ?? cell.subject;
+        if (!facultyName || !subjectName) return;
 
-          const facultyName = cell.facultyName ?? cell.faculty;
-          const subjectName = cell.subjectName ?? cell.subject;
-          if (!facultyName || !subjectName) return;
+        const sections = cell.sharedSections?.length ? cell.sharedSections.join(",") : section;
+        const entry: FacultyScheduleEntry = {
+          subject: subjectName,
+          year,
+          section: sections,
+        };
 
-          const sections = cell.sharedSections?.length ? cell.sharedSections.join(",") : section;
-          const entry: FacultyScheduleEntry = {
-            subject: subjectName,
-            year: record.year,
-            section: sections,
-          };
+        const facultySchedule = ensureFacultySchedule(facultyName);
+        if (!facultySchedule[day.full][idx]) {
+          facultySchedule[day.full][idx] = [entry];
+          return;
+        }
 
-          const facultySchedule = ensureFacultySchedule(facultyName);
-          if (!facultySchedule[day.full][idx]) {
-            facultySchedule[day.full][idx] = [entry];
-            return;
-          }
-
-          const existingArray = facultySchedule[day.full][idx];
-          if (!existingArray) return;
-          const isDuplicate = existingArray.some(
-            (existing) =>
-              existing.subject === entry.subject &&
-              existing.section === entry.section &&
-              existing.year === entry.year,
-          );
-          if (!isDuplicate) {
-            existingArray.push(entry);
-          }
-        });
-      }
+        const existingArray = facultySchedule[day.full][idx];
+        if (!existingArray) return;
+        const isDuplicate = existingArray.some(
+          (existing) =>
+            existing.subject === entry.subject &&
+            existing.section === entry.section &&
+            existing.year === entry.year,
+        );
+        if (!isDuplicate) {
+          existingArray.push(entry);
+        }
+      });
     }
   });
 
@@ -251,8 +286,17 @@ const FacultyWorkload = () => {
   }, [facultyNames, selectedFaculty]);
 
   const workload = workloads.find((faculty) => faculty.name === selectedFaculty);
-
-  const handleExport = () => {
+  const handleExport = async () => {
+    if (selectedFaculty) {
+      try {
+        const workbook = await getFacultyWorkloadWorkbook(selectedFaculty);
+        downloadGeneratedWorkbook(workbook);
+        toast.success("Selected faculty workload downloaded.");
+        return;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to download faculty workload");
+      }
+    }
     if (!workload) {
       toast.error("No workload data available for this faculty.");
       return;
@@ -264,7 +308,15 @@ const FacultyWorkload = () => {
     toast.success("Workload exported in timetable format.");
   };
 
-  const handleExportAll = () => {
+  const handleExportAll = async () => {
+    try {
+      const workbook = await getFacultyWorkloadWorkbook();
+      downloadGeneratedWorkbook(workbook);
+      toast.success("All faculty workloads exported.");
+      return;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to download all faculty workloads");
+    }
     if (workloads.length === 0) {
       toast.error("No faculty workloads available.");
       return;
@@ -300,6 +352,38 @@ const FacultyWorkload = () => {
         )}
       </div>
     );
+  };
+
+  const renderMergedEntryCells = (
+    daySchedule: (FacultyScheduleEntry[] | null)[],
+    startIndex: number,
+    endIndex: number,
+  ) => {
+    const cells: JSX.Element[] = [];
+    let idx = startIndex;
+
+    while (idx <= endIndex) {
+      const current = daySchedule[idx];
+      let end = idx;
+      while (end + 1 <= endIndex && areEntryGroupsEquivalent(current, daySchedule[end + 1])) {
+        end += 1;
+      }
+
+      const colSpan = end - idx + 1;
+      const hasConflict = Boolean(current && current.length > 1);
+      cells.push(
+        <td
+          key={`faculty-slot-${startIndex}-${idx}`}
+          colSpan={colSpan}
+          className={hasConflict ? "bg-destructive/5" : ""}
+        >
+          {renderCell(current)}
+        </td>,
+      );
+      idx = end + 1;
+    }
+
+    return cells;
   };
 
   const legend = workload ? getWorkloadLegend(workload.schedule) : [];
@@ -342,10 +426,6 @@ const FacultyWorkload = () => {
                 <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
                 <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {toAcademicYear(new Date())} {ACADEMIC_METADATA.SEMESTER}</div>
                 <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
-                <div className="grid grid-cols-2 text-xs font-semibold">
-                  <div className="text-left px-2 py-0.5 border-r border-border">Room No :</div>
-                  <div className="text-right px-2 py-0.5">With effect from : {ACADEMIC_METADATA.EFFECTIVE_DATE}</div>
-                </div>
               </div>
 
               <table className="timetable-grid rounded-none overflow-hidden min-w-[980px]">
@@ -380,23 +460,19 @@ const FacultyWorkload = () => {
                   return (
                     <tr key={day.full}>
                       <td className="font-semibold text-[10px] whitespace-pre leading-[1.05]">{day.shortVertical}</td>
-                      <td className={daySchedule[0] && daySchedule[0].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[0])}</td>
-                      <td className={daySchedule[1] && daySchedule[1].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[1])}</td>
+                      {renderMergedEntryCells(daySchedule, 0, 1)}
                       {idx === 0 && (
                         <td rowSpan={DISPLAY_DAYS.length} className="break-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7">
                           {"B\nR\nE\nA\nK"}
                         </td>
                       )}
-                      <td className={daySchedule[2] && daySchedule[2].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[2])}</td>
-                      <td className={daySchedule[3] && daySchedule[3].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[3])}</td>
+                      {renderMergedEntryCells(daySchedule, 2, 3)}
                       {idx === 0 && (
                         <td rowSpan={DISPLAY_DAYS.length} className="lunch-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7">
                           {"L\nU\nN\nC\nH"}
                         </td>
                       )}
-                      <td className={daySchedule[4] && daySchedule[4].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[4])}</td>
-                      <td className={daySchedule[5] && daySchedule[5].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[5])}</td>
-                      <td className={daySchedule[6] && daySchedule[6].length > 1 ? "bg-destructive/5" : ""}>{renderCell(daySchedule[6])}</td>
+                      {renderMergedEntryCells(daySchedule, 4, 6)}
                     </tr>
                   );
                 })}
@@ -410,8 +486,8 @@ const FacultyWorkload = () => {
                   const right = legend[rowIdx * 2 + 1];
                   return (
                     <tr key={`legend-${rowIdx}`}>
-                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{left ? <span><strong>{left.code}</strong> : {left.label}</span> : ""}</td>
-                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{right ? <span><strong>{right.code}</strong> : {right.label}</span> : ""}</td>
+                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{left ?? ""}</td>
+                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{right ?? ""}</td>
                     </tr>
                   );
                 })}

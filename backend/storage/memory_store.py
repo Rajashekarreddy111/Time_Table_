@@ -184,6 +184,15 @@ class MemoryStore:
         res = self._generated_timetables.delete_one({"id": timetable_id})
         return res.deleted_count > 0
 
+    def delete_all_timetables(self) -> int:
+        """Delete all stored timetables and return the count of deleted documents."""
+        if not self._mongo_available:
+            count = len(self._generated_timetables_mem)
+            self._generated_timetables_mem.clear()
+            return count
+        res = self._generated_timetables.delete_many({})
+        return res.deleted_count
+
     def mark_faculty_busy(
         self,
         faculty: str,

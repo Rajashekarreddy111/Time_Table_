@@ -160,13 +160,27 @@ export interface TimetableRecord {
   hasValidTimetable?: boolean;
   grid: Record<
     string,
-    ({ subject: string; subjectName?: string; faculty?: string; facultyName?: string; isLab?: boolean; sharedSections?: string[] } | null)[]
+    ({
+      subject: string;
+      subjectName?: string;
+      faculty?: string;
+      facultyName?: string;
+      isLab?: boolean;
+      sharedSections?: string[];
+    } | null)[]
   >;
   allGrids?: Record<
     string,
     Record<
       string,
-      ({ subject: string; subjectName?: string; faculty?: string; facultyName?: string; isLab?: boolean; sharedSections?: string[] } | null)[]
+      ({
+        subject: string;
+        subjectName?: string;
+        faculty?: string;
+        facultyName?: string;
+        isLab?: boolean;
+        sharedSections?: string[];
+      } | null)[]
     >
   >;
   facultyWorkloads?: Record<string, Record<string, (string | null)[]>>;
@@ -339,9 +353,7 @@ export async function uploadMainTimetableConfig(
   return response.json() as Promise<UploadResponse>;
 }
 
-export async function uploadLabTimetable(
-  file: File,
-): Promise<UploadResponse> {
+export async function uploadLabTimetable(file: File): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -502,6 +514,30 @@ export function getTimetableById(timetableId: string) {
   );
 }
 
+export function getSectionWorkbook(timetableId: string, section: string) {
+  return apiRequest<GeneratedWorkbookFile>(
+    `/timetables/${encodeURIComponent(timetableId)}/section-workbook?section=${encodeURIComponent(section)}`,
+    "GET",
+  );
+}
+
+export function getAllSectionsWorkbook() {
+  return apiRequest<GeneratedWorkbookFile>(
+    "/timetables/all-sections-workbook",
+    "GET",
+  );
+}
+
+export function getFacultyWorkloadWorkbook(facultyName?: string) {
+  const query = facultyName
+    ? `?facultyName=${encodeURIComponent(facultyName)}`
+    : "";
+  return apiRequest<GeneratedWorkbookFile>(
+    `/faculty-workloads/workbook${query}`,
+    "GET",
+  );
+}
+
 export function getMappingStatus(year: string) {
   return apiRequest<MappingStatusResponse>(
     `/uploads/mapping-status?year=${encodeURIComponent(year)}`,
@@ -536,6 +572,21 @@ export const deleteTimetable = async (
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail?.message || "Failed to delete timetable");
+  }
+  return response.json();
+};
+
+export const resetAllTimetables = async (): Promise<{
+  message: string;
+  deletedCount: number;
+}> => {
+  const response = await fetch(`${API_BASE_URL}/timetables`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail?.message || "Failed to reset timetables");
   }
   return response.json();
 };
