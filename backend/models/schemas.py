@@ -10,6 +10,12 @@ class UploadResponse(BaseModel):
     message: str
 
 
+class GeneratedWorkbookFile(BaseModel):
+    fileName: str
+    contentType: str
+    contentBase64: str
+
+
 class AuthUserResponse(BaseModel):
     id: str
     username: str

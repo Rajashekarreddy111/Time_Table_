@@ -1,8 +1,12 @@
+import base64
 from datetime import datetime, time
+from io import BytesIO
 import logging
 import re
 
 from fastapi import HTTPException
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, Side
 
 from services.utils import normalize_year
 from storage.memory_store import MemoryStore
@@ -28,6 +32,9 @@ PERIOD_WINDOWS = {
     6: (14 * 60 + 20, 15 * 60 + 10),
     7: (15 * 60 + 10, 16 * 60),
 }
+THIN_SIDE = Side(style="thin", color="000000")
+THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
+CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def _validation_error(message: str, details: list | None = None) -> HTTPException:
@@ -682,3 +689,199 @@ def get_bulk_available_faculty(
         )
 
     return {"results": results}
+
+
+def _format_export_date(value: str) -> str:
+    text = _to_text(value)
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", text)
+    if match:
+        return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+    return text
+
+
+def _build_export_slot(item: dict) -> dict:
+    start_text = _to_text(item.get("startTime"))
+    end_text = _to_text(item.get("endTime"))
+    if start_text and end_text:
+        label = f"{start_text} - {end_text}"
+        return {"key": f"{start_text}__{end_text}", "label": label, "start_minutes": _parse_clock_time(start_text) or 0}
+
+    period_labels = [str(period.get("time", "")).strip() for period in item.get("periods", []) if str(period.get("time", "")).strip()]
+    if not period_labels:
+        return {"key": "Session", "label": "Session", "start_minutes": 0}
+    first_start = period_labels[0].split("-", 1)[0].strip()
+    last_end = period_labels[-1].rsplit("-", 1)[-1].strip()
+    return {
+        "key": f"{first_start}__{last_end}",
+        "label": f"{first_start} - {last_end}",
+        "start_minutes": _parse_clock_time(first_start) or 0,
+    }
+
+
+def _slot_meridiem(slot: dict) -> str:
+    return "AM" if int(slot.get("start_minutes", 0)) < 12 * 60 else "PM"
+
+
+def _build_export_groups(items: list[dict]) -> list[dict]:
+    slots_by_date: dict[str, list[dict]] = {}
+    for item in items:
+        slot = _build_export_slot(item)
+        date_key = _to_text(item.get("date"))
+        current = slots_by_date.setdefault(date_key, [])
+        if not any(existing.get("key") == slot["key"] for existing in current):
+            current.append(slot)
+
+    groups: list[dict] = []
+    for date_key in sorted(slots_by_date):
+        ordered = sorted(slots_by_date[date_key], key=lambda slot: (int(slot.get("start_minutes", 0)), str(slot.get("label", ""))))
+        uses_meridiem = len(ordered) <= 2
+        if uses_meridiem:
+            slots = [
+                next((slot for slot in ordered if _slot_meridiem(slot) == "AM"), {"key": "__am__", "label": "AM", "start_minutes": 0}),
+                next((slot for slot in ordered if _slot_meridiem(slot) == "PM"), {"key": "__pm__", "label": "PM", "start_minutes": 12 * 60}),
+            ]
+        else:
+            slots = ordered
+        groups.append(
+            {
+                "date": date_key,
+                "header_date": _format_export_date(date_key),
+                "slots": slots,
+                "uses_meridiem": uses_meridiem,
+            }
+        )
+    return groups
+
+
+def _build_timing_summary(groups: list[dict]) -> str:
+    labels: list[str] = []
+    for group in groups:
+        for slot in group.get("slots", []):
+            label = str(slot.get("label", "")).strip()
+            if group.get("uses_meridiem"):
+                meridiem = _slot_meridiem(slot)
+                if meridiem not in {"AM", "PM"}:
+                    continue
+            if label and label not in labels and not (group.get("uses_meridiem") and label in {"AM", "PM"}):
+                labels.append(label)
+    return " & ".join(f"({label})" for label in labels)
+
+
+def _workbook_bytes(workbook: Workbook) -> bytes:
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _encode_workbook(file_name: str, workbook: Workbook) -> dict:
+    return {
+        "fileName": file_name,
+        "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "contentBase64": base64.b64encode(_workbook_bytes(workbook)).decode("ascii"),
+    }
+
+
+def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) -> dict:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Fair Selection" if mode == "selected" else "All Available"
+
+    groups = _build_export_groups(results)
+    faculty_getter = (lambda item: item.get("faculty", [])) if mode == "selected" else (lambda item: item.get("availableFaculty", []))
+    faculty_names = sorted(
+        {
+            _to_text(name)
+            for item in results
+            for name in faculty_getter(item)
+            if _to_text(name)
+        },
+        key=lambda name: (name.lower(), name),
+    )
+
+    total_columns = 3 + sum(len(group["slots"]) for group in groups)
+    rows: list[list[object]] = []
+
+    def pad_row(values: list[object]) -> list[object]:
+        return values + [""] * max(0, total_columns - len(values))
+
+    department_short_name = "CSE"
+    rows.append(pad_row([department_short_name, "", "", _build_timing_summary(groups)]))
+    rows.append(pad_row(["S.No", "Faculty Name", "Total"]))
+    rows.append(pad_row(["", "", ""]))
+
+    column_cursor = 4
+    slot_column_map: dict[str, int] = {}
+    for group in groups:
+        rows[1][column_cursor - 1] = group["header_date"]
+        for slot_index, slot in enumerate(group["slots"]):
+            rows[2][column_cursor + slot_index - 1] = ("AM" if slot_index == 0 else "PM") if group["uses_meridiem"] else slot["label"]
+            map_key = f"{group['date']}__{('AM' if slot_index == 0 else 'PM') if group['uses_meridiem'] else slot['key']}"
+            slot_column_map[map_key] = column_cursor + slot_index
+        column_cursor += len(group["slots"])
+
+    faculty_totals: dict[str, int] = {}
+    for item in results:
+        for name in faculty_getter(item):
+            faculty_name = _to_text(name)
+            if faculty_name:
+                faculty_totals[faculty_name] = faculty_totals.get(faculty_name, 0) + 1
+
+    faculty_row_map: dict[str, int] = {}
+    for index, faculty_name in enumerate(faculty_names, start=1):
+        rows.append(pad_row([index, faculty_name, faculty_totals.get(faculty_name, 0)]))
+        faculty_row_map[faculty_name] = len(rows)
+
+    slot_totals: dict[int, int] = {}
+    for item in results:
+        slot = _build_export_slot(item)
+        group = next((entry for entry in groups if entry["date"] == _to_text(item.get("date"))), None)
+        if not group:
+            continue
+        lookup_key = f"{group['date']}__{_slot_meridiem(slot) if group['uses_meridiem'] else slot['key']}"
+        column_index = slot_column_map.get(lookup_key)
+        if not column_index:
+            continue
+        current_names = [_to_text(name) for name in faculty_getter(item) if _to_text(name)]
+        slot_totals[column_index] = len(current_names)
+        for faculty_name in current_names:
+            row_index = faculty_row_map.get(faculty_name)
+            if row_index:
+                rows[row_index - 1][column_index - 1] = "X"
+
+    total_row = pad_row(["", "Total", sum(slot_totals.values())])
+    for column_index, total in slot_totals.items():
+        total_row[column_index - 1] = total
+    rows.append(total_row)
+
+    for row in rows:
+        worksheet.append(row)
+
+    column_cursor = 4
+    for group in groups:
+        worksheet.merge_cells(start_row=2, start_column=column_cursor, end_row=2, end_column=column_cursor + len(group["slots"]) - 1)
+        column_cursor += len(group["slots"])
+    worksheet.merge_cells(start_row=1, start_column=1, end_row=3, end_column=1)
+    worksheet.merge_cells(start_row=1, start_column=2, end_row=3, end_column=2)
+    worksheet.merge_cells(start_row=1, start_column=3, end_row=3, end_column=3)
+    if total_columns > 3:
+        worksheet.merge_cells(start_row=1, start_column=4, end_row=1, end_column=total_columns)
+
+    widths = [8, 30, 12] + [
+        max(12, len(("AM" if group["uses_meridiem"] and idx == 0 else "PM" if group["uses_meridiem"] else slot["label"])) + 2)
+        for group in groups
+        for idx, slot in enumerate(group["slots"])
+    ]
+    for idx, width in enumerate(widths, start=1):
+        worksheet.column_dimensions[worksheet.cell(row=1, column=idx).column_letter].width = width
+
+    for row_idx in range(1, worksheet.max_row + 1):
+        worksheet.row_dimensions[row_idx].height = 22
+        for col_idx in range(1, total_columns + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            cell.alignment = CENTER_ALIGNMENT
+            cell.border = THIN_BORDER
+            if row_idx <= 3 or row_idx == worksheet.max_row:
+                cell.font = Font(bold=True)
+
+    file_name = "invisilation_fair_selection.xlsx" if mode == "selected" else "invisilation_all_available.xlsx"
+    return _encode_workbook(file_name, workbook)

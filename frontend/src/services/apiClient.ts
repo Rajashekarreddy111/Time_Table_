@@ -532,6 +532,26 @@ export function getSectionWorkbook(timetableId: string, section: string) {
   );
 }
 
+export function exportBulkFacultyAvailabilitySelected(
+  payload: BulkFacultyAvailabilityRequest,
+) {
+  return apiRequest<GeneratedWorkbookFile>(
+    "/faculty/availability/bulk/export-selected",
+    "POST",
+    payload,
+  );
+}
+
+export function exportBulkFacultyAvailabilityAvailable(
+  payload: BulkFacultyAvailabilityRequest,
+) {
+  return apiRequest<GeneratedWorkbookFile>(
+    "/faculty/availability/bulk/export-available",
+    "POST",
+    payload,
+  );
+}
+
 export function getAllSectionsWorkbook() {
   return apiRequest<GeneratedWorkbookFile>(
     "/timetables/all-sections-workbook",

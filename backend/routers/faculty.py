@@ -24,8 +24,8 @@ async def faculty_availability(payload: FacultyAvailabilityRequest):
     return FacultyAvailabilityResponse(**result)
 
 
-from models.schemas import BulkFacultyAvailabilityRequest, BulkFacultyAvailabilityResponse
-from services.faculty_availability import get_bulk_available_faculty
+from models.schemas import BulkFacultyAvailabilityRequest, BulkFacultyAvailabilityResponse, GeneratedWorkbookFile
+from services.faculty_availability import build_bulk_faculty_availability_workbook, get_bulk_available_faculty
 
 @router.post("/faculty/availability/bulk", response_model=BulkFacultyAvailabilityResponse)
 async def bulk_faculty_availability(payload: BulkFacultyAvailabilityRequest):
@@ -38,3 +38,29 @@ async def bulk_faculty_availability(payload: BulkFacultyAvailabilityRequest):
         faculty_id_map_file_id=payload.facultyIdMapFileId,
     )
     return BulkFacultyAvailabilityResponse(**result)
+
+
+@router.post("/faculty/availability/bulk/export-selected", response_model=GeneratedWorkbookFile)
+async def bulk_faculty_availability_selected_export(payload: BulkFacultyAvailabilityRequest):
+    result = get_bulk_available_faculty(
+        store=store,
+        availability_file_id=payload.availabilityFileId,
+        query_file_id=payload.queryFileId,
+        ignored_years=payload.ignoredYears,
+        ignored_sections=payload.ignoredSections,
+        faculty_id_map_file_id=payload.facultyIdMapFileId,
+    )
+    return GeneratedWorkbookFile(**build_bulk_faculty_availability_workbook(result.get("results", []), mode="selected"))
+
+
+@router.post("/faculty/availability/bulk/export-available", response_model=GeneratedWorkbookFile)
+async def bulk_faculty_availability_available_export(payload: BulkFacultyAvailabilityRequest):
+    result = get_bulk_available_faculty(
+        store=store,
+        availability_file_id=payload.availabilityFileId,
+        query_file_id=payload.queryFileId,
+        ignored_years=payload.ignoredYears,
+        ignored_sections=payload.ignoredSections,
+        faculty_id_map_file_id=payload.facultyIdMapFileId,
+    )
+    return GeneratedWorkbookFile(**build_bulk_faculty_availability_workbook(result.get("results", []), mode="available"))

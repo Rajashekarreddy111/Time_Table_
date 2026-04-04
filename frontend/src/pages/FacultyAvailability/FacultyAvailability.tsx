@@ -11,7 +11,7 @@ import { PERIODS } from "@/data/mockData";
 import { ACADEMIC_METADATA } from "@/lib/academicMetadata";
 import { readAcademicConfig } from "@/lib/academicConfig";
 import { buildTemplateLinks } from "@/utils/templateLinks";
-import { API_BASE_URL, type BulkFacultyAvailabilityItem, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
+import { API_BASE_URL, exportBulkFacultyAvailabilityAvailable, exportBulkFacultyAvailabilitySelected, type BulkFacultyAvailabilityItem, type GeneratedWorkbookFile, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
@@ -254,8 +254,50 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
   ];
   worksheet["!rows"] = [{ hpt: 28 }, { hpt: 24 }, { hpt: 24 }, ...facultyNames.map(() => ({ hpt: 21 })), { hpt: 22 }];
 
+  const sheetRange = XLSX.utils.decode_range(worksheet["!ref"] ?? `A1:${XLSX.utils.encode_cell({ r: data.length - 1, c: totalColumns - 1 })}`);
+  for (let rowIndex = sheetRange.s.r; rowIndex <= sheetRange.e.r; rowIndex += 1) {
+    for (let columnIndex = sheetRange.s.c; columnIndex <= sheetRange.e.c; columnIndex += 1) {
+      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+      if (!worksheet[cellAddress]) {
+        worksheet[cellAddress] = { t: "s", v: "" };
+      }
+      worksheet[cellAddress].s = {
+        alignment: {
+          horizontal: "center",
+          vertical: "center",
+          wrapText: true,
+        },
+        border: {
+          top: { style: "thin", color: { rgb: "000000" } },
+          bottom: { style: "thin", color: { rgb: "000000" } },
+          left: { style: "thin", color: { rgb: "000000" } },
+          right: { style: "thin", color: { rgb: "000000" } },
+        },
+        font: {
+          bold: rowIndex <= 2 || rowIndex === data.length - 1,
+          name: "Calibri",
+          sz: 11,
+        },
+      };
+    }
+  }
+
   XLSX.utils.book_append_sheet(workbook, worksheet, mode === "selected" ? "Fair Selection" : "All Available");
   return workbook;
+}
+
+function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
+  const binary = atob(file.contentBase64);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: file.contentType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = file.fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function normalizeText(value: string): string {
@@ -385,36 +427,31 @@ const FacultyAvailability = () => {
   };
 
   const handleDownloadSelectedWorkbook = () => {
-    if (!results || results.length === 0) {
+    if (!results || results.length === 0 || !availabilityFileId || !queryFileId) {
       toast.error("Generate a report before downloading.");
       return;
     }
-    try {
-      const selectedWorkbook = buildInvigilationWorkbook(results, "selected");
-      XLSX.writeFile(selectedWorkbook, "invisilation_fair_selection.xlsx");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to download fair selection file");
-    }
+    exportBulkFacultyAvailabilitySelected({ availabilityFileId, queryFileId, ignoredYears, ignoredSections })
+      .then((file) => {
+        downloadGeneratedWorkbook(file);
+      })
+      .catch((error) => {
+        toast.error(error instanceof Error ? error.message : "Failed to download fair selection file");
+      });
   };
 
   const handleDownloadAvailableWorkbook = () => {
-    if (!results || results.length === 0) {
+    if (!results || results.length === 0 || !availabilityFileId || !queryFileId) {
       toast.error("Generate a report before downloading.");
       return;
     }
-    const hasAvailableFacultyData = results.some((item) => (item.availableFaculty ?? []).length > 0);
-    if (!hasAvailableFacultyData) {
-      toast.error("All available faculty data is not present in the current report. Generate the report again and try.");
-      return;
-    }
-    try {
-      const availableWorkbook = buildInvigilationWorkbook(results, "available");
-      window.setTimeout(() => {
-        XLSX.writeFile(availableWorkbook, "invisilation_all_available.xlsx");
-      }, 150);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to download all available faculty file");
-    }
+    exportBulkFacultyAvailabilityAvailable({ availabilityFileId, queryFileId, ignoredYears, ignoredSections })
+      .then((file) => {
+        downloadGeneratedWorkbook(file);
+      })
+      .catch((error) => {
+        toast.error(error instanceof Error ? error.message : "Failed to download all available faculty file");
+      });
   };
 
   return (
