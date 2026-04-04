@@ -96,16 +96,11 @@ class MemoryStore:
             "id": file_id,
             "updatedAt": datetime.now(timezone.utc),
         }
-        if not self._mongo_available:
-            self._uploaded_files_mem[file_id] = document
-            return
-        self._uploaded_files.update_one({"id": file_id}, {"$set": document}, upsert=True)
+        # Uploaded input files are intentionally kept in memory only.
+        self._uploaded_files_mem[file_id] = document
 
     def get_file_map(self, file_id: str) -> dict[str, Any] | None:
-        if not self._mongo_available:
-            return self._uploaded_files_mem.get(file_id)
-        document = self._uploaded_files.find_one({"id": file_id}, {"_id": 0})
-        return document
+        return self._uploaded_files_mem.get(file_id)
 
     def save_scoped_mapping(
         self,
@@ -120,35 +115,17 @@ class MemoryStore:
             "scopeKey": scope_key,
             "updatedAt": datetime.now(timezone.utc),
         }
-        if not self._mongo_available:
-            key = (map_type, scope_key)
-            if key in self._scoped_mappings_mem and not allow_overwrite:
-                return False
-            self._scoped_mappings_mem[key] = document
-            return True
-        if allow_overwrite:
-            self._scoped_mappings.update_one(
-                {"mapType": map_type, "scopeKey": scope_key},
-                {"$set": document},
-                upsert=True,
-            )
-            return True
-        try:
-            self._scoped_mappings.insert_one(document)
-            return True
-        except DuplicateKeyError:
+        key = (map_type, scope_key)
+        if key in self._scoped_mappings_mem and not allow_overwrite:
             return False
+        self._scoped_mappings_mem[key] = document
+        return True
 
     def get_scoped_mapping(self, map_type: str, scope_key: str) -> dict[str, Any] | None:
-        if not self._mongo_available:
-            return self._scoped_mappings_mem.get((map_type, scope_key))
-        return self._scoped_mappings.find_one({"mapType": map_type, "scopeKey": scope_key}, {"_id": 0})
+        return self._scoped_mappings_mem.get((map_type, scope_key))
 
     def delete_scoped_mapping(self, map_type: str, scope_key: str) -> bool:
-        if not self._mongo_available:
-            return self._scoped_mappings_mem.pop((map_type, scope_key), None) is not None
-        result = self._scoped_mappings.delete_one({"mapType": map_type, "scopeKey": scope_key})
-        return result.deleted_count > 0
+        return self._scoped_mappings_mem.pop((map_type, scope_key), None) is not None
 
     def save_timetable(self, timetable_id: str, payload: dict[str, Any]) -> None:
         document = {

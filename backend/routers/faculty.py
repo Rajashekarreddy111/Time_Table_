@@ -25,7 +25,11 @@ async def faculty_availability(payload: FacultyAvailabilityRequest):
 
 
 from models.schemas import BulkFacultyAvailabilityRequest, BulkFacultyAvailabilityResponse, GeneratedWorkbookFile
-from services.faculty_availability import build_bulk_faculty_availability_workbook, get_bulk_available_faculty
+from services.faculty_availability import (
+    build_bulk_faculty_availability_report_workbook,
+    build_bulk_faculty_availability_workbook,
+    get_bulk_available_faculty,
+)
 
 @router.post("/faculty/availability/bulk", response_model=BulkFacultyAvailabilityResponse)
 async def bulk_faculty_availability(payload: BulkFacultyAvailabilityRequest):
@@ -64,3 +68,16 @@ async def bulk_faculty_availability_available_export(payload: BulkFacultyAvailab
         faculty_id_map_file_id=payload.facultyIdMapFileId,
     )
     return GeneratedWorkbookFile(**build_bulk_faculty_availability_workbook(result.get("results", []), mode="available"))
+
+
+@router.post("/faculty/availability/bulk/export-report", response_model=GeneratedWorkbookFile)
+async def bulk_faculty_availability_report_export(payload: BulkFacultyAvailabilityRequest):
+    result = get_bulk_available_faculty(
+        store=store,
+        availability_file_id=payload.availabilityFileId,
+        query_file_id=payload.queryFileId,
+        ignored_years=payload.ignoredYears,
+        ignored_sections=payload.ignoredSections,
+        faculty_id_map_file_id=payload.facultyIdMapFileId,
+    )
+    return GeneratedWorkbookFile(**build_bulk_faculty_availability_report_workbook(result.get("results", [])))

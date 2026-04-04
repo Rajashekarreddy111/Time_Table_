@@ -1,4 +1,5 @@
 import base64
+import base64
 from datetime import datetime, time
 from io import BytesIO
 import logging
@@ -7,6 +8,7 @@ import re
 from fastapi import HTTPException
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.utils import get_column_letter
 
 from services.utils import normalize_year
 from storage.memory_store import MemoryStore
@@ -120,14 +122,30 @@ def _normalize_ignored_sections(ignored_sections: list[str]) -> set[str]:
     return normalized
 
 
-def _is_ignored(class_info: dict, ignored_years: list[str], ignored_sections: list[str]) -> bool:
+def _extract_class_identity(class_info: dict) -> tuple[str, str]:
     raw_year = str(class_info.get("year", "")).strip()
-    if not raw_year:
-        return False
+    section = str(class_info.get("section", "")).strip().upper()
+    subject = str(class_info.get("subject", "")).strip()
+
     full_year = normalize_year(raw_year)
-    if full_year in ignored_years:
+    if full_year and section:
+        return full_year, section
+
+    compact_subject = re.sub(r"\s+", "", subject.upper())
+    match = re.match(r"^(?P<year>\d)(?P<section>[A-Z]\d+)", compact_subject)
+    if match:
+        parsed_year = normalize_year(match.group("year"))
+        parsed_section = match.group("section").upper()
+        return parsed_year or full_year, parsed_section or section
+
+    return full_year, section
+
+
+def _is_ignored(class_info: dict, ignored_years: list[str], ignored_sections: list[str]) -> bool:
+    normalized_ignored_years = {normalize_year(year) for year in ignored_years if normalize_year(year)}
+    full_year, section = _extract_class_identity(class_info)
+    if full_year and full_year in normalized_ignored_years:
         return True
-    section = str(class_info.get("section", "")).strip()
     if not section:
         return False
     normalized_ignored = _normalize_ignored_sections(ignored_sections)
@@ -363,7 +381,7 @@ def _warn_for_missing_overlap_rows(
     missing = [period for period in selected_periods if period not in day_schedule]
     if not missing:
         return
-    logger.warning(
+    logger.debug(
         "Occupancy dataset is missing overlapping period rows; missing periods will be treated as free",
         extra={
             "faculty": faculty,
@@ -754,17 +772,51 @@ def _build_export_groups(items: list[dict]) -> list[dict]:
 
 
 def _build_timing_summary(groups: list[dict]) -> str:
-    labels: list[str] = []
+    fn_label = ""
+    an_label = ""
+    custom_labels: list[str] = []
+    has_custom_slots = False
+
     for group in groups:
-        for slot in group.get("slots", []):
-            label = str(slot.get("label", "")).strip()
-            if group.get("uses_meridiem"):
-                meridiem = _slot_meridiem(slot)
-                if meridiem not in {"AM", "PM"}:
+        if group.get("uses_meridiem"):
+            for slot in group.get("slots", []):
+                label = str(slot.get("label", "")).strip()
+                if not label or label in {"AM", "PM"}:
                     continue
-            if label and label not in labels and not (group.get("uses_meridiem") and label in {"AM", "PM"}):
-                labels.append(label)
+                if _slot_meridiem(slot) == "AM" and not fn_label:
+                    fn_label = label
+                if _slot_meridiem(slot) == "PM" and not an_label:
+                    an_label = label
+        else:
+            has_custom_slots = True
+            for slot in group.get("slots", []):
+                label = str(slot.get("label", "")).strip()
+                if label and label not in custom_labels:
+                    custom_labels.append(label)
+
+    if has_custom_slots:
+        return " & ".join(f"({label})" for label in custom_labels)
+
+    labels: list[str] = []
+    if fn_label:
+        labels.append(f"FN : {fn_label}")
+    if an_label:
+        labels.append(f"AN : {an_label}")
     return " & ".join(f"({label})" for label in labels)
+
+
+def _build_report_template(results: list[dict]) -> tuple[list[dict], list[str]]:
+    groups = _build_export_groups(results)
+    faculty_names = sorted(
+        {
+            _to_text(name)
+            for item in results
+            for name in item.get("availableFaculty", [])
+            if _to_text(name)
+        },
+        key=lambda name: (name.lower(), name),
+    )
+    return groups, faculty_names
 
 
 def _workbook_bytes(workbook: Workbook) -> bytes:
@@ -781,12 +833,17 @@ def _encode_workbook(file_name: str, workbook: Workbook) -> dict:
     }
 
 
-def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) -> dict:
-    workbook = Workbook()
-    worksheet = workbook.active
+def _populate_bulk_faculty_availability_sheet(
+    workbook: Workbook,
+    results: list[dict],
+    *,
+    mode: str,
+    template_groups: list[dict] | None = None,
+    template_faculty_names: list[str] | None = None,
+) -> None:
+    worksheet = workbook.active if len(workbook.sheetnames) == 1 and workbook.active.max_row == 1 and workbook.active["A1"].value is None else workbook.create_sheet()
     worksheet.title = "Fair Selection" if mode == "selected" else "All Available"
-
-    groups = _build_export_groups(results)
+    groups = template_groups or _build_export_groups(results)
     faculty_getter = (lambda item: item.get("faculty", [])) if mode == "selected" else (lambda item: item.get("availableFaculty", []))
     faculty_names = sorted(
         {
@@ -797,6 +854,8 @@ def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) 
         },
         key=lambda name: (name.lower(), name),
     )
+    if template_faculty_names:
+        faculty_names = list(template_faculty_names)
 
     total_columns = 3 + sum(len(group["slots"]) for group in groups)
     rows: list[list[object]] = []
@@ -814,13 +873,18 @@ def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) 
     for group in groups:
         rows[1][column_cursor - 1] = group["header_date"]
         for slot_index, slot in enumerate(group["slots"]):
-            rows[2][column_cursor + slot_index - 1] = ("AM" if slot_index == 0 else "PM") if group["uses_meridiem"] else slot["label"]
+            rows[2][column_cursor + slot_index - 1] = ("FN" if slot_index == 0 else "AN") if group["uses_meridiem"] else slot["label"]
             map_key = f"{group['date']}__{('AM' if slot_index == 0 else 'PM') if group['uses_meridiem'] else slot['key']}"
             slot_column_map[map_key] = column_cursor + slot_index
         column_cursor += len(group["slots"])
 
     faculty_totals: dict[str, int] = {}
+    template_faculty_totals: dict[str, int] = {}
     for item in results:
+        for name in item.get("availableFaculty", []):
+            faculty_name = _to_text(name)
+            if faculty_name:
+                template_faculty_totals[faculty_name] = template_faculty_totals.get(faculty_name, 0) + 1
         for name in faculty_getter(item):
             faculty_name = _to_text(name)
             if faculty_name:
@@ -828,7 +892,17 @@ def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) 
 
     faculty_row_map: dict[str, int] = {}
     for index, faculty_name in enumerate(faculty_names, start=1):
-        rows.append(pad_row([index, faculty_name, faculty_totals.get(faculty_name, 0)]))
+        rows.append(
+            pad_row(
+                [
+                    index,
+                    faculty_name,
+                    template_faculty_totals.get(faculty_name, 0)
+                    if template_faculty_names
+                    else faculty_totals.get(faculty_name, 0),
+                ]
+            )
+        )
         faculty_row_map[faculty_name] = len(rows)
 
     slot_totals: dict[int, int] = {}
@@ -867,12 +941,12 @@ def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) 
         worksheet.merge_cells(start_row=1, start_column=4, end_row=1, end_column=total_columns)
 
     widths = [8, 30, 12] + [
-        max(12, len(("AM" if group["uses_meridiem"] and idx == 0 else "PM" if group["uses_meridiem"] else slot["label"])) + 2)
+        max(12, len(("FN" if group["uses_meridiem"] and idx == 0 else "AN" if group["uses_meridiem"] else slot["label"])) + 2)
         for group in groups
         for idx, slot in enumerate(group["slots"])
     ]
     for idx, width in enumerate(widths, start=1):
-        worksheet.column_dimensions[worksheet.cell(row=1, column=idx).column_letter].width = width
+        worksheet.column_dimensions[get_column_letter(idx)].width = width
 
     for row_idx in range(1, worksheet.max_row + 1):
         worksheet.row_dimensions[row_idx].height = 22
@@ -883,5 +957,35 @@ def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) 
             if row_idx <= 3 or row_idx == worksheet.max_row:
                 cell.font = Font(bold=True)
 
+def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) -> dict:
+    workbook = Workbook()
+    groups, faculty_names = _build_report_template(results)
+    _populate_bulk_faculty_availability_sheet(
+        workbook,
+        results,
+        mode=mode,
+        template_groups=groups,
+        template_faculty_names=faculty_names,
+    )
     file_name = "invisilation_fair_selection.xlsx" if mode == "selected" else "invisilation_all_available.xlsx"
     return _encode_workbook(file_name, workbook)
+
+
+def build_bulk_faculty_availability_report_workbook(results: list[dict]) -> dict:
+    workbook = Workbook()
+    groups, faculty_names = _build_report_template(results)
+    _populate_bulk_faculty_availability_sheet(
+        workbook,
+        results,
+        mode="selected",
+        template_groups=groups,
+        template_faculty_names=faculty_names,
+    )
+    _populate_bulk_faculty_availability_sheet(
+        workbook,
+        results,
+        mode="available",
+        template_groups=groups,
+        template_faculty_names=faculty_names,
+    )
+    return _encode_workbook("invisilation_report.xlsx", workbook)

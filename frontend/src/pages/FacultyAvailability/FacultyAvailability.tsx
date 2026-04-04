@@ -11,7 +11,7 @@ import { PERIODS } from "@/data/mockData";
 import { ACADEMIC_METADATA } from "@/lib/academicMetadata";
 import { readAcademicConfig } from "@/lib/academicConfig";
 import { buildTemplateLinks } from "@/utils/templateLinks";
-import { API_BASE_URL, exportBulkFacultyAvailabilityAvailable, exportBulkFacultyAvailabilitySelected, type BulkFacultyAvailabilityItem, type GeneratedWorkbookFile, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
+import { API_BASE_URL, exportBulkFacultyAvailabilityReport, type BulkFacultyAvailabilityItem, type GeneratedWorkbookFile, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
@@ -426,31 +426,17 @@ const FacultyAvailability = () => {
     }
   };
 
-  const handleDownloadSelectedWorkbook = () => {
+  const handleDownloadReport = () => {
     if (!results || results.length === 0 || !availabilityFileId || !queryFileId) {
       toast.error("Generate a report before downloading.");
       return;
     }
-    exportBulkFacultyAvailabilitySelected({ availabilityFileId, queryFileId, ignoredYears, ignoredSections })
+    exportBulkFacultyAvailabilityReport({ availabilityFileId, queryFileId, ignoredYears, ignoredSections })
       .then((file) => {
         downloadGeneratedWorkbook(file);
       })
       .catch((error) => {
-        toast.error(error instanceof Error ? error.message : "Failed to download fair selection file");
-      });
-  };
-
-  const handleDownloadAvailableWorkbook = () => {
-    if (!results || results.length === 0 || !availabilityFileId || !queryFileId) {
-      toast.error("Generate a report before downloading.");
-      return;
-    }
-    exportBulkFacultyAvailabilityAvailable({ availabilityFileId, queryFileId, ignoredYears, ignoredSections })
-      .then((file) => {
-        downloadGeneratedWorkbook(file);
-      })
-      .catch((error) => {
-        toast.error(error instanceof Error ? error.message : "Failed to download all available faculty file");
+        toast.error(error instanceof Error ? error.message : "Failed to download report");
       });
   };
 
@@ -579,10 +565,7 @@ const FacultyAvailability = () => {
                     <div className="w-full md:max-w-md lg:max-w-lg">
                       <Input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Search by date, faculty, or status" className="rounded-2xl" />
                     </div>
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Button onClick={handleDownloadSelectedWorkbook} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download Fair Selection</Button>
-                      <Button onClick={handleDownloadAvailableWorkbook} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download All Available</Button>
-                    </div>
+                    <Button onClick={handleDownloadReport} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download Report</Button>
                   </div>
                 </div>
                 <div className="mt-5 space-y-4">

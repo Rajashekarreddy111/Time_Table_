@@ -77,20 +77,34 @@ def _parse_workload_class_details(value) -> dict[str, str]:
     if not text:
         return {"year": "", "section": "", "subject": ""}
 
-    compact = text.replace(" ", "")
-    match = None
     import re
-    match = re.match(r"^(?P<year>\d)(?P<section>[A-Z]\d+)(?:-(?P<subject>.+))?$", compact, re.IGNORECASE)
-    if not match:
-        return {"year": "", "section": "", "subject": text}
+    normalized_lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in re.split(r"[\r\n]+", text)
+        if re.sub(r"\s+", " ", line).strip()
+    ]
+    subject = normalized_lines[0] if normalized_lines else text
 
-    year_raw = match.group("year") or ""
-    section = (match.group("section") or "").upper()
-    subject = match.group("subject") or text
+    year_raw = ""
+    section = ""
+    for candidate in normalized_lines + [re.sub(r"\s+", " ", text).strip()]:
+        match = re.search(
+            r"(?P<year>(?:\d+(?:ST|ND|RD|TH)?|I|II|III|IV))\s*YEAR\s*(?P<section>[A-Z]\d+)",
+            candidate,
+            re.IGNORECASE,
+        )
+        if not match:
+            compact = candidate.replace(" ", "")
+            match = re.search(r"(?P<year>\d)(?P<section>[A-Z]\d+)", compact, re.IGNORECASE)
+        if match:
+            year_raw = match.group("year") or ""
+            section = (match.group("section") or "").upper()
+            break
+
     return {
         "year": normalize_year(year_raw),
         "section": section,
-        "subject": subject,
+        "subject": subject or text,
     }
 
 
