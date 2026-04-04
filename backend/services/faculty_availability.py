@@ -134,8 +134,12 @@ def _availability_result(
     day_name: str,
     selected_periods: list[int],
     selected_faculty: list[str],
+    available_faculty: list[str],
     faculty_required: int,
     available_count: int,
+    *,
+    start_time=None,
+    end_time=None,
 ) -> dict:
     safe_required = max(1, int(faculty_required or 1))
     sufficient = available_count >= safe_required
@@ -158,7 +162,10 @@ def _availability_result(
     return {
         "day": day_name,
         "periods": [{"period": period, "time": PERIOD_TIME[period]} for period in selected_periods],
+        "startTime": _to_text(start_time),
+        "endTime": _to_text(end_time),
         "faculty": selected_faculty,
+        "availableFaculty": available_faculty,
         "availableFacultyCount": available_count,
         "sufficientFaculty": sufficient,
         "shortageCount": shortage,
@@ -564,20 +571,16 @@ def get_available_faculty_for_all_periods(
         ):
             common_available.add(faculty)
 
-    occupancy_details = store.get_global_faculty_occupancy_details()
-    for item in occupancy_details:
-        if item.get("day") == day_name and item.get("period") in selected_periods:
-            faculty = str(item.get("faculty", "")).strip()
-            if faculty in common_available and not _is_ignored(item, ignored_years, ignored_sections):
-                common_available.discard(faculty)
-
     selected_faculty = _fair_select_faculty(common_available, faculty_required)
     return _availability_result(
         day_name=day_name,
         selected_periods=selected_periods,
         selected_faculty=selected_faculty,
+        available_faculty=sorted(common_available, key=lambda faculty: (faculty.lower(), faculty)),
         faculty_required=faculty_required,
         available_count=len(common_available),
+        start_time=start_time,
+        end_time=end_time,
     )
 
 
@@ -610,7 +613,6 @@ def get_bulk_available_faculty(
         faculty_name_map,
     )
     faculty_names = _get_known_faculty_names(availability_payload, schedules)
-    occupancy_details = store.get_global_faculty_occupancy_details()
     results = []
     selection_counts: dict[str, int] = {}
 
@@ -661,12 +663,6 @@ def get_bulk_available_faculty(
             ):
                 common_available.add(faculty)
 
-        for item in occupancy_details:
-            if item.get("day") == day_name and item.get("period") in selected_periods:
-                faculty = str(item.get("faculty", "")).strip()
-                if faculty in common_available and not _is_ignored(item, ignored_years, ignored_sections):
-                    common_available.discard(faculty)
-
         selected_faculty = _fair_select_faculty(common_available, faculty_required, selection_counts)
         results.append(
             {
@@ -676,8 +672,11 @@ def get_bulk_available_faculty(
                     day_name=day_name,
                     selected_periods=selected_periods,
                     selected_faculty=selected_faculty,
+                    available_faculty=sorted(common_available, key=lambda faculty: (faculty.lower(), faculty)),
                     faculty_required=faculty_required,
                     available_count=len(common_available),
+                    start_time=start_time,
+                    end_time=end_time,
                 ),
             }
         )

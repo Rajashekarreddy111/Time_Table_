@@ -54,11 +54,16 @@ def _public_user(document: dict) -> dict:
 
 
 def ensure_default_admin() -> None:
-    username = os.getenv("ADMIN_USERNAME", "admin").strip()
-    password = os.getenv("ADMIN_PASSWORD", "admin123").strip()
+    username = os.getenv("ADMIN_USERNAME", "Admin").strip()
+    password = os.getenv("ADMIN_PASSWORD", "Admin@123").strip()
     existing = store.get_user_by_username(username)
     if existing:
         return
+
+    existing_admins = store.list_users_by_creator(None, role="admin")
+    if existing_admins:
+        return
+
     store.create_user(
         username,
         {

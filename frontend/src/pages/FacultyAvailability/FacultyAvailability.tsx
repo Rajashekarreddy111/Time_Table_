@@ -8,25 +8,254 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PERIODS } from "@/data/mockData";
+import { ACADEMIC_METADATA } from "@/lib/academicMetadata";
 import { readAcademicConfig } from "@/lib/academicConfig";
 import { buildTemplateLinks } from "@/utils/templateLinks";
 import { API_BASE_URL, type BulkFacultyAvailabilityItem, getBulkFacultyAvailability, uploadFacultyAvailability, uploadFacultyAvailabilityQuery } from "@/services/apiClient";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 
 type PeriodInfo = { period: number; time: string };
 type SummaryStat = { label: string; value: string | number; hint: string; tone: string };
+type ExportSlot = {
+  key: string;
+  label: string;
+  startMinutes: number;
+};
+
+type ExportDateGroup = {
+  date: string;
+  headerDate: string;
+  slots: ExportSlot[];
+  usesMeridiemColumns: boolean;
+};
+type ExportMode = "selected" | "available";
 
 const actualPeriods: PeriodInfo[] = PERIODS.filter(
   (item): item is { period: number; time: string } => typeof item.period === "number",
 ).map((item) => ({ period: item.period, time: item.time.replace(/â€“|Ã¢â‚¬â€œ|ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“/g, "-") }));
 
-function escapeCsv(value: string | number | boolean): string {
-  const stringValue = String(value ?? "");
-  return `"${stringValue.replace(/"/g, '""')}"`;
-}
-
 function formatPeriods(periods: PeriodInfo[]): string {
   return periods.map((period) => `P${period.period}`).join(", ");
+}
+
+function parseClockToMinutes(value: string): number {
+  const trimmed = value.trim().toUpperCase();
+  const timeMatch = trimmed.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/);
+  if (!timeMatch) return 0;
+
+  let hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const meridiem = timeMatch[4] ?? "";
+
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return 0;
+
+  if (meridiem === "AM") {
+    if (hour === 12) hour = 0;
+  } else if (meridiem === "PM") {
+    if (hour !== 12) hour += 12;
+  } else if (hour >= 1 && hour <= 4) {
+    hour += 12;
+  }
+
+  return hour * 60 + minute;
+}
+
+function buildSessionRange(periods: PeriodInfo[]): ExportSlot {
+  const normalizedTimes = periods.map((period) => period.time.trim()).filter(Boolean);
+  if (normalizedTimes.length === 0) {
+    return { key: "Session", label: "Session", startMinutes: 0 };
+  }
+
+  const firstParts = normalizedTimes[0].split("-").map((part) => part.trim());
+  const lastParts = normalizedTimes[normalizedTimes.length - 1].split("-").map((part) => part.trim());
+  const startText = firstParts[0] ?? "";
+  const endText = lastParts[lastParts.length - 1] ?? startText;
+  const startMinutes = parseClockToMinutes(startText);
+  const label = `${startText} - ${endText}`;
+  return { key: label, label, startMinutes };
+}
+
+function formatExportDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+  if (!match) return value;
+  return `${match[3]}-${match[2]}-${match[1]}`;
+}
+
+function getMeridiemLabel(slot: ExportSlot): "AM" | "PM" {
+  return slot.startMinutes < 12 * 60 ? "AM" : "PM";
+}
+
+function buildTimingSummary(groups: ExportDateGroup[]): string {
+  const hasExpandedDays = groups.some((group) => !group.usesMeridiemColumns);
+  const labels = hasExpandedDays
+    ? Array.from(new Set(groups.flatMap((group) => group.slots.map((slot) => slot.label))))
+    : [
+        ...Array.from(
+          new Set(
+            groups.flatMap((group) => group.slots.filter((slot) => getMeridiemLabel(slot) === "AM").map((slot) => slot.label)),
+          ),
+        ),
+        ...Array.from(
+          new Set(
+            groups.flatMap((group) => group.slots.filter((slot) => getMeridiemLabel(slot) === "PM").map((slot) => slot.label)),
+          ),
+        ),
+      ];
+  return labels.map((label) => `(${label})`).join(" & ");
+}
+
+function buildExactInputRange(item: BulkFacultyAvailabilityItem): ExportSlot {
+  const start = item.startTime?.trim() ?? "";
+  const end = item.endTime?.trim() ?? "";
+  if (start && end) {
+    return {
+      key: `${start}__${end}`,
+      label: `${start} - ${end}`,
+      startMinutes: parseClockToMinutes(start),
+    };
+  }
+  return buildSessionRange(item.periods);
+}
+
+function buildExportDateGroups(items: BulkFacultyAvailabilityItem[]): ExportDateGroup[] {
+  const slotsByDate = new Map<string, ExportSlot[]>();
+
+  for (const item of items) {
+    const slot = buildExactInputRange(item);
+    const existing = slotsByDate.get(item.date) ?? [];
+    if (!existing.some((entry) => entry.key === slot.key)) {
+      existing.push(slot);
+      slotsByDate.set(item.date, existing);
+    }
+  }
+
+  return Array.from(slotsByDate.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, slots]) => {
+      const orderedSlots = [...slots].sort((left, right) => left.startMinutes - right.startMinutes || left.label.localeCompare(right.label));
+      const usesMeridiemColumns = orderedSlots.length <= 2;
+      return {
+        date,
+        headerDate: formatExportDate(date),
+        slots: usesMeridiemColumns
+          ? [
+              orderedSlots.find((slot) => getMeridiemLabel(slot) === "AM") ?? { key: "__am__", label: "AM", startMinutes: 0 },
+              orderedSlots.find((slot) => getMeridiemLabel(slot) === "PM") ?? { key: "__pm__", label: "PM", startMinutes: 12 * 60 },
+            ]
+          : orderedSlots,
+        usesMeridiemColumns,
+      };
+    });
+}
+
+function getFacultyNamesForMode(item: BulkFacultyAvailabilityItem, mode: ExportMode): string[] {
+  const source = mode === "selected"
+    ? (item.faculty ?? [])
+    : (item.availableFaculty ?? []);
+  return source
+    .map((facultyName) => facultyName.trim())
+    .filter(Boolean);
+}
+
+function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: ExportMode) {
+  const workbook = XLSX.utils.book_new();
+  const groups = buildExportDateGroups(items);
+  const facultyNames = Array.from(
+    new Set(items.flatMap((item) => getFacultyNamesForMode(item, mode))),
+  ).sort((left, right) => left.localeCompare(right));
+
+  const totalColumns = 3 + groups.reduce((sum, group) => sum + group.slots.length, 0);
+  const data: (string | number)[][] = [];
+  const merges: XLSX.Range[] = [];
+  const padRow = (values: (string | number)[]) => [
+    ...values,
+    ...Array.from({ length: Math.max(0, totalColumns - values.length) }, () => ""),
+  ];
+
+  const departmentShortName = ACADEMIC_METADATA.DEPARTMENT_NAME.includes("Computer Science") ? "CSE" : "Department";
+  data.push(padRow([departmentShortName, "", "", buildTimingSummary(groups)]));
+  data.push(padRow(["S.No", "Faculty Name", "Total"]));
+  data.push(padRow(["", "", ""]));
+
+  let columnCursor = 3;
+  for (const group of groups) {
+    data[1][columnCursor] = group.headerDate;
+    for (let slotIndex = 0; slotIndex < group.slots.length; slotIndex += 1) {
+      data[2][columnCursor + slotIndex] = group.usesMeridiemColumns ? (slotIndex === 0 ? "AM" : "PM") : group.slots[slotIndex].label;
+    }
+    merges.push({ s: { r: 1, c: columnCursor }, e: { r: 1, c: columnCursor + group.slots.length - 1 } });
+    columnCursor += group.slots.length;
+  }
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 2, c: 0 } });
+  merges.push({ s: { r: 0, c: 1 }, e: { r: 2, c: 1 } });
+  merges.push({ s: { r: 0, c: 2 }, e: { r: 2, c: 2 } });
+  if (totalColumns > 3) {
+    merges.push({ s: { r: 0, c: 3 }, e: { r: 0, c: totalColumns - 1 } });
+  }
+
+  const slotColumnMap = new Map<string, number>();
+  columnCursor = 3;
+  for (const group of groups) {
+    for (let slotIndex = 0; slotIndex < group.slots.length; slotIndex += 1) {
+      const slot = group.slots[slotIndex];
+      const mapKey = group.usesMeridiemColumns ? `${group.date}__${slotIndex === 0 ? "AM" : "PM"}` : `${group.date}__${slot.key}`;
+      slotColumnMap.set(mapKey, columnCursor);
+      columnCursor += 1;
+    }
+  }
+
+  const facultyTotals = new Map<string, number>();
+  for (const item of items) {
+    for (const facultyName of getFacultyNamesForMode(item, mode)) {
+      facultyTotals.set(facultyName, (facultyTotals.get(facultyName) ?? 0) + 1);
+    }
+  }
+
+  facultyNames.forEach((facultyName, index) => {
+    data.push(padRow([index + 1, facultyName, facultyTotals.get(facultyName) ?? 0]));
+  });
+
+  const facultyRowMap = new Map<string, number>();
+  facultyNames.forEach((facultyName, index) => {
+    facultyRowMap.set(facultyName, index + 3);
+  });
+
+  const slotTotals = new Map<number, number>();
+  for (const item of items) {
+    const slot = buildExactInputRange(item);
+    const group = groups.find((entry) => entry.date === item.date);
+    if (!group) continue;
+    const lookupKey = group.usesMeridiemColumns ? `${item.date}__${getMeridiemLabel(slot)}` : `${item.date}__${slot.key}`;
+    const columnIndex = slotColumnMap.get(lookupKey);
+    if (columnIndex === undefined) continue;
+    const currentNames = getFacultyNamesForMode(item, mode);
+    slotTotals.set(columnIndex, currentNames.length);
+    for (const facultyName of currentNames) {
+      const rowIndex = facultyRowMap.get(facultyName.trim());
+      if (rowIndex === undefined) continue;
+      data[rowIndex][columnIndex] = "X";
+    }
+  }
+
+  const totalRow = padRow(["", "Total", Array.from(slotTotals.values()).reduce((sum, value) => sum + value, 0)]);
+  for (const [columnIndex, total] of slotTotals.entries()) {
+    totalRow[columnIndex] = total;
+  }
+  data.push(totalRow);
+
+  const worksheet = XLSX.utils.aoa_to_sheet(data);
+  worksheet["!merges"] = merges;
+  worksheet["!cols"] = [
+    { wch: 8 },
+    { wch: 30 },
+    { wch: 12 },
+    ...groups.flatMap((group) => group.slots.map((slot, index) => ({ wch: Math.max(12, (group.usesMeridiemColumns ? (index === 0 ? "AM" : "PM") : slot.label).length + 2) }))),
+  ];
+  worksheet["!rows"] = [{ hpt: 28 }, { hpt: 24 }, { hpt: 24 }, ...facultyNames.map(() => ({ hpt: 21 })), { hpt: 22 }];
+
+  XLSX.utils.book_append_sheet(workbook, worksheet, mode === "selected" ? "Fair Selection" : "All Available");
+  return workbook;
 }
 
 function normalizeText(value: string): string {
@@ -49,7 +278,7 @@ function EmptyState() {
       <div className="flex min-h-[500px] flex-col items-center justify-center rounded-[24px] border border-dashed border-border/70 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.08),transparent_45%),linear-gradient(180deg,rgba(248,250,252,0.92),rgba(241,245,249,0.8))] px-6 text-center">
         <div className="rounded-3xl bg-primary/10 p-5 text-primary"><Users className="h-10 w-10" /></div>
         <h3 className="mt-6 text-xl font-semibold text-foreground">No report generated yet</h3>
-        <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">Upload the faculty workload file and the query file, then generate the report to see fair faculty selections, shortage details, and CSV export.</p>
+        <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">Upload the faculty workload file and the query file, then generate the report to see fair faculty selections, shortage details, and Excel export.</p>
       </div>
     </div>
   );
@@ -155,34 +384,37 @@ const FacultyAvailability = () => {
     }
   };
 
-  const handleDownloadCsv = () => {
+  const handleDownloadSelectedWorkbook = () => {
     if (!results || results.length === 0) {
       toast.error("Generate a report before downloading.");
       return;
     }
-    const headers = ["Date", "Day", "Periods", "Period Times", "Faculty Required", "Faculty Available", "Selected Faculty", "Sufficient Faculty", "Shortage Count", "Status Message"];
-    const rows = results.map((item) => [
-      escapeCsv(item.date),
-      escapeCsv(item.day),
-      escapeCsv(formatPeriods(item.periods)),
-      escapeCsv(item.periods.map((period) => period.time).join(", ")),
-      escapeCsv(item.facultyRequired),
-      escapeCsv(item.availableFacultyCount),
-      escapeCsv(item.faculty.join(" | ")),
-      escapeCsv(item.sufficientFaculty),
-      escapeCsv(item.shortageCount),
-      escapeCsv(item.message),
-    ].join(","));
-    const csvContent = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", "invisilation_finder_report.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    try {
+      const selectedWorkbook = buildInvigilationWorkbook(results, "selected");
+      XLSX.writeFile(selectedWorkbook, "invisilation_fair_selection.xlsx");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to download fair selection file");
+    }
+  };
+
+  const handleDownloadAvailableWorkbook = () => {
+    if (!results || results.length === 0) {
+      toast.error("Generate a report before downloading.");
+      return;
+    }
+    const hasAvailableFacultyData = results.some((item) => (item.availableFaculty ?? []).length > 0);
+    if (!hasAvailableFacultyData) {
+      toast.error("All available faculty data is not present in the current report. Generate the report again and try.");
+      return;
+    }
+    try {
+      const availableWorkbook = buildInvigilationWorkbook(results, "available");
+      window.setTimeout(() => {
+        XLSX.writeFile(availableWorkbook, "invisilation_all_available.xlsx");
+      }, 150);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to download all available faculty file");
+    }
   };
 
   return (
@@ -301,11 +533,19 @@ const FacultyAvailability = () => {
 
             {results ? (
               <div className="panel-card">
-                <div className="flex flex-col gap-4 border-b border-border/70 pb-5 lg:flex-row lg:items-end lg:justify-between">
-                  <div><h2 className="text-lg font-semibold text-foreground">Availability results</h2><p className="text-sm text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p></div>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <div className="w-full sm:w-64"><Input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Search by date, faculty, or status" className="rounded-2xl" /></div>
-                    <Button onClick={handleDownloadCsv} variant="secondary" className="gap-2"><Download className="h-4 w-4" />Download CSV</Button>
+                <div className="border-b border-border/70 pb-5">
+                  <div className="space-y-1">
+                    <h2 className="text-lg font-semibold text-foreground">Availability results</h2>
+                    <p className="max-w-lg text-sm leading-6 text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="w-full md:max-w-md lg:max-w-lg">
+                      <Input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Search by date, faculty, or status" className="rounded-2xl" />
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Button onClick={handleDownloadSelectedWorkbook} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download Fair Selection</Button>
+                      <Button onClick={handleDownloadAvailableWorkbook} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download All Available</Button>
+                    </div>
                   </div>
                 </div>
                 <div className="mt-5 space-y-4">

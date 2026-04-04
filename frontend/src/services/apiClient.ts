@@ -18,7 +18,10 @@ export interface FacultyAvailabilityRequest {
 export interface FacultyAvailabilityResponse {
   day: string;
   periods: { period: number; time: string }[];
+  startTime?: string;
+  endTime?: string;
   faculty: string[];
+  availableFaculty: string[];
   availableFacultyCount: number;
   sufficientFaculty: boolean;
   shortageCount: number;

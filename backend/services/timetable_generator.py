@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import random
 import time
+from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -87,6 +88,100 @@ def _resolve_timetable_metadata(raw_meta: dict[str, Any] | None) -> dict[str, st
     }
 
 
+def _compact_academic_year_label(value: str) -> str:
+    academic_year = str(value or "").strip()
+    parts = academic_year.split("-")
+    if len(parts) == 2 and len(parts[0]) == 4 and len(parts[1]) == 4:
+        return f"{parts[0]} - {parts[1][-2:]}"
+    return academic_year
+
+
+def _faculty_workload_academic_line(metadata: dict[str, str]) -> str:
+    semester = str(metadata.get("semester", "")).strip().upper()
+    return f"ACADEMIC YEAR : {_compact_academic_year_label(metadata.get('academicYear', ''))} ({semester})  Time Table"
+
+
+def _style_faculty_workload_header_row(worksheet) -> None:
+    worksheet["A5"].alignment = LEFT_ALIGNMENT
+    worksheet["F5"].alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+
+
+def _style_faculty_workload_sheet(
+    worksheet,
+    *,
+    day_start_row: int,
+    legend_start_row: int,
+    legend_row_count: int,
+) -> None:
+    timetable_rows = range(day_start_row, day_start_row + len(DAYS))
+    timetable_columns = [2, 3, 5, 6, 8, 9, 10]
+
+    for row_idx in timetable_rows:
+        worksheet.row_dimensions[row_idx].height = 54
+        for column_idx in timetable_columns:
+            cell = worksheet.cell(row=row_idx, column=column_idx)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.font = Font(size=11)
+            cell.border = THIN_BORDER
+
+    for row_idx in timetable_rows:
+        worksheet.cell(row=row_idx, column=1).font = Font()
+        for column_idx in (4, 7):
+            marker = worksheet.cell(row=row_idx, column=column_idx)
+            marker.alignment = CENTER_ALIGNMENT
+            marker.font = Font(size=11)
+            marker.border = MEDIUM_BORDER
+
+    for merged_range in worksheet.merged_cells.ranges:
+        if merged_range.min_row not in timetable_rows:
+            continue
+        if merged_range.min_col not in timetable_columns:
+            continue
+        anchor = worksheet.cell(row=merged_range.min_row, column=merged_range.min_col)
+        anchor.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        anchor.font = Font(size=11)
+        anchor.border = MEDIUM_BORDER
+        _apply_merged_range_outline(
+            worksheet,
+            merged_range.min_row,
+            merged_range.max_row,
+            merged_range.min_col,
+            merged_range.max_col,
+            border=MEDIUM_BORDER,
+        )
+
+    for row_idx in timetable_rows:
+        for column_idx in timetable_columns:
+            if isinstance(worksheet.cell(row=row_idx, column=column_idx), MergedCell):
+                continue
+            cell = worksheet.cell(row=row_idx, column=column_idx)
+            if cell.value:
+                cell.border = MEDIUM_BORDER
+
+    for row_idx in range(1, 6):
+        for column_idx in range(1, 11):
+            worksheet.cell(row=row_idx, column=column_idx).font = Font(size=12)
+
+    for row_idx in range(6, 8):
+        for column_idx in range(1, 11):
+            worksheet.cell(row=row_idx, column=column_idx).font = Font(size=10)
+
+    for row_idx in range(legend_start_row, legend_start_row + legend_row_count):
+        worksheet.row_dimensions[row_idx].height = 24
+        worksheet.cell(row=row_idx, column=1).alignment = LEFT_ALIGNMENT
+        worksheet.cell(row=row_idx, column=6).alignment = LEFT_ALIGNMENT
+
+    # Keep the faculty workload export in plain text by removing bold styling
+    # from every visible cell while preserving each cell's other font settings.
+    for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row, min_col=1, max_col=10):
+        for cell in row:
+            if isinstance(cell, MergedCell):
+                continue
+            plain_font = copy(cell.font)
+            plain_font.bold = False
+            cell.font = plain_font
+
+
 def _class_title(year: str, section: str, semester_label: str | None = None) -> str:
     year_map = {
         "2nd Year": "II B.Tech",
@@ -108,6 +203,7 @@ class Requirement:
     min_consecutive_hours: int
     max_consecutive_hours: int
     shared: bool
+    max_periods_per_day: int = 2
     common_faculty: bool = False
     phase: int = 4
 
@@ -494,6 +590,8 @@ def _slot_is_free(
         return False
     if not _is_allowed_compulsory_block_placement(requirement, start_period, block_size):
         return False
+    if not _respects_subject_daily_limit(requirement, day, block_size, schedules, year):
+        return False
     periods = range(start_period, start_period + block_size)
     for period in periods:
         for section in sections:
@@ -568,8 +666,9 @@ def _subject_daily_load(
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     year: str,
 ) -> int:
-    count = 0
+    daily_counts: list[int] = []
     for section in requirement.sections:
+        count = 0
         for period in PERIODS:
             entry = schedules[(year, section)][day][period]
             if not entry:
@@ -578,7 +677,31 @@ def _subject_daily_load(
             slot_subject = str(entry.get("subject", "")).strip()
             if slot_subject_id == requirement.subject_id or slot_subject == requirement.subject_id:
                 count += 1
-    return count
+        daily_counts.append(count)
+    return max(daily_counts, default=0)
+
+
+def _respects_subject_daily_limit(
+    requirement: Requirement,
+    day: str,
+    block_size: int,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+) -> bool:
+    daily_limit = max(1, int(requirement.max_periods_per_day or 2))
+    for section in requirement.sections:
+        existing = 0
+        for period in PERIODS:
+            entry = schedules[(year, section)][day][period]
+            if not entry:
+                continue
+            slot_subject_id = str(entry.get("subjectId", "")).strip()
+            slot_subject = str(entry.get("subject", "")).strip()
+            if slot_subject_id == requirement.subject_id or slot_subject == requirement.subject_id:
+                existing += 1
+        if existing + block_size > daily_limit:
+            return False
+    return True
 
 
 def _remaining_empty_slots_for_sections(
@@ -1804,8 +1927,8 @@ def _build_faculty_workload_workbook_from_details(
         worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
         worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
-        worksheet.append([f"FACULTY WORKLOAD : {faculty_name}"] + [""] * 9)
+        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * 9)
+        worksheet.append([f"Name : {faculty_name}"] + [""] * 4 + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * 4)
         worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
         worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
 
@@ -1834,7 +1957,8 @@ def _build_faculty_workload_workbook_from_details(
         worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
         worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
         worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=10)
-        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=10)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=5)
+        worksheet.merge_cells(start_row=5, start_column=6, end_row=5, end_column=10)
         worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
@@ -1855,6 +1979,13 @@ def _build_faculty_workload_workbook_from_details(
             legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=5,
+        )
+        _style_faculty_workload_header_row(worksheet)
+        _style_faculty_workload_sheet(
+            worksheet,
+            day_start_row=day_start_row,
+            legend_start_row=legend_start_row,
+            legend_row_count=(len(legend) + 1) // 2,
         )
     return workbook
 
@@ -1883,8 +2014,8 @@ def _build_faculty_workload_workbook_from_saved_workloads(
         worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
         worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
-        worksheet.append([f"FACULTY WORKLOAD : {faculty_name}"] + [""] * 9)
+        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * 9)
+        worksheet.append([f"Name : {faculty_name}"] + [""] * 4 + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * 4)
         worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
         worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
 
@@ -1936,7 +2067,8 @@ def _build_faculty_workload_workbook_from_saved_workloads(
         worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
         worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
         worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=10)
-        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=10)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=5)
+        worksheet.merge_cells(start_row=5, start_column=6, end_row=5, end_column=10)
         worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
         worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
         worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
@@ -1957,6 +2089,13 @@ def _build_faculty_workload_workbook_from_saved_workloads(
             legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=5,
+        )
+        _style_faculty_workload_header_row(worksheet)
+        _style_faculty_workload_sheet(
+            worksheet,
+            day_start_row=day_start_row,
+            legend_start_row=legend_start_row,
+            legend_row_count=(len(legend) + 1) // 2,
         )
     return workbook
 
@@ -2617,6 +2756,7 @@ def generate_timetable(
             hours=hours,
             min_consecutive_hours=min_consecutive_hours,
             max_consecutive_hours=max_consecutive_hours,
+            max_periods_per_day=max(2, min_consecutive_hours),
             shared=shared,
             phase=_determine_requirement_phase(
                 shared,
@@ -2682,6 +2822,7 @@ def generate_timetable(
                 hours=remaining_hours,
                 min_consecutive_hours=max(1, int(row.get("min_consecutive_hours", 1) or 1)),
                 max_consecutive_hours=max(1, int(row.get("max_consecutive_hours", 1) or 1)),
+                max_periods_per_day=max(2, int(row.get("min_consecutive_hours", 1) or 1)),
                 shared=False,
                 phase=_determine_requirement_phase(
                     False,

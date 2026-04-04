@@ -81,7 +81,10 @@ class FacultyAvailabilityRequest(BaseModel):
 class FacultyAvailabilityResponse(BaseModel):
     day: str
     periods: list[PeriodInfo]
+    startTime: str | None = None
+    endTime: str | None = None
     faculty: list[str]
+    availableFaculty: list[str] = Field(default_factory=list)
     availableFacultyCount: int = 0
     sufficientFaculty: bool = False
     shortageCount: int = 0
