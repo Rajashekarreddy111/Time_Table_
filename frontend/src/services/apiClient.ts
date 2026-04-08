@@ -1,6 +1,8 @@
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5000/api";
 
+const SESSION_STORAGE_KEY = "tt_session_id";
+
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface FacultyAvailabilityRequest {
@@ -258,6 +260,22 @@ export class ApiError extends Error {
   }
 }
 
+function getSessionId(): string | null {
+  return window.localStorage.getItem(SESSION_STORAGE_KEY);
+}
+
+function clearSessionId() {
+  window.localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function buildAuthHeaders(headers?: HeadersInit): HeadersInit {
+  const sessionId = getSessionId();
+  return {
+    ...(headers ?? {}),
+    ...(sessionId ? { "X-Session-Id": sessionId } : {}),
+  };
+}
+
 async function apiRequest<T>(
   path: string,
   method: HttpMethod,
@@ -268,11 +286,15 @@ async function apiRequest<T>(
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
+      ...buildAuthHeaders(),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearSessionId();
+    }
     let message = `API ${method} ${path} failed (${response.status})`;
     let details: any[] = [];
     try {
@@ -334,6 +356,7 @@ export async function uploadFacultyIdMap(file: File): Promise<UploadResponse> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -354,6 +377,7 @@ export async function uploadMainTimetableConfig(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -372,6 +396,7 @@ export async function uploadLabTimetable(file: File): Promise<UploadResponse> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -392,6 +417,7 @@ export async function uploadSubjectIdMapping(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -412,6 +438,7 @@ export async function uploadSubjectContinuousRules(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -432,6 +459,7 @@ export async function uploadFacultyAvailability(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -450,6 +478,7 @@ export async function uploadSharedClasses(file: File): Promise<UploadResponse> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -488,6 +517,7 @@ export async function uploadFacultyAvailabilityQuery(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
+    headers: buildAuthHeaders(),
     body: formData,
   });
 
@@ -589,6 +619,7 @@ export const deleteTimetable = async (
   const response = await fetch(`${API_BASE_URL}/timetables/${timetableId}`, {
     method: "DELETE",
     credentials: "include",
+    headers: buildAuthHeaders(),
   });
   if (!response.ok) {
     const error = await response.json();
@@ -604,6 +635,7 @@ export const resetAllTimetables = async (): Promise<{
   const response = await fetch(`${API_BASE_URL}/timetables`, {
     method: "DELETE",
     credentials: "include",
+    headers: buildAuthHeaders(),
   });
   if (!response.ok) {
     const error = await response.json();

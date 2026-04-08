@@ -31,6 +31,7 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     user: AuthUserResponse
     message: str
+    sessionId: str
 
 
 class ChangePasswordRequest(BaseModel):

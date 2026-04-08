@@ -4,10 +4,32 @@ export type AuthUser = {
   role: "admin" | "coordinator";
 };
 
+const SESSION_STORAGE_KEY = "tt_session_id";
+
 type LoginRole = "admin" | "coordinator";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5000/api";
+
+function getSessionId(): string | null {
+  return window.localStorage.getItem(SESSION_STORAGE_KEY);
+}
+
+function setSessionId(sessionId: string | null) {
+  if (sessionId) {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    return;
+  }
+  window.localStorage.removeItem(SESSION_STORAGE_KEY);
+}
+
+function buildAuthHeaders(headers?: HeadersInit): HeadersInit {
+  const sessionId = getSessionId();
+  return {
+    ...(headers ?? {}),
+    ...(sessionId ? { "X-Session-Id": sessionId } : {}),
+  };
+}
 
 async function authRequest<T>(
   path: string,
@@ -17,12 +39,15 @@ async function authRequest<T>(
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(options.headers ?? {}),
+      ...buildAuthHeaders(options.headers),
     },
     ...options,
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      setSessionId(null);
+    }
     let message = `Request failed (${response.status})`;
     try {
       const errorData = await response.json();
@@ -49,10 +74,11 @@ export async function login(
   password: string,
   role: LoginRole,
 ): Promise<AuthUser> {
-  const data = await authRequest<{ user: AuthUser }>("/auth/login", {
+  const data = await authRequest<{ user: AuthUser; sessionId: string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password, role }),
   });
+  setSessionId(data.sessionId);
   return data.user;
 }
 
@@ -60,12 +86,17 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   try {
     return await authRequest<AuthUser>("/auth/me", { method: "GET" });
   } catch {
+    setSessionId(null);
     return null;
   }
 }
 
 export async function logout(): Promise<void> {
-  await authRequest("/auth/logout", { method: "POST" });
+  try {
+    await authRequest("/auth/logout", { method: "POST" });
+  } finally {
+    setSessionId(null);
+  }
 }
 
 export async function changeAdminPassword(
@@ -120,4 +151,8 @@ export async function deleteCoordinator(username: string): Promise<void> {
   await authRequest(`/auth/coordinators/${encodeURIComponent(username)}`, {
     method: "DELETE",
   });
+}
+
+export function getStoredSessionId(): string | null {
+  return getSessionId();
 }

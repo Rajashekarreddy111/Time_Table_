@@ -31,10 +31,11 @@ router = APIRouter(tags=["auth"])
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, response: Response):
     user = authenticate_user(payload.username, payload.password, payload.role)
-    create_session_for_user(user, response)
+    session_id = create_session_for_user(user, response)
     return LoginResponse(
         user=AuthUserResponse(id=str(user["id"]), username=str(user["username"]), role=str(user["role"])),
         message="Login successful",
+        sessionId=session_id,
     )
 
 

@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request, Response
 from storage.memory_store import store
 
 SESSION_COOKIE_NAME = "tt_session"
+SESSION_HEADER_NAME = "X-Session-Id"
 SESSION_TTL_DAYS = 7
 ALLOWED_ROLES = {"admin", "coordinator"}
 
@@ -94,7 +95,7 @@ def authenticate_user(
     return user
 
 
-def create_session_for_user(user: dict, response: Response) -> None:
+def create_session_for_user(user: dict, response: Response) -> str:
     session_id = store.next_session_id()
     expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
     store.save_session(
@@ -114,10 +115,11 @@ def create_session_for_user(user: dict, response: Response) -> None:
         max_age=int(timedelta(days=SESSION_TTL_DAYS).total_seconds()),
         path="/",
     )
+    return session_id
 
 
 def clear_session(response: Response, request: Request) -> None:
-    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    session_id = request.cookies.get(SESSION_COOKIE_NAME) or request.headers.get(SESSION_HEADER_NAME)
     if session_id:
         store.delete_session(session_id)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
@@ -125,7 +127,7 @@ def clear_session(response: Response, request: Request) -> None:
 
 def get_current_user(request: Request) -> dict:
     ensure_default_admin()
-    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    session_id = request.cookies.get(SESSION_COOKIE_NAME) or request.headers.get(SESSION_HEADER_NAME)
     if not session_id:
         raise _validation_error("Authentication required", [], status_code=401)
     session = store.get_session(session_id)

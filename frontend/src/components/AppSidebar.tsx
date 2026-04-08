@@ -25,6 +25,16 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
 import { resetAllTimetables } from "@/services/apiClient";
@@ -53,6 +63,7 @@ export function AppSidebar() {
   const collapsed = state === "collapsed";
   const { user, logout } = useAuth();
   const [isResetting, setIsResetting] = useState(false);
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const navItems =
     user?.role === "admin" ? [...baseNavItems, ...adminNavItems] : baseNavItems;
 
@@ -63,14 +74,10 @@ export function AppSidebar() {
   };
 
   const handleReset = async () => {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete ALL timetables? This action cannot be undone.",
-    );
-    if (!confirmed) return;
-
     setIsResetting(true);
     try {
       const result = await resetAllTimetables();
+      setIsResetDialogOpen(false);
       toast.success(
         `${result.message} (${result.deletedCount} timetables deleted)`,
       );
@@ -146,7 +153,7 @@ export function AppSidebar() {
           variant="ghost"
           size={collapsed ? "icon" : "sm"}
           className="w-full text-sidebar-foreground gap-2 mb-2"
-          onClick={() => void handleReset()}
+          onClick={() => setIsResetDialogOpen(true)}
           disabled={isResetting}
           title="Delete all timetables from the database"
         >
@@ -167,6 +174,26 @@ export function AppSidebar() {
           {!collapsed && <span className="text-sm">Logout</span>}
         </Button>
       </SidebarFooter>
+      <AlertDialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset All Timetables?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will delete all generated timetables from the app. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isResetting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void handleReset()}
+              disabled={isResetting}
+            >
+              {isResetting ? "Resetting..." : "Reset All"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sidebar>
   );
 }

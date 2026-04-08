@@ -220,6 +220,17 @@ def _latest_section_grids(
     return latest
 
 
+def _resolve_download_metadata(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for raw_record in records:
+        metadata = raw_record.get("timetableMetadata")
+        if isinstance(metadata, dict) and any(
+            str(metadata.get(key) or "").strip()
+            for key in ("academicYear", "semester", "withEffectFrom")
+        ):
+            return metadata
+    return None
+
+
 def _section_schedules_from_grids(
     section_grids: dict[tuple[str, str], dict[str, list[Any]]],
 ) -> dict[tuple[str, str], dict[str, dict[int, dict[str, Any] | None]]]:
@@ -255,6 +266,7 @@ async def list_generated_timetables():
 @router.get("/timetables/all-sections-workbook")
 async def get_all_sections_workbook():
     records = store.list_timetables()
+    metadata = _resolve_download_metadata(records)
     section_grids = _latest_section_grids(records)
 
     if not section_grids:
@@ -266,7 +278,7 @@ async def get_all_sections_workbook():
         ws.append(["Please generate timetables first before downloading."])
     else:
         schedules = _section_schedules_from_grids(section_grids)
-        workbook = _build_section_timetables_workbook_from_schedule_map(schedules)
+        workbook = _build_section_timetables_workbook_from_schedule_map(schedules, metadata)
 
     return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
 
@@ -307,9 +319,10 @@ async def get_section_workbook(timetable_id: str, section: str):
     )
 
 
-@router.get("/timetables/all-sections-workbook")
-async def get_all_sections_workbook():
+@router.get("/timetables/all-sections-workbook-legacy-disabled", include_in_schema=False)
+async def get_all_sections_workbook_legacy_disabled():
     records = store.list_timetables()
+    metadata = _resolve_download_metadata(records)
 
     # ✅ Get valid grids only (remove include_invalid and require_data parameters)
     section_grids = _latest_section_grids(records)
@@ -326,7 +339,7 @@ async def get_all_sections_workbook():
         schedules = _section_schedules_from_grids(section_grids)
         workbook = _build_section_timetables_workbook_from_schedule_map(
             schedules,
-            records[0].get("timetableMetadata") if records else None,
+            metadata,
         )
 
     # ✅ CRITICAL: Write to stream properly
@@ -338,6 +351,7 @@ async def get_all_sections_workbook():
 @router.get("/faculty-workloads/workbook")
 async def get_faculty_workload_workbook(facultyName: str | None = None):
     records = store.list_timetables()
+    metadata = _resolve_download_metadata(records)
     section_grids = _latest_section_grids(records)
     if not section_grids:
         raise HTTPException(
@@ -362,7 +376,7 @@ async def get_faculty_workload_workbook(facultyName: str | None = None):
         file_name,
         _build_faculty_workload_workbook_from_details(
             faculty_schedules,
-            records[0].get("timetableMetadata") if records else None,
+            metadata,
         ),
     )
 
