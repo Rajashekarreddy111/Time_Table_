@@ -241,6 +241,7 @@ export interface TimetableRecord {
 export interface BackendHealthResponse {
   status: "ok" | "degraded";
   mongo?: string;
+  mongo_error?: string | null;
   cloudinary?: string;
 }
 
@@ -296,9 +297,13 @@ async function apiRequest<T>(
       clearSessionId();
     }
     let message = `API ${method} ${path} failed (${response.status})`;
-    let details: any[] = [];
+    let details: Record<string, unknown>[] = [];
     try {
-      const errorData = await response.json();
+      const errorData = (await response.json()) as {
+        message?: string;
+        details?: Record<string, unknown>[];
+        detail?: string | { message?: string; details?: Record<string, unknown>[] };
+      };
       if (errorData.message) {
         message = errorData.message;
         details = errorData.details || [];

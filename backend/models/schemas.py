@@ -194,6 +194,7 @@ class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
     timetableMetadata: TimetableMetadata
+    dailySubjectLimit: int = 2
     labsOnly: bool = False
     priorTimetableIds: list[str] = Field(default_factory=list)
     manualEntries: list[ManualEntryMode] = Field(default_factory=list)

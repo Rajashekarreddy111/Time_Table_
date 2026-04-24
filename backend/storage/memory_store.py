@@ -4,7 +4,7 @@ from typing import Any
 
 from pymongo import MongoClient, ReturnDocument
 from pymongo.collection import Collection
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from services.env_config import load_backend_env
 
 load_backend_env()
@@ -61,20 +61,36 @@ class MemoryStore:
         if not self._mongo_available:
             err = f"MongoDB unavailable: {self._mongo_error}" if self._mongo_error else "MongoDB unavailable"
             raise RuntimeError(err)
-        self._db.command("ping")
+        try:
+            self._db.command("ping")
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            raise RuntimeError(f"MongoDB unavailable: {self._mongo_error}") from e
+
+    def _disable_mongo(self, error: Exception) -> None:
+        self._mongo_available = False
+        self._mongo_error = str(error)
 
     def _next_sequence(self, key: str) -> int:
         if not self._mongo_available:
             next_value = self._counters_mem.get(key, 0) + 1
             self._counters_mem[key] = next_value
             return next_value
-        doc = self._counters.find_one_and_update(
-            {"_id": key},
-            {"$inc": {"seq": 1}},
-            upsert=True,
-            return_document=ReturnDocument.AFTER,
-        )
-        return int(doc["seq"])
+        try:
+            doc = self._counters.find_one_and_update(
+                {"_id": key},
+                {"$inc": {"seq": 1}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+            seq = int(doc["seq"])
+            self._counters_mem[key] = max(self._counters_mem.get(key, 0), seq)
+            return seq
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            next_value = self._counters_mem.get(key, 0) + 1
+            self._counters_mem[key] = next_value
+            return next_value
 
     def next_file_id(self, prefix: str) -> str:
         return f"{prefix}_{self._next_sequence('file')}"
@@ -133,15 +149,25 @@ class MemoryStore:
             "id": timetable_id,
             "updatedAt": datetime.now(timezone.utc),
         }
+        self._generated_timetables_mem[timetable_id] = document
         if not self._mongo_available:
-            self._generated_timetables_mem[timetable_id] = document
             return
-        self._generated_timetables.update_one({"id": timetable_id}, {"$set": document}, upsert=True)
+        try:
+            self._generated_timetables.update_one({"id": timetable_id}, {"$set": document}, upsert=True)
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def get_timetable(self, timetable_id: str) -> dict[str, Any] | None:
         if not self._mongo_available:
             return self._generated_timetables_mem.get(timetable_id)
-        return self._generated_timetables.find_one({"id": timetable_id}, {"_id": 0})
+        try:
+            document = self._generated_timetables.find_one({"id": timetable_id}, {"_id": 0})
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return self._generated_timetables_mem.get(timetable_id)
+        if document:
+            self._generated_timetables_mem[timetable_id] = document
+        return document
 
     def list_timetables(self) -> list[dict[str, Any]]:
         if not self._mongo_available:
@@ -150,25 +176,41 @@ class MemoryStore:
                 key=lambda item: item.get("updatedAt", datetime.min.replace(tzinfo=timezone.utc)),
                 reverse=True,
             )
-        return list(self._generated_timetables.find({}, {"_id": 0}).sort("updatedAt", -1))
+        try:
+            items = list(self._generated_timetables.find({}, {"_id": 0}).sort("updatedAt", -1))
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return sorted(
+                self._generated_timetables_mem.values(),
+                key=lambda item: item.get("updatedAt", datetime.min.replace(tzinfo=timezone.utc)),
+                reverse=True,
+            )
+        self._generated_timetables_mem = {str(item["id"]): item for item in items if item.get("id")}
+        return items
 
     def delete_timetable(self, timetable_id: str) -> bool:
+        existed = self._generated_timetables_mem.pop(timetable_id, None) is not None
         if not self._mongo_available:
-            if timetable_id in self._generated_timetables_mem:
-                del self._generated_timetables_mem[timetable_id]
-                return True
-            return False
-        res = self._generated_timetables.delete_one({"id": timetable_id})
-        return res.deleted_count > 0
+            return existed
+        try:
+            res = self._generated_timetables.delete_one({"id": timetable_id})
+            return res.deleted_count > 0 or existed
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return existed
 
     def delete_all_timetables(self) -> int:
         """Delete all stored timetables and return the count of deleted documents."""
+        count = len(self._generated_timetables_mem)
+        self._generated_timetables_mem.clear()
         if not self._mongo_available:
-            count = len(self._generated_timetables_mem)
-            self._generated_timetables_mem.clear()
             return count
-        res = self._generated_timetables.delete_many({})
-        return res.deleted_count
+        try:
+            res = self._generated_timetables.delete_many({})
+            return max(count, res.deleted_count)
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return count
 
     def mark_faculty_busy(
         self,
@@ -188,35 +230,48 @@ class MemoryStore:
             "section": section,
             "updatedAt": datetime.now(timezone.utc),
         }
-        if not self._mongo_available:
-            # Check for duplicates in memory
-            for idx, item in enumerate(self._faculty_occupancy_mem):
-                if (
-                    item["faculty"] == faculty
-                    and item["day"] == day
-                    and item["period"] == period
-                    and item["sourceId"] == source_id
-                ):
-                    self._faculty_occupancy_mem[idx] = document
-                    return
+        # Keep memory in sync so a mid-request Mongo disconnect does not lose the generated result.
+        for idx, item in enumerate(self._faculty_occupancy_mem):
+            if (
+                item["faculty"] == faculty
+                and item["day"] == day
+                and item["period"] == period
+                and item["sourceId"] == source_id
+            ):
+                self._faculty_occupancy_mem[idx] = document
+                break
+        else:
             self._faculty_occupancy_mem.append(document)
+        if not self._mongo_available:
             return
-        self._faculty_occupancy.update_one(
-            {"faculty": faculty, "day": day, "period": int(period), "sourceId": source_id},
-            {"$set": document},
-            upsert=True,
-        )
+        try:
+            self._faculty_occupancy.update_one(
+                {"faculty": faculty, "day": day, "period": int(period), "sourceId": source_id},
+                {"$set": document},
+                upsert=True,
+            )
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def delete_occupancy_by_source(self, source_id: str) -> None:
+        self._faculty_occupancy_mem = [item for item in self._faculty_occupancy_mem if item["sourceId"] != source_id]
         if not self._mongo_available:
-            self._faculty_occupancy_mem = [item for item in self._faculty_occupancy_mem if item["sourceId"] != source_id]
             return
-        self._faculty_occupancy.delete_many({"sourceId": source_id})
+        try:
+            self._faculty_occupancy.delete_many({"sourceId": source_id})
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def get_global_faculty_occupancy_details(self) -> list[dict[str, Any]]:
         if not self._mongo_available:
             return [item.copy() for item in self._faculty_occupancy_mem]
-        return list(self._faculty_occupancy.find({}, {"_id": 0}))
+        try:
+            items = list(self._faculty_occupancy.find({}, {"_id": 0}))
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return [item.copy() for item in self._faculty_occupancy_mem]
+        self._faculty_occupancy_mem = [item.copy() for item in items]
+        return items
 
     def get_global_faculty_occupancy(self) -> dict[str, set[tuple[str, int]]]:
         details = self.get_global_faculty_occupancy_details()
@@ -240,10 +295,13 @@ class MemoryStore:
             "username": username,
             "updatedAt": datetime.now(timezone.utc),
         }
+        self._users_mem[username] = document
         if not self._mongo_available:
-            self._users_mem[username] = document
             return
-        self._users.update_one({"username": username}, {"$set": document}, upsert=True)
+        try:
+            self._users.update_one({"username": username}, {"$set": document}, upsert=True)
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def create_user(self, username: str, payload: dict[str, Any]) -> bool:
         document = {
@@ -261,11 +319,24 @@ class MemoryStore:
             return True
         except DuplicateKeyError:
             return False
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            if username in self._users_mem:
+                return False
+            self._users_mem[username] = document
+            return True
 
     def get_user_by_username(self, username: str) -> dict[str, Any] | None:
         if not self._mongo_available:
             return self._users_mem.get(username)
-        return self._users.find_one({"username": username}, {"_id": 0})
+        try:
+            user = self._users.find_one({"username": username}, {"_id": 0})
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return self._users_mem.get(username)
+        if user:
+            self._users_mem[username] = user
+        return user
 
     def list_users_by_creator(self, created_by: str, role: str | None = None) -> list[dict[str, Any]]:
         if not self._mongo_available:
@@ -276,7 +347,19 @@ class MemoryStore:
         query: dict[str, Any] = {"createdBy": created_by}
         if role:
             query["role"] = role
-        return list(self._users.find(query, {"_id": 0}).sort("username", 1))
+        try:
+            items = list(self._users.find(query, {"_id": 0}).sort("username", 1))
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            items = [item for item in self._users_mem.values() if item.get("createdBy") == created_by]
+            if role:
+                items = [item for item in items if item.get("role") == role]
+            return sorted(items, key=lambda item: item.get("username", ""))
+        for item in items:
+            username = str(item.get("username", "")).strip()
+            if username:
+                self._users_mem[username] = item
+        return items
 
     def update_user_password(self, username: str, password_hash: str) -> bool:
         if not self._mongo_available:
@@ -285,11 +368,17 @@ class MemoryStore:
             self._users_mem[username]["passwordHash"] = password_hash
             self._users_mem[username]["updatedAt"] = datetime.now(timezone.utc)
             return True
-        result = self._users.update_one(
-            {"username": username},
-            {"$set": {"passwordHash": password_hash, "updatedAt": datetime.now(timezone.utc)}},
-        )
-        return result.matched_count > 0
+        self._users_mem.setdefault(username, {})["passwordHash"] = password_hash
+        self._users_mem[username]["updatedAt"] = datetime.now(timezone.utc)
+        try:
+            result = self._users.update_one(
+                {"username": username},
+                {"$set": {"passwordHash": password_hash, "updatedAt": datetime.now(timezone.utc)}},
+            )
+            return result.matched_count > 0
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return username in self._users_mem
 
     def rename_user(self, old_username: str, new_username: str) -> bool:
         if old_username == new_username:
@@ -318,11 +407,25 @@ class MemoryStore:
             return False
         user["username"] = new_username
         user["updatedAt"] = datetime.now(timezone.utc)
-        self._users.delete_one({"username": old_username})
         try:
+            self._users.delete_one({"username": old_username})
             self._users.insert_one(user)
         except DuplicateKeyError:
             return False
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            document = dict(self._users_mem.pop(old_username, {}))
+            document.update(user)
+            self._users_mem[new_username] = document
+            for session in self._sessions_mem.values():
+                if session.get("username") == old_username:
+                    session["username"] = new_username
+                    session["updatedAt"] = datetime.now(timezone.utc)
+            for item in self._users_mem.values():
+                if item.get("createdBy") == old_username:
+                    item["createdBy"] = new_username
+                    item["updatedAt"] = datetime.now(timezone.utc)
+            return True
         self._sessions.update_many(
             {"username": old_username},
             {"$set": {"username": new_username, "updatedAt": datetime.now(timezone.utc)}},
@@ -335,10 +438,15 @@ class MemoryStore:
 
     def delete_user(self, username: str) -> bool:
         self.delete_sessions_by_username(username)
+        existed = self._users_mem.pop(username, None) is not None
         if not self._mongo_available:
-            return self._users_mem.pop(username, None) is not None
-        result = self._users.delete_one({"username": username})
-        return result.deleted_count > 0
+            return existed
+        try:
+            result = self._users.delete_one({"username": username})
+            return result.deleted_count > 0 or existed
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return existed
 
     def save_session(self, session_id: str, payload: dict[str, Any]) -> None:
         document = {
@@ -346,31 +454,47 @@ class MemoryStore:
             "id": session_id,
             "updatedAt": datetime.now(timezone.utc),
         }
+        self._sessions_mem[session_id] = document
         if not self._mongo_available:
-            self._sessions_mem[session_id] = document
             return
-        self._sessions.update_one({"id": session_id}, {"$set": document}, upsert=True)
+        try:
+            self._sessions.update_one({"id": session_id}, {"$set": document}, upsert=True)
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         if not self._mongo_available:
             return self._sessions_mem.get(session_id)
-        return self._sessions.find_one({"id": session_id}, {"_id": 0})
+        try:
+            session = self._sessions.find_one({"id": session_id}, {"_id": 0})
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            return self._sessions_mem.get(session_id)
+        if session:
+            self._sessions_mem[session_id] = session
+        return session
 
     def delete_session(self, session_id: str) -> None:
+        self._sessions_mem.pop(session_id, None)
         if not self._mongo_available:
-            self._sessions_mem.pop(session_id, None)
             return
-        self._sessions.delete_one({"id": session_id})
+        try:
+            self._sessions.delete_one({"id": session_id})
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
     def delete_sessions_by_username(self, username: str) -> None:
+        self._sessions_mem = {
+            sid: item
+            for sid, item in self._sessions_mem.items()
+            if item.get("username") != username
+        }
         if not self._mongo_available:
-            self._sessions_mem = {
-                sid: item
-                for sid, item in self._sessions_mem.items()
-                if item.get("username") != username
-            }
             return
-        self._sessions.delete_many({"username": username})
+        try:
+            self._sessions.delete_many({"username": username})
+        except PyMongoError as e:
+            self._disable_mongo(e)
 
 
 store = MemoryStore()

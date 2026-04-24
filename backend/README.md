@@ -7,6 +7,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
 uvicorn main:app --host 0.0.0.0 --port 5000 --reload
 ```
 
@@ -21,8 +22,9 @@ Set environment variables before starting backend:
 - `MONGO_URI` or `MONGODB_URI` (default: `mongodb://localhost:27017`)
 - `MONGO_DB_NAME` (default: `timetable_app`)
 
-The backend now auto-loads `backend/.env` at startup, so values in that file
-are picked up even when the shell does not export them.
+The backend auto-loads `backend/.env` at startup, so values in that file are
+picked up even when the shell does not export them. Start by copying
+`backend/.env.example` to `backend/.env` and then adjust values for the local machine.
 
 ## Optional Cloudinary File Backup
 

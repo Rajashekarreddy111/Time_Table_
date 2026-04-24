@@ -140,8 +140,8 @@ function buildExportDateGroups(items: BulkFacultyAvailabilityItem[]): ExportDate
         headerDate: formatExportDate(date),
         slots: usesMeridiemColumns
           ? [
-              orderedSlots.find((slot) => getMeridiemLabel(slot) === "AM") ?? { key: "__am__", label: "AM", startMinutes: 0 },
-              orderedSlots.find((slot) => getMeridiemLabel(slot) === "PM") ?? { key: "__pm__", label: "PM", startMinutes: 12 * 60 },
+              orderedSlots.find((slot) => getMeridiemLabel(slot) === "AM") ?? { key: "__fn__", label: "FN", startMinutes: 0 },
+              orderedSlots.find((slot) => getMeridiemLabel(slot) === "PM") ?? { key: "__an__", label: "AN", startMinutes: 12 * 60 },
             ]
           : orderedSlots,
         usesMeridiemColumns,
@@ -182,7 +182,7 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
   for (const group of groups) {
     data[1][columnCursor] = group.headerDate;
     for (let slotIndex = 0; slotIndex < group.slots.length; slotIndex += 1) {
-      data[2][columnCursor + slotIndex] = group.usesMeridiemColumns ? (slotIndex === 0 ? "AM" : "PM") : group.slots[slotIndex].label;
+      data[2][columnCursor + slotIndex] = group.usesMeridiemColumns ? (slotIndex === 0 ? "FN" : "AN") : group.slots[slotIndex].label;
     }
     merges.push({ s: { r: 1, c: columnCursor }, e: { r: 1, c: columnCursor + group.slots.length - 1 } });
     columnCursor += group.slots.length;
@@ -250,7 +250,7 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
     { wch: 8 },
     { wch: 30 },
     { wch: 12 },
-    ...groups.flatMap((group) => group.slots.map((slot, index) => ({ wch: Math.max(12, (group.usesMeridiemColumns ? (index === 0 ? "AM" : "PM") : slot.label).length + 2) }))),
+    ...groups.flatMap((group) => group.slots.map((slot, index) => ({ wch: Math.max(12, (group.usesMeridiemColumns ? (index === 0 ? "FN" : "AN") : slot.label).length + 2) }))),
   ];
   worksheet["!rows"] = [{ hpt: 28 }, { hpt: 24 }, { hpt: 24 }, ...facultyNames.map(() => ({ hpt: 21 })), { hpt: 22 }];
 

@@ -19,7 +19,7 @@ export function Navbar() {
         if (!mounted) return;
         setBackendConnected(true);
         if (health.status === "degraded") {
-          const dbErr = (health as any).mongo_error;
+          const dbErr = health.mongo_error;
           setBackendDetail(dbErr ? `DB Error: ${dbErr}` : `Backend reachable, DB: ${health.mongo ?? "unknown"}`);
         } else {
           setBackendDetail("Backend and DB connected");
