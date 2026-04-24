@@ -5,6 +5,7 @@ export type AuthUser = {
 };
 
 const SESSION_STORAGE_KEY = "tt_session_id";
+const SESSION_HEADER_NAME = "X-Session-Id";
 
 type LoginRole = "admin" | "coordinator";
 
@@ -60,6 +61,11 @@ async function authRequest<T>(
       // ignore json parse issues
     }
     throw new Error(message);
+  }
+
+  const rotatedSessionId = response.headers.get(SESSION_HEADER_NAME);
+  if (rotatedSessionId) {
+    setSessionId(rotatedSessionId);
   }
 
   if (response.status === 204) {

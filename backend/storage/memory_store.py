@@ -10,6 +10,14 @@ from services.env_config import load_backend_env
 load_backend_env()
 
 
+def is_mongo_required() -> bool:
+    configured_uri = (os.getenv("MONGO_URI") or os.getenv("MONGODB_URI") or "").strip()
+    explicit_flag = os.getenv("REQUIRE_MONGODB")
+    if explicit_flag is not None:
+        return explicit_flag.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(configured_uri)
+
+
 class MemoryStore:
     """
     Mongo-backed persistent store.
@@ -338,6 +346,29 @@ class MemoryStore:
             self._users_mem[username] = user
         return user
 
+    def get_user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return None
+        if not self._mongo_available:
+            for item in self._users_mem.values():
+                if str(item.get("id", "")).strip() == normalized_user_id:
+                    return item
+            return None
+        try:
+            user = self._users.find_one({"id": normalized_user_id}, {"_id": 0})
+        except PyMongoError as e:
+            self._disable_mongo(e)
+            for item in self._users_mem.values():
+                if str(item.get("id", "")).strip() == normalized_user_id:
+                    return item
+            return None
+        if user:
+            username = str(user.get("username", "")).strip()
+            if username:
+                self._users_mem[username] = user
+        return user
+
     def list_users_by_creator(self, created_by: str, role: str | None = None) -> list[dict[str, Any]]:
         if not self._mongo_available:
             items = [item for item in self._users_mem.values() if item.get("createdBy") == created_by]
@@ -366,14 +397,20 @@ class MemoryStore:
             if username not in self._users_mem:
                 return False
             self._users_mem[username]["passwordHash"] = password_hash
+            self._users_mem[username]["authVersion"] = int(self._users_mem[username].get("authVersion", 0)) + 1
             self._users_mem[username]["updatedAt"] = datetime.now(timezone.utc)
             return True
+        next_auth_version = int(self._users_mem.get(username, {}).get("authVersion", 0)) + 1
         self._users_mem.setdefault(username, {})["passwordHash"] = password_hash
+        self._users_mem[username]["authVersion"] = next_auth_version
         self._users_mem[username]["updatedAt"] = datetime.now(timezone.utc)
         try:
             result = self._users.update_one(
                 {"username": username},
-                {"$set": {"passwordHash": password_hash, "updatedAt": datetime.now(timezone.utc)}},
+                {
+                    "$set": {"passwordHash": password_hash, "updatedAt": datetime.now(timezone.utc)},
+                    "$inc": {"authVersion": 1},
+                },
             )
             return result.matched_count > 0
         except PyMongoError as e:

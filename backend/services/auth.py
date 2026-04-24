@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import jwt
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -12,6 +13,8 @@ SESSION_COOKIE_NAME = "tt_session"
 SESSION_HEADER_NAME = "X-Session-Id"
 SESSION_TTL_DAYS = 7
 ALLOWED_ROLES = {"admin", "coordinator"}
+JWT_SECRET = os.getenv("JWT_SECRET", "fallback-secret-key-for-development")
+JWT_ALGORITHM = "HS256"
 
 
 def _validation_error(message: str, details: list | None = None, status_code: int = 400) -> HTTPException:
@@ -54,23 +57,33 @@ def _public_user(document: dict) -> dict:
     }
 
 
-def ensure_default_admin() -> None:
-    username = os.getenv("ADMIN_USERNAME", "Admin").strip()
-    password = os.getenv("ADMIN_PASSWORD", "Admin@123").strip()
-    existing = store.get_user_by_username(username)
-    if existing:
-        return
+def _user_token_version(user: dict | None) -> int:
+    try:
+        return int((user or {}).get("authVersion", 0))
+    except (TypeError, ValueError):
+        return 0
 
-    existing_admins = store.list_users_by_creator(None, role="admin")
-    if existing_admins:
-        return
 
+def _payload_token_version(payload: dict | None) -> int:
+    try:
+        return int((payload or {}).get("ver", 0))
+    except (TypeError, ValueError):
+        return 0
+
+def bootstrap_admin() -> None:
+    username = "Admin"
+    password = "Admin@1234"
+    if store.get_user_by_username(username):
+        return
+    if store.list_users_by_creator(None, role="admin"):
+        return
     store.create_user(
         username,
         {
             "id": store.next_user_id(),
             "role": "admin",
             "passwordHash": _hash_password(password),
+            "authVersion": 0,
             "createdBy": None,
             "createdAt": datetime.now(timezone.utc),
         },
@@ -82,7 +95,6 @@ def authenticate_user(
     password: str,
     role: str,
 ) -> dict:
-    ensure_default_admin()
     normalized_username = _sanitize_username(username)
     normalized_role = _normalize_role(role)
     if normalized_role not in ALLOWED_ROLES:
@@ -96,54 +108,66 @@ def authenticate_user(
 
 
 def create_session_for_user(user: dict, response: Response) -> str:
-    session_id = store.next_session_id()
     expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
-    store.save_session(
-        session_id,
-        {
-            "username": user["username"],
-            "role": user["role"],
-            "expiresAt": expires_at,
-        },
-    )
+    payload = {
+        "sub": str(user.get("id", "")),
+        "username": user["username"],
+        "role": user["role"],
+        "ver": _user_token_version(user),
+        "exp": expires_at,
+        "iat": datetime.now(timezone.utc),
+    }
+    
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
-        value=session_id,
+        value=token,
         httponly=True,
         samesite="lax",
         secure=False,
         max_age=int(timedelta(days=SESSION_TTL_DAYS).total_seconds()),
         path="/",
     )
-    return session_id
+    return token
 
 
 def clear_session(response: Response, request: Request) -> None:
-    session_id = request.cookies.get(SESSION_COOKIE_NAME) or request.headers.get(SESSION_HEADER_NAME)
-    if session_id:
-        store.delete_session(session_id)
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    # Stateless: just clear the cookie. The client might still have the token in header memory,
+    # but the cookie will be gone for browser-managed sessions.
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
 
 
 def get_current_user(request: Request) -> dict:
-    ensure_default_admin()
-    session_id = request.cookies.get(SESSION_COOKIE_NAME) or request.headers.get(SESSION_HEADER_NAME)
-    if not session_id:
+    token = request.cookies.get(SESSION_COOKIE_NAME) or request.headers.get(SESSION_HEADER_NAME)
+    if not token:
         raise _validation_error("Authentication required", [], status_code=401)
-    session = store.get_session(session_id)
-    if not session:
-        raise _validation_error("Session expired or invalid", [], status_code=401)
-    expires_at = session.get("expiresAt")
-    if isinstance(expires_at, datetime):
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at <= datetime.now(timezone.utc):
-            store.delete_session(session_id)
-            raise _validation_error("Session expired or invalid", [], status_code=401)
-    user = store.get_user_by_username(str(session.get("username", "")))
+    
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise _validation_error("Session expired", [], status_code=401)
+    except jwt.InvalidTokenError:
+        raise _validation_error("Invalid session", [], status_code=401)
+        
+    user_id = str(payload.get("sub", "")).strip()
+    username = str(payload.get("username", "")).strip()
+    if not user_id and not username:
+        raise _validation_error("Invalid session payload", [], status_code=401)
+
+    user = store.get_user_by_id(user_id) if user_id else None
+    if not user and username:
+        user = store.get_user_by_username(username)
     if not user:
-        store.delete_session(session_id)
-        raise _validation_error("Session user no longer exists", [], status_code=401)
+        raise _validation_error("User no longer exists", [], status_code=401)
+    if _user_token_version(user) != _payload_token_version(payload):
+        raise _validation_error("Session expired", [], status_code=401)
     return user
 
 
@@ -175,6 +199,7 @@ def create_coordinator(
             "id": store.next_user_id(),
             "role": "coordinator",
             "passwordHash": _hash_password(password),
+            "authVersion": 0,
             "createdBy": admin_user["username"],
             "createdAt": datetime.now(timezone.utc),
         },
@@ -198,13 +223,15 @@ def list_coordinators(admin_user: dict) -> list[dict]:
     ]
 
 
-def change_admin_password(admin_user: dict, current_password: str, new_password: str) -> None:
+def change_admin_password(admin_user: dict, current_password: str, new_password: str) -> dict:
     if len(new_password) < 6:
         raise _validation_error("New password must be at least 6 characters long", [])
     stored_user = store.get_user_by_username(admin_user["username"])
     if not stored_user or not verify_password(current_password, str(stored_user.get("passwordHash", ""))):
         raise _validation_error("Current password is incorrect", [], status_code=401)
     store.update_user_password(admin_user["username"], _hash_password(new_password))
+    refreshed_user = store.get_user_by_username(admin_user["username"])
+    return refreshed_user or stored_user
 
 
 def change_admin_username(admin_user: dict, current_password: str, new_username: str) -> dict:

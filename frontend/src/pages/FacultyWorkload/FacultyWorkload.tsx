@@ -285,7 +285,7 @@ const FacultyWorkload = () => {
   }, []);
 
   const validRecords = useMemo(
-    () => records.filter((record) => record.hasValidTimetable !== false),
+    () => records,
     [records],
   );
   const workloadMetadata = validRecords[0]?.timetableMetadata;

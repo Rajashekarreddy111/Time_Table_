@@ -2,6 +2,7 @@ export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5000/api";
 
 const SESSION_STORAGE_KEY = "tt_session_id";
+const SESSION_HEADER_NAME = "X-Session-Id";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -269,6 +270,14 @@ function clearSessionId() {
   window.localStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
+function setSessionId(sessionId: string | null) {
+  if (sessionId) {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    return;
+  }
+  clearSessionId();
+}
+
 function buildAuthHeaders(headers?: HeadersInit): HeadersInit {
   const sessionId = getSessionId();
   return {
@@ -319,6 +328,11 @@ async function apiRequest<T>(
       // Not JSON, fallback to text
     }
     throw new ApiError(message, response.status, details);
+  }
+
+  const rotatedSessionId = response.headers.get(SESSION_HEADER_NAME);
+  if (rotatedSessionId) {
+    setSessionId(rotatedSessionId);
   }
 
   return response.json() as Promise<T>;

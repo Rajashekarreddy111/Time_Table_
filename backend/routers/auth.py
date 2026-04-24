@@ -12,6 +12,7 @@ from models.schemas import (
     MessageResponse,
 )
 from services.auth import (
+    SESSION_HEADER_NAME,
     authenticate_user,
     change_admin_password,
     change_admin_username,
@@ -24,6 +25,7 @@ from services.auth import (
     require_roles,
     reset_coordinator_password,
 )
+from storage.memory_store import store
 
 router = APIRouter(tags=["auth"])
 
@@ -32,6 +34,7 @@ router = APIRouter(tags=["auth"])
 async def login(payload: LoginRequest, response: Response):
     user = authenticate_user(payload.username, payload.password, payload.role)
     session_id = create_session_for_user(user, response)
+    response.headers[SESSION_HEADER_NAME] = session_id
     return LoginResponse(
         user=AuthUserResponse(id=str(user["id"]), username=str(user["username"]), role=str(user["role"])),
         message="Login successful",
@@ -53,18 +56,25 @@ async def me(user: dict = Depends(get_current_user)):
 @router.post("/auth/change-password", response_model=MessageResponse)
 async def change_password(
     payload: ChangePasswordRequest,
+    response: Response,
     user: dict = Depends(require_roles("admin")),
 ):
-    change_admin_password(user, payload.currentPassword, payload.newPassword)
+    refreshed_user = change_admin_password(user, payload.currentPassword, payload.newPassword)
+    session_id = create_session_for_user(refreshed_user, response)
+    response.headers[SESSION_HEADER_NAME] = session_id
     return MessageResponse(message="Password updated successfully")
 
 
 @router.post("/auth/change-username", response_model=AuthUserResponse)
 async def change_username(
     payload: ChangeUsernameRequest,
+    response: Response,
     user: dict = Depends(require_roles("admin")),
 ):
     updated_user = change_admin_username(user, payload.currentPassword, payload.newUsername)
+    refreshed_user = store.get_user_by_username(updated_user["username"]) or updated_user
+    session_id = create_session_for_user(refreshed_user, response)
+    response.headers[SESSION_HEADER_NAME] = session_id
     return AuthUserResponse(**updated_user)
 
 

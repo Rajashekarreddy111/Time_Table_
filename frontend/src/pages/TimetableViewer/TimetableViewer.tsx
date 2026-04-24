@@ -379,7 +379,7 @@ const TimetableViewer = () => {
   }, []);
 
   const validRecords = useMemo(
-    () => records.filter((record) => record.hasValidTimetable !== false),
+    () => records,
     [records],
   );
   const allTimetables = useMemo(

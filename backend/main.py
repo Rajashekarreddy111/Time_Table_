@@ -10,9 +10,9 @@ from fastapi.responses import JSONResponse
 from services.cloudinary_storage import is_cloudinary_enabled
 from services.env_config import load_backend_env
 from routers import auth, faculty, templates, timetables, uploads
-from services.auth import ensure_default_admin, get_current_user
+from services.auth import get_current_user, bootstrap_admin
 from fastapi import Depends
-from storage.memory_store import store
+from storage.memory_store import is_mongo_required, store
 
 load_backend_env()
 
@@ -27,12 +27,12 @@ def error_payload(error: str, message: str, details: list | None = None) -> dict
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    ensure_default_admin()
-    # Warmup check only; health endpoint reports current Mongo status.
+    bootstrap_admin()
     try:
         store.ping()
     except Exception:
-        pass
+        if is_mongo_required():
+            raise
     yield
 
 
