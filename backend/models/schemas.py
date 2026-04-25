@@ -153,6 +153,19 @@ class MappingFileIds(BaseModel):
     labTimetableConfig: str | None = None
     subjectIdMapping: str | None = None
     subjectContinuousRules: str | None = None
+    classrooms: str | None = None
+    periodConfiguration: str | None = None
+
+
+class FacultyWeeklyAvailabilityEntry(BaseModel):
+    facultyId: str
+    availablePeriodsByDay: dict[str, list[int]] = Field(default_factory=dict)
+
+
+class FacultyIdNameMapEntry(BaseModel):
+    facultyId: str
+    facultyName: str
+
 
 
 class FacultyWeeklyAvailabilityEntry(BaseModel):
@@ -173,6 +186,11 @@ class SubjectIdNameMapEntry(BaseModel):
 class SubjectContinuousRuleEntry(BaseModel):
     subjectId: str
     compulsoryContinuousHours: int
+
+
+class PeriodConfigEntry(BaseModel):
+    period: str  # Can be "1", "2", "Break", "Lunch", etc.
+    time: str
 
 
 class ManualLabEntry(BaseModel):
@@ -208,6 +226,7 @@ class GenerateTimetableRequest(BaseModel):
     subjectIdNameMapping: list[SubjectIdNameMapEntry] = Field(default_factory=list)
     subjectContinuousRules: list[SubjectContinuousRuleEntry] = Field(default_factory=list)
     manualLabEntries: list[ManualLabEntry] = Field(default_factory=list)
+    periodConfiguration: list[PeriodConfigEntry] = Field(default_factory=list)
 
 
 class GenerateTimetableResponse(BaseModel):

@@ -26,6 +26,13 @@ def _normalize_subject_token(value: Any) -> str:
     return token
 
 
+def _get_global_period_config() -> list[dict] | None:
+    payload = store.get_scoped_mapping("period_configuration", "global")
+    if payload and payload.get("rows"):
+        return payload["rows"]
+    return None
+
+
 def _build_subject_name_map() -> dict[str, str]:
     mapping: dict[str, str] = {}
     payload = store.get_scoped_mapping("subject_id_mapping", "global")
@@ -149,7 +156,7 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
         sections = [sec for _, sec in schedules.keys()]
         generated_files["sectionTimetables"] = _encode_workbook(
             "section_timetables.xlsx",
-            _build_section_timetables_workbook(year, sections, schedules, timetable_metadata),
+            _build_section_timetables_workbook(year, sections, schedules, timetable_metadata, _get_global_period_config()),
         )
 
     if schedules:
@@ -167,7 +174,7 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
         if faculty_schedules:
             generated_files["facultyWorkload"] = _encode_workbook(
                 "faculty_workload.xlsx",
-                _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata),
+                _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata, _get_global_period_config()),
             )
 
     if generated_files:
@@ -278,7 +285,7 @@ async def get_all_sections_workbook():
         ws.append(["Please generate timetables first before downloading."])
     else:
         schedules = _section_schedules_from_grids(section_grids)
-        workbook = _build_section_timetables_workbook_from_schedule_map(schedules, metadata)
+        workbook = _build_section_timetables_workbook_from_schedule_map(schedules, metadata, _get_global_period_config())
 
     return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
 
@@ -315,7 +322,7 @@ async def get_section_workbook(timetable_id: str, section: str):
     schedules = _section_schedules_from_grids({(year, target_section): target_grid})
     return _encode_workbook(
         f"Timetable_{year.replace(' ', '_')}_{target_section}_Format.xlsx",
-        _build_section_timetables_workbook(year, [target_section], schedules, record.get("timetableMetadata")),
+        _build_section_timetables_workbook(year, [target_section], schedules, record.get("timetableMetadata"), _get_global_period_config()),
     )
 
 
@@ -338,8 +345,7 @@ async def get_all_sections_workbook_legacy_disabled():
     else:
         schedules = _section_schedules_from_grids(section_grids)
         workbook = _build_section_timetables_workbook_from_schedule_map(
-            schedules,
-            metadata,
+            schedules, metadata, period_config=_get_global_period_config()
         )
 
     # ✅ CRITICAL: Write to stream properly
@@ -377,6 +383,7 @@ async def get_faculty_workload_workbook(facultyName: str | None = None):
         _build_faculty_workload_workbook_from_details(
             faculty_schedules,
             metadata,
+            period_config=_get_global_period_config()
         ),
     )
 

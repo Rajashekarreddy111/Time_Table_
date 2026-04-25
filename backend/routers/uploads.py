@@ -263,6 +263,27 @@ def _normalize_continuous_rules(rows: list[dict]) -> list[dict]:
                 pass
     return normalized
 
+
+def _normalize_classroom_rows(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        classroom = (
+            _to_text(row.get("class_number"))
+            or _to_text(row.get("classroom"))
+            or _to_text(row.get("room"))
+        )
+        if not classroom or classroom in seen:
+            continue
+        seen.add(classroom)
+        normalized.append({"class_number": classroom})
+    if not normalized:
+        raise _validation_error(
+            "Required columns are missing in classroom file",
+            [{"expectedAnyOf": [["class_number"], ["classroom"], ["room"]]}],
+        )
+    return normalized
+
 def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
@@ -307,7 +328,23 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+def _normalize_period_config_rows(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for row in rows:
+        period = _to_text(row.get("period"))
+        time = _to_text(row.get("time"))
+        if period and time:
+            normalized.append({"period": period, "time": time})
+    if not normalized:
+        raise _validation_error(
+            "Required columns 'period' and 'time' are missing in period configuration file",
+            [{"expected": ["period", "time"]}],
+        )
+    return normalized
+
+
 def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
+
     # --- Detect Faculty Workload Export Format ---
     is_workload = False
     faculty_name = ""
@@ -744,6 +781,37 @@ async def upload_subject_continuous_rules(file: UploadFile = File(...)):
     store.save_scoped_mapping("subject_continuous_rules", "global", payload, allow_overwrite=True)
     return UploadResponse(fileId=file_id, fileName=file.filename, rowsParsed=len(rows), message="Continuous Rules uploaded")
 
+
+@router.post("/uploads/classrooms", response_model=UploadResponse)
+async def upload_classrooms(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls", ".csv"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_classroom_rows(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/classrooms")
+
+    file_id = store.next_file_id("classrooms")
+    payload = {
+        "id": file_id,
+        "fileName": file.filename,
+        "rowsParsed": len(rows),
+        "rows": rows,
+        "sourceFile": cloudinary_file,
+    }
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("classrooms", "global", payload, allow_overwrite=True)
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(rows),
+        message="Classroom list uploaded successfully",
+    )
+
 @router.post("/uploads/faculty-availability", response_model=UploadResponse)
 async def upload_faculty_availability(file: UploadFile = File(...)):
     if not file.filename:
@@ -805,6 +873,37 @@ async def upload_faculty_availability(file: UploadFile = File(...)):
     )
 
 
+@router.post("/uploads/period-config", response_model=UploadResponse)
+async def upload_period_config(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls", ".csv"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_period_config_rows(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/period-config")
+
+    file_id = store.next_file_id("pcfg")
+    payload = {
+        "id": file_id,
+        "fileName": file.filename,
+        "rowsParsed": len(rows),
+        "rows": rows,
+        "sourceFile": cloudinary_file,
+    }
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("period_config", "global", payload, allow_overwrite=True)
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(rows),
+        message="Period configuration uploaded successfully",
+    )
+
+
 @router.post("/uploads/faculty-availability-query", response_model=UploadResponse)
 async def upload_faculty_availability_query(file: UploadFile = File(...)):
     if not file.filename:
@@ -853,6 +952,8 @@ async def get_mapping_status(
     sub_cnt = store.get_scoped_mapping("subject_continuous_rules", "global")
     faculty_availability = store.get_scoped_mapping("faculty_availability", "global")
     shared_classes = store.get_scoped_mapping("shared_classes", "global")
+    classrooms = store.get_scoped_mapping("classrooms", "global")
+    period_config = store.get_scoped_mapping("period_config", "global")
     
     return {
         "facultyIdMapUploaded": bool(faculty_map),
@@ -863,6 +964,8 @@ async def get_mapping_status(
         
         "facultyAvailabilityUploaded": bool(faculty_availability),
         "sharedClassesUploaded": bool(shared_classes),
+        "classroomsUploaded": bool(classrooms),
+        "periodConfigUploaded": bool(period_config),
         
         "facultyIdMapFileName": faculty_map.get("fileName") if faculty_map else None,
         "mainTimetableConfigFileName": main_cfg.get("fileName") if main_cfg else None,
@@ -871,6 +974,8 @@ async def get_mapping_status(
         "subjectContinuousRulesFileName": sub_cnt.get("fileName") if sub_cnt else None,
         "sharedClassesFileName": shared_classes.get("fileName") if shared_classes else None,
         "facultyAvailabilityFileName": faculty_availability.get("lastFileName") if faculty_availability else None,
+        "classroomsFileName": classrooms.get("fileName") if classrooms else None,
+        "periodConfigFileName": period_config.get("fileName") if period_config else None,
     }
 
 @router.post("/uploads/shared-classes", response_model=UploadResponse)
@@ -921,6 +1026,8 @@ async def delete_uploaded_mapping(mapping_type: str):
         "subject-continuous-rules": "subject_continuous_rules",
         "shared-classes": "shared_classes",
         "faculty-availability": "faculty_availability",
+        "classrooms": "classrooms",
+        "period-config": "period_config",
     }
     resolved_type = mapping_map.get(mapping_type)
     if not resolved_type:

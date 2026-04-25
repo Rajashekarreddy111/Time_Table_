@@ -56,7 +56,7 @@ async def log_requests(request, call_next):
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(uploads.router, prefix="/api", dependencies=[Depends(get_current_user)])
-app.include_router(templates.router, prefix="/api", dependencies=[Depends(get_current_user)])
+app.include_router(templates.router, prefix="/api")
 app.include_router(faculty.router, prefix="/api", dependencies=[Depends(get_current_user)])
 app.include_router(timetables.router, prefix="/api", dependencies=[Depends(get_current_user)])
 

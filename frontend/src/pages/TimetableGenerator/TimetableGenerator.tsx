@@ -41,6 +41,8 @@ import {
   uploadSubjectContinuousRules,
   uploadSharedClasses,
   uploadFacultyAvailability,
+  uploadClassrooms,
+  uploadPeriodConfig,
   ApiError,
   ManualEntryMode,
   ManualLabEntry,
@@ -79,6 +81,8 @@ type MappingStatus = {
   sharedClassesFileName?: string | null;
   facultyAvailabilityUploaded?: boolean;
   facultyAvailabilityFileName?: string | null;
+  classroomsUploaded?: boolean;
+  classroomsFileName?: string | null;
 };
 
 type MappingUploadType =
@@ -88,7 +92,8 @@ type MappingUploadType =
   | "subject-id-mapping"
   | "subject-continuous-rules"
   | "shared-classes"
-  | "faculty-availability";
+  | "faculty-availability"
+  | "classrooms";
 
 const EMPTY_MAPPING_STATUS: MappingStatus = {
   facultyIdMapUploaded: false,
@@ -98,6 +103,7 @@ const EMPTY_MAPPING_STATUS: MappingStatus = {
   subjectContinuousRulesUploaded: false,
   sharedClassesUploaded: false,
   facultyAvailabilityUploaded: false,
+  classroomsUploaded: false,
 };
 
 const TimetableGenerator = () => {
@@ -151,6 +157,8 @@ const TimetableGenerator = () => {
   const [subjectContinuousRulesFile, setSubjectContinuousRulesFile] = useState<File | null>(null);
   const [sharedClassesFile, setSharedClassesFile] = useState<File | null>(null);
   const [facultyAvailabilityFile, setFacultyAvailabilityFile] = useState<File | null>(null);
+  const [classroomsFile, setClassroomsFile] = useState<File | null>(null);
+  const [periodConfigFile, setPeriodConfigFile] = useState<File | null>(null);
 
   const [mappingFileIds, setMappingFileIds] = useState({
     facultyIdMap: "",
@@ -158,6 +166,8 @@ const TimetableGenerator = () => {
     labTimetableConfig: "",
     subjectIdMapping: "",
     subjectContinuousRules: "",
+    classrooms: "",
+    periodConfig: "",
   });
 
   const [mappingStatus, setMappingStatus] = useState<MappingStatus>(EMPTY_MAPPING_STATUS);
@@ -173,12 +183,16 @@ const TimetableGenerator = () => {
     setSubjectContinuousRulesFile(null);
     setSharedClassesFile(null);
     setFacultyAvailabilityFile(null);
+    setClassroomsFile(null);
+    setPeriodConfigFile(null);
     setMappingFileIds({
       facultyIdMap: "",
       mainTimetableConfig: "",
       labTimetableConfig: "",
       subjectIdMapping: "",
       subjectContinuousRules: "",
+      classrooms: "",
+      periodConfig: "",
     });
   };
 
@@ -456,6 +470,30 @@ const TimetableGenerator = () => {
     }
   };
 
+  const uploadClassroomsDoc = async (file: File) => {
+    setClassroomsFile(file);
+    try {
+      const response = await uploadClassrooms(file);
+      setMappingFileIds((prev) => ({ ...prev, classrooms: response.fileId }));
+      toast.success("Classrooms uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Classrooms upload failed");
+    }
+  };
+
+  const handleUploadPeriodConfig = async (file: File) => {
+    setPeriodConfigFile(file);
+    try {
+      const response = await uploadPeriodConfig(file);
+      setMappingFileIds((prev) => ({ ...prev, periodConfig: response.fileId }));
+      toast.success("Period configuration uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Period configuration upload failed");
+    }
+  };
+
   const handleRemoveUploadedFile = async (
     mappingType: MappingUploadType,
     onLocalClear: () => void,
@@ -480,6 +518,8 @@ const TimetableGenerator = () => {
       "subject-continuous-rules",
       "shared-classes",
       "faculty-availability",
+      "classrooms",
+      "period-config",
     ];
 
     await Promise.all(
@@ -556,6 +596,8 @@ const TimetableGenerator = () => {
         labTimetableConfig: mappingFileIds.labTimetableConfig || undefined,
         subjectIdMapping: mappingFileIds.subjectIdMapping || undefined,
         subjectContinuousRules: mappingFileIds.subjectContinuousRules || undefined,
+        classrooms: mappingFileIds.classrooms || undefined,
+        periodConfig: mappingFileIds.periodConfig || undefined,
       },
     };
   };
@@ -585,7 +627,7 @@ const TimetableGenerator = () => {
       inputMode === "file" &&
       (!mappingStatus.facultyIdMapUploaded ||
         !mappingStatus.mainTimetableConfigUploaded ||
-        !mappingStatus.labTimetableConfigUploaded)
+        !mappingStatus.labTimetableConfigUploaded || !mappingStatus.periodConfigUploaded)
     ) {
       toast.error("Required mappings are missing. Upload them first.");
       return;
@@ -671,7 +713,7 @@ const TimetableGenerator = () => {
           if (
             !yearMappingStatus.facultyIdMapUploaded ||
             !yearMappingStatus.mainTimetableConfigUploaded ||
-            !yearMappingStatus.labTimetableConfigUploaded
+            !yearMappingStatus.labTimetableConfigUploaded || !yearMappingStatus.periodConfigUploaded
           ) {
             errors.push(`${year}: Required mappings not uploaded — skipped`);
             continue;
@@ -1009,6 +1051,28 @@ const TimetableGenerator = () => {
                     <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
                       <span>Uploaded: <span className="font-medium">{mappingStatus.facultyAvailabilityFileName}</span></span>
                       <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("faculty-availability", () => setFacultyAvailabilityFile(null), "Faculty availability file removed.")}>Remove</Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
+                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Classrooms (Global)</p>
+                  <FileUpload file={classroomsFile} onFileSelect={uploadClassroomsDoc} onClear={() => setClassroomsFile(null)} label="Upload Classrooms" templateLinks={buildTemplateLinks(templateBase, "classrooms")} />
+                  {mappingStatus.classroomsUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.classroomsFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("classrooms", () => { setClassroomsFile(null); setMappingFileIds((prev) => ({ ...prev, classrooms: "" })); }, "Classrooms file removed.")}>Remove</Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
+                  <p className="text-xs font-semibold mb-2"><Clock3 className="h-4 w-4 text-primary inline-block mr-1" /> Period Configuration (Global)</p>
+                  <FileUpload file={periodConfigFile} onFileSelect={handleUploadPeriodConfig} onClear={() => setPeriodConfigFile(null)} label="Upload Periods" templateLinks={buildTemplateLinks(templateBase, "period-config")} />
+                  {mappingStatus.periodConfigUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.periodConfigFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("period-config", () => { setPeriodConfigFile(null); setMappingFileIds((prev) => ({ ...prev, periodConfig: "" })); }, "Period configuration removed.")}>Remove</Button>
                     </div>
                   )}
                 </div>

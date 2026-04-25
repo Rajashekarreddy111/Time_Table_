@@ -63,7 +63,7 @@
     --timetable-lunch-foreground: 200 60% 30%;
     --timetable-lab: 280 50% 95%;
     --timetable-lab-foreground: 280 40% 35%;
-    --timetable-border: 214 20% 85%;
+    --timetable-border: 214 20% 75%;
 
     --gradient-primary: linear-gradient(135deg, hsl(220 70% 35%), hsl(200 80% 45%));
     --shadow-card: 0 1px 3px 0 hsl(220 30% 12% / 0.06), 0 1px 2px -1px hsl(220 30% 12% / 0.06);
@@ -143,7 +143,8 @@
   .timetable-grid th {
     background: hsl(var(--timetable-header));
     color: hsl(var(--timetable-header-foreground));
-    @apply px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-center border border-border;
+    border-color: hsl(var(--timetable-border));
+    @apply px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-center border;
   }
   .timetable-grid th.break-header {
     background: hsl(var(--timetable-break));
@@ -155,7 +156,8 @@
   }
   .timetable-grid td {
     background: hsl(var(--timetable-cell));
-    @apply px-3 py-2.5 text-sm text-center border border-border transition-colors;
+    border-color: hsl(var(--timetable-border));
+    @apply px-3 py-2.5 text-sm text-center border transition-colors;
   }
   .timetable-grid td:hover {
     background: hsl(var(--timetable-cell-hover));
@@ -181,6 +183,12 @@
   .timetable-grid .lab-cell {
     background: hsl(var(--timetable-lab));
     color: hsl(var(--timetable-lab-foreground));
+  }
+  .timetable-sheet-frame {
+    border-color: hsl(var(--timetable-border));
+  }
+  .timetable-sheet-frame > * {
+    border-color: hsl(var(--timetable-border));
   }
 
   .stat-card {

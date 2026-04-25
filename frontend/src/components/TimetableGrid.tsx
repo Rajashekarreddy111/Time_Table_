@@ -28,10 +28,14 @@ function areGridCellsEquivalent(
     (left.facultyName ?? left.faculty ?? "") ===
       (right.facultyName ?? right.faculty ?? "") &&
     Boolean(left.isLab) === Boolean(right.isLab) &&
+    (left.classroom ?? "") === (right.classroom ?? "") &&
+    (left.labRoom ?? "") === (right.labRoom ?? "") &&
     (left.sharedSections ?? []).join(",") ===
       (right.sharedSections ?? []).join(",")
   );
 }
+
+
 
 export function TimetableGrid({ grid, header }: TimetableGridProps) {
   const legendRows = buildLegend(grid);
@@ -72,8 +76,15 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
                 colSpan={currentGroup.count}
                 className={currentGroup.cell?.isLab ? "lab-cell" : ""}
               >
-                <div className="font-semibold text-[11px] leading-tight">
-                  {getCellLabel(currentGroup.cell)}
+                <div className="flex flex-col gap-0.5 items-center justify-center">
+                  <div className="font-semibold text-[11px] leading-tight text-foreground">
+                    {currentGroup.cell?.subjectName ?? currentGroup.cell?.subject ?? ""}
+                  </div>
+                  {(currentGroup.cell?.classroom || currentGroup.cell?.labRoom) && (
+                    <div className="font-normal text-[10px] text-muted-foreground leading-tight">
+                      {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
+                    </div>
+                  )}
                 </div>
               </td>,
             );
@@ -91,8 +102,15 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
             colSpan={currentGroup.count}
             className={currentGroup.cell?.isLab ? "lab-cell" : ""}
           >
-            <div className="font-semibold text-[11px] leading-tight">
-              {getCellLabel(currentGroup.cell)}
+            <div className="flex flex-col gap-0.5 items-center justify-center">
+              <div className="font-semibold text-[11px] leading-tight text-foreground">
+                {currentGroup.cell?.subjectName ?? currentGroup.cell?.subject ?? ""}
+              </div>
+              {(currentGroup.cell?.classroom || currentGroup.cell?.labRoom) && (
+                <div className="font-normal text-[10px] text-muted-foreground leading-tight">
+                  {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
+                </div>
+              )}
             </div>
           </td>,
         );
@@ -142,29 +160,29 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
   return (
     <div className="overflow-x-auto">
       {header && (
-        <div className="text-center mb-2 border border-border">
+        <div className="timetable-sheet-frame text-center mb-2 border">
           {header.college && (
-            <h3 className="text-base font-semibold uppercase leading-tight border-b border-border py-1">
+            <h3 className="text-base font-semibold uppercase leading-tight border-b py-1">
               {header.college}
             </h3>
           )}
-          <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">
+          <p className="text-sm font-semibold leading-tight border-b py-0.5">
             (AUTONOMOUS)
           </p>
           {header.department && (
-            <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">
+            <p className="text-sm font-semibold leading-tight border-b py-0.5">
               {header.department}
             </p>
           )}
-          <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">
+          <div className="text-sm font-semibold leading-tight border-b py-0.5">
             {header.year && <span>ACADEMIC YEAR : {header.year}</span>}
             {header.semester && <span> {header.semester}</span>}
           </div>
-          <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">
+          <div className="text-sm font-semibold leading-tight border-b py-0.5">
             {header.section && <span>{header.section} TIME TABLE</span>}
           </div>
           <div className="grid grid-cols-2 text-xs font-semibold text-center">
-            <div className="px-2 py-0.5 border-r border-border">
+            <div className="px-2 py-0.5 border-r">
               {header.room && <span>Room No : {header.room}</span>}
             </div>
             <div className="px-2 py-0.5">

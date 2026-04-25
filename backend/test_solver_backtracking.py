@@ -30,12 +30,120 @@ def _collect_subject_slots(grid: dict[str, list[dict | None]], subject_id: str) 
     return slots
 
 
+def _metadata() -> dict[str, object]:
+    return {
+        "academicYear": "2026-2027",
+        "semester": 2,
+        "withEffectFrom": "2026-06-01",
+    }
+
+
 class TimetableSolverTests(unittest.TestCase):
+    def test_post_allocation_assigns_classroom_and_keeps_continuous_block_room(self) -> None:
+        store = MemoryStore()
+        store.save_scoped_mapping(
+            "classrooms",
+            "global",
+            {"rows": [{"class_number": "C101"}, {"class_number": "C102"}]},
+            allow_overwrite=True,
+        )
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="A",
+            timetableMetadata=_metadata(),
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="BLOCK",
+                    facultyId="FBLOCK",
+                    noOfHours=2,
+                    continuousHours=2,
+                    compulsoryContinuousHours=2,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="FILL",
+                    facultyId="FFILL",
+                    noOfHours=40,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+
+        self.assertTrue(payload["hasValidTimetable"])
+        self.assertEqual([], [v for v in payload["constraintViolations"] if v.get("constraint") == "classroom allocation constraint"])
+
+        grid = payload["allGrids"]["A"]
+        block_slots = _collect_subject_slots(grid, "BLOCK")
+        self.assertEqual(2, len(block_slots))
+        block_rooms = {
+            grid[day][period - 1].get("classroom")
+            for day, period in block_slots
+            if grid[day][period - 1]
+        }
+        self.assertEqual({"C101"}, block_rooms)
+
+        for day in DAYS:
+            for cell in grid[day]:
+                if not cell or cell.get("isLab"):
+                    continue
+                self.assertTrue(cell.get("classroom"))
+
+    def test_post_allocation_reports_insufficient_classrooms(self) -> None:
+        store = MemoryStore()
+        store.save_scoped_mapping(
+            "classrooms",
+            "global",
+            {"rows": [{"class_number": "C101"}]},
+            allow_overwrite=True,
+        )
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="A",
+            timetableMetadata=_metadata(),
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="A_MAIN",
+                    facultyId="FA",
+                    noOfHours=42,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="B",
+                    subjectId="B_MAIN",
+                    facultyId="FB",
+                    noOfHours=42,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+
+        classroom_violations = [
+            v for v in payload["constraintViolations"]
+            if v.get("constraint") == "classroom allocation constraint"
+        ]
+        self.assertGreater(len(classroom_violations), 0)
+
     def test_solver_does_not_auto_group_matching_subjects_across_sections(self) -> None:
         store = MemoryStore()
         request = GenerateTimetableRequest(
             year="2nd Year",
             section="A",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="2nd Year",
@@ -119,6 +227,7 @@ class TimetableSolverTests(unittest.TestCase):
         request = GenerateTimetableRequest(
             year="2nd Year",
             section="A",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="2nd Year",
@@ -192,6 +301,7 @@ class TimetableSolverTests(unittest.TestCase):
         request = GenerateTimetableRequest(
             year="3rd Year",
             section="A",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="3rd Year",
@@ -300,6 +410,7 @@ class TimetableSolverTests(unittest.TestCase):
         year_one = GenerateTimetableRequest(
             year="1st Year",
             section="A",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="1st Year",
@@ -315,6 +426,7 @@ class TimetableSolverTests(unittest.TestCase):
         year_two = GenerateTimetableRequest(
             year="2nd Year",
             section="A",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="2nd Year",
@@ -349,6 +461,7 @@ class TimetableSolverTests(unittest.TestCase):
         request = GenerateTimetableRequest(
             year="2nd Year",
             section="C4",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="2nd Year",
@@ -426,6 +539,7 @@ class TimetableSolverTests(unittest.TestCase):
         request = GenerateTimetableRequest(
             year="3rd Year",
             section="X",
+            timetableMetadata=_metadata(),
             manualEntries=[
                 ManualEntryMode(
                     year="3rd Year",

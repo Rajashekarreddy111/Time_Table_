@@ -331,3 +331,37 @@ async def faculty_availability_query_template(
         ],
         template_type,
     )
+
+
+@router.get("/templates/classrooms")
+async def classrooms_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
+    return _template_response(
+        "classrooms-template.xlsx",
+        [
+            {"class_number": "C101"},
+            {"class_number": "C102"},
+            {"class_number": "C103"},
+        ],
+        template_type,
+    )
+@router.get("/templates/period-config")
+async def period_config_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
+    return _template_response(
+        "period-config-template.xlsx",
+        [
+            {"period": "1", "time": "09:10 - 10:00"},
+            {"period": "2", "time": "10:00 - 10:50"},
+            {"period": "Break", "time": "10:50 - 11:05"},
+            {"period": "3", "time": "11:05 - 11:55"},
+            {"period": "4", "time": "11:55 - 12:45"},
+            {"period": "Lunch", "time": "12:45 - 01:40"},
+            {"period": "5", "time": "01:40 - 02:30"},
+            {"period": "6", "time": "02:30 - 03:20"},
+            {"period": "7", "time": "03:20 - 04:10"},
+        ],
+        template_type,
+    )

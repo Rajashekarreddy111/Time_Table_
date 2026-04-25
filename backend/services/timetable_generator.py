@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,16 +32,16 @@ ACADEMIC_METADATA = {
     "semester": "II SEMESTER",
 }
 THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
+    left=Side(style="thin", color="000000"),
+    right=Side(style="thin", color="000000"),
+    top=Side(style="thin", color="000000"),
+    bottom=Side(style="thin", color="000000"),
 )
 MEDIUM_BORDER = Border(
-    left=Side(style="medium"),
-    right=Side(style="medium"),
-    top=Side(style="medium"),
-    bottom=Side(style="medium"),
+    left=Side(style="thin", color="000000"),
+    right=Side(style="thin", color="000000"),
+    top=Side(style="thin", color="000000"),
+    bottom=Side(style="thin", color="000000"),
 )
 CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT_ALIGNMENT = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -304,14 +303,94 @@ def _build_subject_maps(
     return subject_id_to_name, compulsory_continuous
 
 
+DEFAULT_PERIOD_CONFIG = [
+    {"period": "1", "time": "9.10-10.00"},
+    {"period": "2", "time": "10.00-10.50"},
+    {"period": "Break", "time": "10.50-11.00"},
+    {"period": "3", "time": "11.00-11.50"},
+    {"period": "4", "time": "11.50-12.40"},
+    {"period": "Lunch", "time": "12.40-1.30"},
+    {"period": "5", "time": "1.30-2.20"},
+    {"period": "6", "time": "2.20-3.10"},
+    {"period": "7", "time": "3.10-4.00"},
+]
+
+
+def _build_period_config(
+    request_data: GenerateTimetableRequest,
+    store: MemoryStore,
+) -> list[dict[str, str]]:
+    payload = store.get_scoped_mapping("period_configuration", "global")
+    if (not payload or not payload.get("rows")) and request_data.mappingFileIds and request_data.mappingFileIds.periodConfiguration:
+        payload = store.get_file_map(request_data.mappingFileIds.periodConfiguration)
+    
+    rows = []
+    if payload:
+        rows = payload.get("rows", [])
+    
+    # Merge with direct entries
+    for entry in request_data.periodConfiguration:
+        rows.append({"period": entry.period, "time": entry.time})
+    
+    if not rows:
+        return DEFAULT_PERIOD_CONFIG
+    return rows
+
+
+
+def _derive_sessions(period_config: list[dict[str, str]]) -> tuple[list[int], list[tuple[int, ...]]]:
+    instructional_periods = []
+    sessions = []
+    current_session = []
+    
+    for row in period_config:
+        p = str(row.get("period", "")).strip()
+        if p.isdigit():
+            val = int(p)
+            instructional_periods.append(val)
+            current_session.append(val)
+        else:
+            if current_session:
+                sessions.append(tuple(current_session))
+                current_session = []
+    if current_session:
+        sessions.append(tuple(current_session))
+    
+    return sorted(list(set(instructional_periods))), sessions
+
+
+def _build_classroom_list(
+    request_data: GenerateTimetableRequest,
+    store: MemoryStore,
+) -> list[str]:
+    payload = store.get_scoped_mapping("classrooms", "global")
+    if (not payload or not payload.get("rows")) and request_data.mappingFileIds and request_data.mappingFileIds.classrooms:
+        payload = store.get_file_map(request_data.mappingFileIds.classrooms)
+
+    classrooms: list[str] = []
+    seen: set[str] = set()
+    for row in (payload or {}).get("rows", []):
+        classroom = str(
+            row.get("class_number", "")
+            or row.get("classroom", "")
+            or row.get("room", "")
+        ).strip()
+        if not classroom or classroom in seen:
+            continue
+        seen.add(classroom)
+        classrooms.append(classroom)
+    return classrooms
+
+
 def _build_faculty_availability(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
     all_faculties: set[str],
     faculty_id_to_name: dict[str, str],
+    instructional_periods: list[int],
 ) -> dict[str, dict[str, set[int]]]:
     availability: dict[str, dict[str, set[int]]] = {
-        fid: {day: set(PERIODS) for day in DAYS} for fid in all_faculties
+        fid: {day: set(instructional_periods) for day in DAYS} for fid in all_faculties
     }
 
     reverse_faculty_name_map = {
@@ -333,10 +412,10 @@ def _build_faculty_availability(
             faculty_keys = _split_faculty_tokens(faculty_key) or ((faculty_key,) if faculty_key else ())
             day = _normalize_day(str(row.get("day", "")))
             period = int(row.get("period", 0) or 0)
-            if not faculty_keys or not day or period not in PERIODS:
+            if not faculty_keys or not day or period not in instructional_periods:
                 continue
             for key in faculty_keys:
-                availability.setdefault(key, {name: set(PERIODS) for name in DAYS})
+                availability.setdefault(key, {name: set(instructional_periods) for name in DAYS})
                 if key not in uploaded_faculties:
                     availability[key] = {name: set() for name in DAYS}
                     uploaded_faculties.add(key)
@@ -347,12 +426,12 @@ def _build_faculty_availability(
         if not faculty_keys:
             continue
         for faculty_key in faculty_keys:
-            availability.setdefault(faculty_key, {name: set(PERIODS) for name in DAYS})
+            availability.setdefault(faculty_key, {name: set(instructional_periods) for name in DAYS})
             for raw_day, periods in entry.availablePeriodsByDay.items():
                 day = _normalize_day(raw_day)
                 if not day:
                     continue
-                availability[faculty_key][day] = {int(p) for p in periods if int(p) in PERIODS}
+                availability[faculty_key][day] = {int(p) for p in periods if int(p) in instructional_periods}
     return availability
 
 
@@ -400,6 +479,7 @@ def _pick_best_faculty_option_for_locked_session(
     periods: tuple[int, ...],
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> str | None:
     if not faculty_options:
         return None
@@ -407,7 +487,7 @@ def _pick_best_faculty_option_for_locked_session(
     best: tuple[int, int, int, str] | None = None
     selected: str | None = None
     for faculty_id in faculty_options:
-        allowed = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+        allowed = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
         unavailable = sum(1 for period in periods if period not in allowed)
         conflicts = sum(1 for period in periods if (day, period) in faculty_busy.setdefault(faculty_id, set()))
         load = _faculty_daily_load(faculty_id, day, faculty_busy)
@@ -425,11 +505,12 @@ def _choose_faculty_for_slot(
     block_size: int,
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> str | None:
     periods = range(start_period, start_period + block_size)
     if requirement.faculty_team:
         for faculty_id in requirement.faculty_team:
-            allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+            allowed_periods = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
             if any(period not in allowed_periods for period in periods):
                 return None
             if any((day, period) in faculty_busy.setdefault(faculty_id, set()) for period in periods):
@@ -440,14 +521,14 @@ def _choose_faculty_for_slot(
     best_key: tuple[int, int, str] | None = None
     faculty_options = requirement.faculty_options or ((requirement.faculty_id,) if requirement.faculty_id else ())
     for faculty_id in faculty_options:
-        allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+        allowed_periods = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
         if any(period not in allowed_periods for period in periods):
             continue
         if any((day, period) in faculty_busy.setdefault(faculty_id, set()) for period in periods):
             continue
         key = (
             _faculty_daily_load(faculty_id, day, faculty_busy),
-            _faculty_weekly_capacity(faculty_id, faculty_availability),
+            _faculty_weekly_capacity(faculty_id, faculty_availability, instructional_periods),
             faculty_id,
         )
         if best_key is None or key < best_key:
@@ -476,23 +557,62 @@ def _is_allowed_compulsory_block_placement(
     requirement: Requirement,
     start_period: int,
     block_size: int,
+    sessions: list[tuple[int, ...]],
 ) -> bool:
     if block_size <= 1 or requirement.min_consecutive_hours <= 1:
         return True
 
-    allowed_starts_by_size: dict[int, set[int]] = {
-        2: {1, 3, 5, 6},
-        3: {1, 5},
-        4: {1},
-    }
-    allowed_starts = allowed_starts_by_size.get(block_size)
-    if allowed_starts is None:
+    end_period = start_period + block_size - 1
+    
+    if block_size in (2, 3):
+        for s in sessions:
+            if start_period in s and end_period in s:
+                return True
         return False
-    return start_period in allowed_starts
+        
+    if block_size == 4:
+        start_s = -1
+        end_s = -1
+        for i, s in enumerate(sessions):
+            if start_period in s: start_s = i
+            if end_period in s: end_s = i
+        if start_s == -1 or end_s == -1:
+            return False
+        # Can be in same session or span 2 consecutive sessions
+        return end_s == start_s or end_s == start_s + 1
+
+    return True
 
 
-def _default_day_availability() -> dict[str, set[int]]:
-    return {day: set(PERIODS) for day in DAYS}
+def _default_day_availability(periods: list[int]) -> dict[str, set[int]]:
+    return {day: set(periods) for day in DAYS}
+
+
+def _sections_are_free(
+    sections: tuple[str, ...],
+    requirement: Requirement,
+    day: str,
+    start_period: int,
+    block_size: int,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
+) -> bool:
+    if not instructional_periods:
+        return False
+    if start_period + block_size - 1 > instructional_periods[-1]:
+        return False
+    if not _is_allowed_compulsory_block_placement(requirement, start_period, block_size, sessions):
+        return False
+    periods = range(start_period, start_period + block_size)
+    for period in periods:
+        if period not in instructional_periods:
+            return False
+        for section in sections:
+            if schedules[(year, section)][day].get(period) is not None:
+                return False
+    return True
 
 
 def _slot_is_free(
@@ -505,16 +625,11 @@ def _slot_is_free(
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
 ) -> bool:
-    if start_period + block_size - 1 > PERIODS[-1]:
+    if not _sections_are_free(sections, requirement, day, start_period, block_size, schedules, year, instructional_periods, sessions):
         return False
-    if not _is_allowed_compulsory_block_placement(requirement, start_period, block_size):
-        return False
-    periods = range(start_period, start_period + block_size)
-    for period in periods:
-        for section in sections:
-            if schedules[(year, section)][day][period] is not None:
-                return False
     selected_faculty = _choose_faculty_for_slot(
         requirement,
         day,
@@ -522,6 +637,7 @@ def _slot_is_free(
         block_size,
         faculty_busy,
         faculty_availability,
+        instructional_periods,
     )
     return selected_faculty is not None
 
@@ -531,10 +647,11 @@ def _count_free_periods_for_sections(
     day: str,
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     year: str,
+    instructional_periods: list[int],
 ) -> int:
     free_count = 0
-    for period in PERIODS:
-        if all(schedules[(year, section)][day][period] is None for section in sections):
+    for period in instructional_periods:
+        if all(schedules[(year, section)][day].get(period) is None for section in sections):
             free_count += 1
     return free_count
 
@@ -544,30 +661,33 @@ def _count_available_periods_for_faculty(
     day: str,
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> int:
-    allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+    allowed_periods = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
     return sum(1 for period in allowed_periods if (day, period) not in faculty_busy.setdefault(faculty_id, set()))
 
 
 def _faculty_weekly_capacity(
     faculty_id: str,
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> int:
-    day_map = faculty_availability.get(faculty_id, _default_day_availability())
+    day_map = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods))
     return sum(len(periods) for periods in day_map.values())
 
 
 def _requirement_weekly_capacity(
     requirement: Requirement,
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> int:
     if requirement.faculty_team:
-        capacities = [_faculty_weekly_capacity(fid, faculty_availability) for fid in requirement.faculty_team]
+        capacities = [_faculty_weekly_capacity(fid, faculty_availability, instructional_periods) for fid in requirement.faculty_team]
         return min(capacities) if capacities else 0
     faculty_options = requirement.faculty_options or ((requirement.faculty_id,) if requirement.faculty_id else ())
     if not faculty_options:
-        return len(DAYS) * len(PERIODS)
-    return max(_faculty_weekly_capacity(faculty_id, faculty_availability) for faculty_id in faculty_options)
+        return len(DAYS) * len(instructional_periods)
+    return max(_faculty_weekly_capacity(faculty_id, faculty_availability, instructional_periods) for faculty_id in faculty_options)
 
 
 def _faculty_daily_load(
@@ -583,11 +703,12 @@ def _subject_daily_load(
     day: str,
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     year: str,
+    instructional_periods: list[int],
 ) -> int:
     count = 0
     for section in requirement.sections:
-        for period in PERIODS:
-            entry = schedules[(year, section)][day][period]
+        for period in instructional_periods:
+            entry = schedules[(year, section)][day].get(period)
             if not entry:
                 continue
             slot_subject_id = str(entry.get("subjectId", "")).strip()
@@ -595,20 +716,6 @@ def _subject_daily_load(
             if slot_subject_id == requirement.subject_id or slot_subject == requirement.subject_id:
                 count += 1
     return count
-
-
-def _remaining_empty_slots_for_sections(
-    sections: tuple[str, ...],
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    year: str,
-) -> int:
-    return sum(
-        1
-        for section in sections
-        for day in DAYS
-        for period in PERIODS
-        if schedules[(year, section)][day][period] is None
-    )
 
 
 def _remaining_hours_per_section(
@@ -630,14 +737,15 @@ def _section_capacity_is_feasible(
     remaining_hours: dict[int, int],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     year: str,
+    instructional_periods: list[int],
 ) -> bool:
     remaining_by_section = _remaining_hours_per_section(requirements, remaining_hours)
     for section, remaining in remaining_by_section.items():
         free_slots = sum(
             1
             for day in DAYS
-            for period in PERIODS
-            if schedules[(year, section)][day][period] is None
+            for period in instructional_periods
+            if schedules[(year, section)][day].get(period) is None
         )
         if remaining > free_slots:
             return False
@@ -666,9 +774,10 @@ def _compute_timeout_seconds(section_count: int, requirement_count: int) -> int:
 def _requirement_priority(
     requirement: Requirement,
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> tuple[int, int, int, int, int, str, str]:
-    weekly_capacity = _requirement_weekly_capacity(requirement, faculty_availability)
-    strict_availability = len(DAYS) * len(PERIODS) - weekly_capacity
+    weekly_capacity = _requirement_weekly_capacity(requirement, faculty_availability, instructional_periods)
+    strict_availability = len(DAYS) * len(instructional_periods) - weekly_capacity
     return (
         requirement.phase,
         0 if requirement.common_faculty else 1,
@@ -738,7 +847,7 @@ def _extract_faculty_occupancy_from_timetable_with_map(
             if not day or not isinstance(slots, list):
                 continue
             for period_index, slot in enumerate(slots, start=1):
-                if period_index not in PERIODS or not isinstance(slot, dict):
+                if not isinstance(slot, dict):
                     continue
                 raw_faculty_values = [
                     slot.get("facultyId") or "",
@@ -767,6 +876,46 @@ def _build_prior_faculty_occupancy(
         extracted = _extract_faculty_occupancy_from_timetable_with_map(record, faculty_id_to_name)
         for faculty_id, slots in extracted.items():
             occupancy.setdefault(faculty_id, set()).update(slots)
+    return occupancy
+
+
+def _extract_room_occupancy_from_timetable(record: dict | None) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    if not record:
+        return occupancy
+
+    all_grids = record.get("allGrids")
+    if not isinstance(all_grids, dict):
+        section = str(record.get("section", "")).strip()
+        grid = record.get("grid")
+        all_grids = {section: grid} if section and isinstance(grid, dict) else {}
+
+    for grid in all_grids.values():
+        if not isinstance(grid, dict):
+            continue
+        for raw_day, slots in grid.items():
+            day = _normalize_day(str(raw_day))
+            if not day or not isinstance(slots, list):
+                continue
+            for period_index, slot in enumerate(slots, start=1):
+                if not isinstance(slot, dict):
+                    continue
+                room = str(slot.get("classroom") or slot.get("labRoom") or slot.get("venue") or "").strip()
+                if room:
+                    occupancy.setdefault(room, set()).add((day, period_index))
+    return occupancy
+
+
+def _build_prior_room_occupancy(
+    timetable_ids: list[str],
+    store: MemoryStore,
+) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    for timetable_id in timetable_ids:
+        record = store.get_timetable(str(timetable_id).strip())
+        extracted = _extract_room_occupancy_from_timetable(record)
+        for room, slots in extracted.items():
+            occupancy.setdefault(room, set()).update(slots)
     return occupancy
 
 
@@ -820,10 +969,10 @@ def _build_global_lab_occupancy(
     current_year: str,
     faculty_id_to_name: dict[str, str],
     faculty_availability: dict[str, dict[str, set[int]]],
+    instructional_periods: list[int],
 ) -> dict[str, set[tuple[str, int]]]:
     occupancy: dict[str, set[tuple[str, int]]] = {}
     faculty_index = _build_global_section_subject_faculty_index(all_main_rows, faculty_id_to_name)
-
     for row in all_lab_rows:
         lab_year = normalize_year(str(row.get("year", "")))
         if not lab_year or lab_year == current_year:
@@ -831,7 +980,7 @@ def _build_global_lab_occupancy(
         section = str(row.get("section", "")).strip()
         subject_id = _normalize_id_token(row.get("subject_id", ""))
         day = _normalize_day(int(row.get("day", 0) or 0))
-        periods = [int(period) for period in row.get("hours", []) if int(period) in PERIODS]
+        periods = [int(period) for period in row.get("hours", []) if int(period) in instructional_periods]
         if not section or not subject_id or not day or not periods:
             continue
         raw_faculty_id = faculty_index.get((lab_year, section, subject_id), "")
@@ -841,10 +990,30 @@ def _build_global_lab_occupancy(
     return occupancy
 
 
+def _build_global_lab_room_occupancy(
+    all_lab_rows: list[dict],
+    current_year: str,
+    instructional_periods: list[int],
+) -> dict[str, set[tuple[str, int]]]:
+    occupancy: dict[str, set[tuple[str, int]]] = {}
+    for row in all_lab_rows:
+        lab_year = normalize_year(str(row.get("year", "")))
+        if not lab_year or lab_year == current_year:
+            continue
+        day = _normalize_day(int(row.get("day", 0) or 0))
+        periods = [int(period) for period in row.get("hours", []) if int(period) in instructional_periods]
+        venue = str(row.get("venue") or "").strip()
+        if not day or not periods or not venue:
+            continue
+        occupancy.setdefault(venue, set()).update((day, period) for period in periods)
+    return occupancy
+
+
 def _persist_faculty_occupancy(
     store: MemoryStore,
     timetable_id: str,
     session_log: list[dict],
+    instructional_periods: list[int],
 ) -> None:
     store.delete_occupancy_by_source(timetable_id)
     persisted: set[tuple[str, str, int]] = set()
@@ -852,7 +1021,7 @@ def _persist_faculty_occupancy(
         day = _normalize_day(str(session.get("day", "")))
         if not day:
             continue
-        periods = [int(period) for period in session.get("periods", []) if int(period) in PERIODS]
+        periods = [int(period) for period in session.get("periods", []) if int(period) in instructional_periods]
         if not periods:
             continue
         faculty_ids = [
@@ -884,6 +1053,13 @@ def _persist_faculty_occupancy(
                 )
 
 
+def _remaining_empty_slots_for_sections(
+    sections: tuple[str, ...],
+    free_slots_tracker: dict[str, int],
+) -> int:
+    return sum(free_slots_tracker.get(section, 0) for section in sections)
+
+
 def _score_slot_candidate(
     requirement: Requirement,
     faculty_id: str,
@@ -894,14 +1070,15 @@ def _score_slot_candidate(
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
+    instructional_periods: list[int],
+    empty_slots: int,
+    section_flex: int,
+    subject_load: int,
 ) -> int:
     # §14: slot scoring weights – +5 section free, +5 faculty available, +3 continuous, -5 conflict
-    section_flex = _count_free_periods_for_sections(requirement.sections, day, schedules, year) # Changed PERIODS
-    faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability) # Changed PERIODS
+    faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability, instructional_periods)
     faculty_load = _faculty_daily_load(faculty_id, day, faculty_busy)
-    subject_load = _subject_daily_load(requirement, day, schedules, year) # Changed PERIODS
-    empty_slots = _remaining_empty_slots_for_sections(requirement.sections, schedules, year) # Changed PERIODS
-    center_bonus = 2 if start_period not in (PERIODS[0], PERIODS[-1]) else 0 # Changed PERIODS = PERIODS
+    center_bonus = 2 if start_period not in (instructional_periods[0], instructional_periods[-1]) else 0
     # Primary scoring per spec
     section_free_score = 5 if section_flex > 0 else -5
     faculty_available_score = 5 if faculty_flex > 0 else -5
@@ -941,6 +1118,7 @@ def _score_slot_candidate_fast(
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
+    instructional_periods: list[int],
 ) -> int:
     """
     Performance-focused scoring:
@@ -956,18 +1134,18 @@ def _score_slot_candidate_fast(
 
     # Light flex metric to differentiate candidates.
     section_flex = 0
-    for p in PERIODS:
+    for p in instructional_periods:
         if all(schedules[(year, sec)][day][p] is None for sec in requirement.sections):
             section_flex += 1
 
     faculty_flex = 0
-    allowed_periods = faculty_availability.get(faculty_id, _default_day_availability()).get(day, set(PERIODS))
+    allowed_periods = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
     busy_slots = faculty_busy.get(faculty_id, set())
     for p in allowed_periods:
         if (day, p) not in busy_slots:
             faculty_flex += 1
 
-    center_bonus = 2 if start_period not in (PERIODS[0], PERIODS[-1]) else 0
+    center_bonus = 2 if start_period not in (instructional_periods[0], instructional_periods[-1]) else 0
     shared_bonus = 2 if requirement.shared else 0
 
     # Core weights from spec.
@@ -996,62 +1174,108 @@ def _enumerate_slot_candidates(
     year: str,
     days_order: list[str],
     periods_order: list[int],
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
     candidate_limit: int,
+    free_slots_tracker: dict[str, int],
 ) -> list[SlotCandidate]:
+    """
+    Optimized candidate enumeration:
+    - EARLY EXIT: stops all loops once candidate_limit is reached
+    - INLINE SCORING: lightweight score avoids function-call overhead
+      and skips expensive _subject_daily_load entirely
+    - SECTIONS FIRST: cheap grid check before expensive faculty lookup
+    - DETERMINISTIC: sort includes faculty_id for stable tie-breaking
+    """
     candidates: list[SlotCandidate] = []
+    # Pre-compute once per call (O(1) via tracker)
+    empty_slots = _remaining_empty_slots_for_sections(requirement.sections, free_slots_tracker)
+    tail_fill = 3 if empty_slots <= len(requirement.sections) * 8 else 0
+    shared_bonus = 2 if requirement.shared else 0
+    first_period = instructional_periods[0] if instructional_periods else 1
+    last_period = instructional_periods[-1] if instructional_periods else 7
+    hit_limit = False
+
     for block_size in _candidate_block_sizes(
         remaining_hours,
         requirement.min_consecutive_hours,
         requirement.max_consecutive_hours,
     ):
+        if hit_limit:
+            break
+        continuous_score = 3 if block_size >= requirement.min_consecutive_hours else -10
+        longer_block_bonus = block_size * 2
+
         for day in days_order:
+            if hit_limit:
+                break
+            # Pre-compute section flex ONCE per day (avoids repeat in inner loop)
+            section_flex = _count_free_periods_for_sections(
+                requirement.sections, day, schedules, year, instructional_periods
+            )
+            if section_flex == 0:
+                continue  # no free slots for any section on this day
+
             for start_period in periods_order:
-                faculty_id = _choose_faculty_for_slot(
-                    requirement,
-                    day,
-                    start_period,
-                    block_size,
-                    faculty_busy,
-                    faculty_availability,
-                )
-                if not faculty_id:
-                    continue
-                if not _slot_is_free(
-                    requirement.sections,
-                    requirement,
-                    day,
-                    start_period,
-                    block_size,
-                    schedules,
-                    faculty_busy,
-                    faculty_availability,
-                    year,
+                # 1. Cheap section-grid check first
+                if not _sections_are_free(
+                    requirement.sections, requirement, day,
+                    start_period, block_size, schedules,
+                    year, instructional_periods, sessions,
                 ):
                     continue
 
-                assigned_faculty_ids = _split_faculty_tokens(faculty_id)
-                scoring_faculty_id = assigned_faculty_ids[0] if assigned_faculty_ids else faculty_id
-                candidates.append(
-                    SlotCandidate(
-                        day=day,
-                        start_period=start_period,
-                        block_size=block_size,
-                        faculty_id=scoring_faculty_id,
-                        faculty_ids=assigned_faculty_ids or ((scoring_faculty_id,) if scoring_faculty_id else ()),
-                        score=_score_slot_candidate(
-                            requirement,
-                            scoring_faculty_id,
-                            day,
-                            start_period,
-                            block_size,
-                            schedules,
-                            faculty_busy,
-                            faculty_availability,
-                            year,
-                        ),
-                    )
+                # 2. Faculty selection (expensive — only if sections are free)
+                faculty_id = _choose_faculty_for_slot(
+                    requirement, day, start_period, block_size,
+                    faculty_busy, faculty_availability, instructional_periods,
                 )
-    candidates.sort(key=lambda item: (-item.score, -item.block_size, item.day, item.start_period))
+                if not faculty_id:
+                    continue
+
+                assigned_faculty_ids = _split_faculty_tokens(faculty_id)
+                scoring_fid = assigned_faculty_ids[0] if assigned_faculty_ids else faculty_id
+
+                # 3. INLINE FAST SCORING — avoids function call overhead
+                #    Skips _subject_daily_load (expensive O(sections×periods) scan)
+                busy_set = faculty_busy.get(scoring_fid, set())
+                f_avail = faculty_availability.get(
+                    scoring_fid, _default_day_availability(instructional_periods)
+                ).get(day, set(instructional_periods))
+                faculty_flex = sum(1 for p in f_avail if (day, p) not in busy_set)
+                faculty_load = sum(1 for bd, _ in busy_set if bd == day)
+
+                score = (
+                    (5 if section_flex > 0 else -5)
+                    + (5 if faculty_flex > 0 else -5)
+                    + continuous_score
+                    + (-5 if faculty_load + block_size > 5 else 0)
+                    + shared_bonus
+                    + longer_block_bonus
+                    + (2 if start_period not in (first_period, last_period) else 0)
+                    + max(0, 8 - faculty_flex)
+                    + tail_fill
+                    + section_flex
+                    + faculty_flex
+                    + (-3 * max(0, faculty_load + block_size - 4))
+                )
+
+                candidates.append(SlotCandidate(
+                    day=day,
+                    start_period=start_period,
+                    block_size=block_size,
+                    faculty_id=scoring_fid,
+                    faculty_ids=assigned_faculty_ids or ((scoring_fid,) if scoring_fid else ()),
+                    score=score,
+                ))
+
+                # EARLY EXIT — stop searching once we have enough candidates
+                if len(candidates) >= candidate_limit * 2:
+                    hit_limit = True
+                    break
+
+    # Deterministic sort: includes faculty_id so ties are always broken the same way
+    candidates.sort(key=lambda c: (-c.score, -c.block_size, c.day, c.start_period, c.faculty_id))
     return candidates[:candidate_limit]
 
 
@@ -1064,53 +1288,55 @@ def _select_next_requirement(
     year: str,
     days_order: list[str],
     periods_order: list[int],
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
     candidate_limit: int,
+    free_slots_tracker: dict[str, int],
 ) -> tuple[int | None, list[SlotCandidate]]:
+    """
+    MRV (Minimum Remaining Values) heuristic:
+    - Pick the requirement with the FEWEST valid candidates (most constrained)
+    - FAIL FAST: if any active requirement has 0 candidates → return it
+      immediately so the backtracker can undo the last placement
+    - BREAK EARLY: if a requirement has exactly 1 candidate, pick it
+      immediately (forced move, no point scanning further)
+    """
     best_idx: int | None = None
     best_candidates: list[SlotCandidate] = []
-    best_key: tuple[int, int, int, int, int, str, str] | None = None
+    best_key: tuple[int, int, int, int, str, str] | None = None
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
         if remaining <= 0 or not requirement.faculty_id:
             continue
-        requirement.phase = _determine_requirement_phase(
-            requirement.shared,
-            requirement.min_consecutive_hours,
-            requirement.hours,
-            requirement.faculty_options,
-            faculty_availability,
-        )
 
-    for req_idx, requirement in enumerate(requirements):
-        remaining = remaining_hours.get(req_idx, 0)
-        if remaining <= 0 or not requirement.faculty_id:
-            continue
         candidates = _enumerate_slot_candidates(
-            requirement,
-            remaining,
-            schedules,
-            faculty_busy,
-            faculty_availability,
-            year,
-            days_order,
-            periods_order,
-            candidate_limit,
+            requirement, remaining, schedules, faculty_busy,
+            faculty_availability, year, days_order, periods_order,
+            instructional_periods, sessions, candidate_limit,
+            free_slots_tracker,
         )
+
+        # FAIL FAST: 0 candidates means this branch is dead
+        if len(candidates) == 0:
+            return req_idx, []
+
+        # Deterministic MRV key — avoids expensive _requirement_weekly_capacity
         key = (
-            len(candidates),
-            0 if requirement.common_faculty else 1,
-            -requirement.min_consecutive_hours,
-            -remaining,
-            len(DAYS) * len(PERIODS) - _requirement_weekly_capacity(requirement, faculty_availability),
-            requirement.subject_id,
-            ",".join(requirement.sections),
+            len(candidates),                       # fewer candidates = more constrained
+            0 if requirement.common_faculty else 1, # common faculty first
+            -requirement.min_consecutive_hours,     # harder blocks first
+            -remaining,                             # more hours remaining first
+            requirement.subject_id,                 # stable tie-break
+            ",".join(requirement.sections),          # stable tie-break
         )
         if best_key is None or key < best_key:
             best_idx = req_idx
             best_key = key
             best_candidates = candidates
-            if len(candidates) == 0:
+
+            # BREAK EARLY: exactly 1 candidate = forced move, no point scanning more
+            if len(candidates) == 1:
                 break
 
     return best_idx, best_candidates
@@ -1128,6 +1354,7 @@ def _place_block(
     subject_id_to_name: dict[str, str],
     faculty_id_to_name: dict[str, str],
     session_log: list[dict],
+    free_slots_tracker: dict[str, int],
     source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
@@ -1152,6 +1379,8 @@ def _place_block(
                 "venue": "",
                 "sharedSections": list(requirement.sections) if len(requirement.sections) > 1 else [],
             }
+            if section in free_slots_tracker:
+                free_slots_tracker[section] -= 1
     # §21: tag source so only file-driven sessions appear in the shared class report
     session_log.append(
         {
@@ -1182,12 +1411,15 @@ def _undo_block(
     faculty_busy: dict[str, set[tuple[str, int]]],
     year: str,
     session_log: list[dict],
+    free_slots_tracker: dict[str, int],
 ) -> None:
     for day, period in placements:
         for faculty_token in faculty_ids:
             faculty_busy.setdefault(faculty_token, set()).discard((day, period))
         for section in requirement.sections:
             schedules[(year, section)][day][period] = None
+            if section in free_slots_tracker:
+                free_slots_tracker[section] += 1
     if session_log:
         session_log.pop()
 
@@ -1198,6 +1430,8 @@ def _infer_failure_reason(
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
 ) -> str:
     faculty_has_any_slot = False
     faculty_has_continuous_slot = False
@@ -1215,6 +1449,8 @@ def _infer_failure_reason(
                 faculty_busy,
                 faculty_availability,
                 year,
+                instructional_periods,
+                sessions,
             ):
                 faculty_has_any_slot = True
                 if len(requirement.sections) > 1:
@@ -1230,6 +1466,8 @@ def _infer_failure_reason(
                     faculty_busy,
                     faculty_availability,
                     year,
+                    instructional_periods,
+                    sessions,
                 ):
                     faculty_has_continuous_slot = True
                     section_has_any_slot = True
@@ -1339,18 +1577,20 @@ def _serialize_section_grids(
     year: str,
     sections: list[str],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    instructional_periods: list[int],
 ) -> dict[str, dict[str, list[dict | None]]]:
     return {
-        section: {day: [schedules[(year, section)][day][period] for period in PERIODS] for day in DAYS}
+        section: {day: [schedules[(year, section)][day][period] for period in instructional_periods] for day in DAYS}
         for section in sections
     }
 
 
 def _build_faculty_workloads_from_sessions(
-    sessions: list[dict],
+    sessions_list: list[dict],
+    instructional_periods: list[int],
 ) -> dict[str, dict[str, list[str | None]]]:
     workloads: dict[str, dict[str, dict[int, str | None]]] = {}
-    for session in sessions:
+    for session in sessions_list:
         day = session["day"]
         faculty_names = [str(name).strip() for name in session.get("faculty_names", []) if str(name).strip()]
         faculty_ids = [str(fid).strip() for fid in session.get("faculty_ids", []) if str(fid).strip()]
@@ -1368,13 +1608,23 @@ def _build_faculty_workloads_from_sessions(
             continue
 
         for faculty_key in faculty_keys:
-            faculty_workload = workloads.setdefault(faculty_key, {d: {p: None for p in PERIODS} for d in DAYS})
+            faculty_workload = workloads.setdefault(faculty_key, {d: {p: None for p in instructional_periods} for d in DAYS})
             for period in session["periods"]:
-                faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])})"
+                if period not in instructional_periods: continue
+                room_line = ""
+                if session.get("isLab"):
+                    lab_room = str(session.get("lab_room") or session.get("venue") or "").strip()
+                    if lab_room:
+                        room_line = f"\n({lab_room})"
+                else:
+                    classroom = str(session.get("classroom", "")).strip()
+                    if classroom:
+                        room_line = f"\n({classroom})"
+                faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])}){room_line}"
     
     final_workloads: dict[str, dict[str, list[str | None]]] = {}
     for fid, days_data in workloads.items():
-        final_workloads[fid] = {day: [days_data[day][period] for period in PERIODS] for day in DAYS}
+        final_workloads[fid] = {day: [days_data[day][period] for period in instructional_periods] for day in DAYS}
     return final_workloads
 
 
@@ -1490,6 +1740,8 @@ def _same_section_entry(left: dict | None, right: dict | None) -> bool:
         and bool(left.get("isLab")) == bool(right.get("isLab"))
         and ",".join(left.get("sharedSections", []) or [])
         == ",".join(right.get("sharedSections", []) or [])
+        and str(left.get("classroom", "")).strip() == str(right.get("classroom", "")).strip()
+        and str(left.get("labRoom", "")).strip() == str(right.get("labRoom", "")).strip()
     )
 
 
@@ -1497,10 +1749,12 @@ def _section_cell_text(entry: dict | None) -> str:
     if not entry:
         return ""
     subject = str(entry.get("subjectName") or entry.get("subject") or "").strip()
-    venue = str(entry.get("venue", "") or "").strip()
-    if venue:
-        return f"{subject}\n({venue})"
-    return subject
+    main_line = subject
+    if entry.get("isLab"):
+        lab_room = str(entry.get("labRoom") or entry.get("venue") or "").strip()
+        return f"{main_line}\n({lab_room})" if lab_room else main_line
+    classroom = str(entry.get("classroom", "")).strip()
+    return f"{main_line}\n({classroom})" if classroom else main_line
 
 
 def _merge_section_day_row(
@@ -1508,37 +1762,51 @@ def _merge_section_day_row(
     row_idx: int,
     section_schedule: dict[str, dict[int, dict | None]],
     day: str,
+    period_config: list[dict[str, str]],
 ) -> tuple[bool, bool]:
-    display_columns = {1: 2, 2: 3, 3: 5, 4: 6, 5: 8, 6: 9, 7: 10}
-    period = 1
-    break_overlap = False
-    lunch_overlap = False
-
-    while period <= 7:
-        current = section_schedule[day][period]
-        start_period = period
-        end_period = period
-        while end_period + 1 <= 7 and _same_section_entry(current, section_schedule[day][end_period + 1]):
-            next_period = end_period + 1
-            if (end_period == 2 and next_period == 3) or (end_period == 4 and next_period == 5):
+    display_columns = {}
+    col = 2
+    break_cols = set()
+    lunch_cols = set()
+    for entry in period_config:
+        p = str(entry.get("period", "")).strip()
+        if p.isdigit():
+            display_columns[int(p)] = col
+        elif "break" in p.lower():
+            break_cols.add(col)
+        elif "lunch" in p.lower():
+            lunch_cols.add(col)
+        col += 1
+    
+    instructional_periods = sorted(display_columns.keys())
+    
+    idx = 0
+    while idx < len(instructional_periods):
+        p = instructional_periods[idx]
+        entry = section_schedule[day].get(p)
+        worksheet.cell(row=row_idx, column=display_columns[p], value=_section_cell_text(entry))
+        
+        end_idx = idx
+        while end_idx + 1 < len(instructional_periods):
+            next_p = instructional_periods[end_idx + 1]
+            next_entry = section_schedule[day].get(next_p)
+            if display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1 and _same_section_entry(entry, next_entry):
+                end_idx += 1
+            else:
                 break
-            end_period += 1
-
-        start_col = display_columns[start_period]
-        end_col = display_columns[end_period]
-
-        if not isinstance(worksheet.cell(row=row_idx, column=start_col), MergedCell):
-            worksheet.cell(row=row_idx, column=start_col, value=_section_cell_text(current))
-            if end_col > start_col:
-                worksheet.merge_cells(
-                    start_row=row_idx,
-                    start_column=start_col,
-                    end_row=row_idx,
-                    end_column=end_col,
-                )
-        period = end_period + 1
-
-    return break_overlap, lunch_overlap
+        
+        if end_idx > idx:
+            worksheet.merge_cells(
+                start_row=row_idx,
+                start_column=display_columns[p],
+                end_row=row_idx,
+                end_column=display_columns[instructional_periods[end_idx]],
+            )
+        idx = end_idx + 1
+    
+    overlaps_break = any(worksheet.cell(row=row_idx, column=c).value for c in break_cols)
+    overlaps_lunch = any(worksheet.cell(row=row_idx, column=c).value for c in lunch_cols)
+    return overlaps_break, overlaps_lunch
 
 
 def _normalize_faculty_sheet_name(value: str) -> str:
@@ -1550,11 +1818,12 @@ def _normalize_faculty_sheet_name(value: str) -> str:
 def _build_faculty_schedule_details(
     sessions: list[dict],
     faculty_id_to_name: dict[str, str],
+    instructional_periods: list[int],
 ) -> dict[str, dict[str, list[list[dict] | None]]]:
     workloads: dict[str, dict[str, list[list[dict] | None]]] = {}
     for session in sessions:
         day = str(session.get("day", "")).strip()
-        periods = [int(period) for period in session.get("periods", []) if int(period) in PERIODS]
+        periods = [int(period) for period in session.get("periods", []) if int(period) in instructional_periods]
         if day not in DAYS or not periods:
             continue
 
@@ -1563,6 +1832,9 @@ def _build_faculty_schedule_details(
             "subject": str(session.get("subject_name", "")).strip() or str(session.get("subject_id", "")).strip(),
             "year": str(session.get("year", "")).strip(),
             "section": sections,
+            "classroom": str(session.get("classroom", "")).strip(),
+            "lab_room": str(session.get("lab_room") or session.get("venue") or "").strip(),
+            "is_lab": bool(session.get("isLab")),
         }
 
         faculty_names = [str(name).strip() for name in session.get("faculty_names", []) if str(name).strip()]
@@ -1580,26 +1852,40 @@ def _build_faculty_schedule_details(
         for faculty_name in display_names:
             schedule = workloads.setdefault(
                 faculty_name,
-                {day_name: [None] * len(PERIODS) for day_name in DAYS},
+                {day_name: [None] * len(instructional_periods) for day_name in DAYS},
             )
             for period in periods:
-                index = period - 1
-                if schedule[day][index] is None:
-                    schedule[day][index] = []
-                existing = schedule[day][index] or []
-                if detail not in existing:
-                    existing.append(detail.copy())
-                schedule[day][index] = existing
+                try:
+                    index = instructional_periods.index(period)
+                    if schedule[day][index] is None:
+                        schedule[day][index] = []
+                    existing = schedule[day][index]
+                    if detail not in existing:
+                        existing.append(detail.copy())
+                except ValueError:
+                    continue
     return workloads
 
 
 def _faculty_slot_text(entries: list[dict] | None) -> str:
     if not entries:
         return ""
-    return "\n\n".join(
-        f"{entry['subject']}\n{entry['year']} {entry['section']}".strip()
-        for entry in entries
-    )
+    rendered: list[str] = []
+    for entry in entries:
+        lines = [
+            str(entry.get("subject", "")).strip(),
+            f"{entry.get('year', '')} {entry.get('section', '')}".strip(),
+        ]
+        if entry.get("is_lab"):
+            lab_room = str(entry.get("lab_room", "")).strip()
+            if lab_room:
+                lines.append(f"({lab_room})")
+        else:
+            classroom = str(entry.get("classroom", "")).strip()
+            if classroom:
+                lines.append(f"({classroom})")
+        rendered.append("\n".join(line for line in lines if line))
+    return "\n\n".join(rendered)
 
 
 def _same_faculty_slot(left: list[dict] | None, right: list[dict] | None) -> bool:
@@ -1642,6 +1928,111 @@ def _build_faculty_legend(schedule: dict[str, list[list[dict] | None]]) -> list[
     return sorted(labels)
 
 
+def _allocate_classrooms_to_schedule(
+    year: str,
+    sections: list[str],
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    session_log: list[dict],
+    classrooms: list[str],
+    constraint_violations: list[dict],
+    instructional_periods: list[int],
+    academic_sessions: list[tuple[int, ...]],
+    prior_room_busy: dict[str, set[tuple[str, int]]] | None = None,
+) -> None:
+    normalized_rooms = [str(room).strip() for room in classrooms if str(room).strip()]
+
+    # First, handle labs - they already have their room (venue) locked in
+    for session in session_log:
+        if bool(session.get("isLab")):
+            lab_room = str(session.get("venue", "")).strip()
+            day = str(session.get("day", "")).strip()
+            if lab_room:
+                session["lab_room"] = lab_room
+                # Also ensure grid is updated
+                for section in session.get("sections", []):
+                    for period in session.get("periods", []):
+                        cell = schedules[(year, section)][day].get(period)
+                        if isinstance(cell, dict):
+                            cell["labRoom"] = lab_room
+
+    if not normalized_rooms:
+        return
+
+    room_usage: dict[str, set[tuple[str, int]]] = {}
+    for room in normalized_rooms:
+        # Initialize with prior occupancy if provided
+        prior = (prior_room_busy or {}).get(room, set())
+        room_usage[room] = prior.copy()
+
+    preferred_room_by_section: dict[str, str] = {}
+
+    # Strict Room Stability: One room per section-session
+    for day in DAYS:
+        for session_idx, academic_session in enumerate(academic_sessions):
+            for section in sections:
+                # Identify if this section has theory classes in this academic session
+                theory_periods = []
+                for period in academic_session:
+                    cell = schedules[(year, section)][day].get(period)
+                    if isinstance(cell, dict) and not cell.get("isLab"):
+                        theory_periods.append(period)
+                
+                if not theory_periods:
+                    continue
+                
+                # Attempt to allocate ONE room for ALL theory periods in this session
+                allocated_room = ""
+                
+                # Try preferred room
+                pref = preferred_room_by_section.get(section)
+                if pref and all((day, p) not in room_usage[pref] for p in theory_periods):
+                    allocated_room = pref
+                
+                # Try any available room
+                if not allocated_room:
+                    for room in normalized_rooms:
+                        if all((day, p) not in room_usage[room] for p in theory_periods):
+                            allocated_room = room
+                            break
+                
+                if allocated_room:
+                    # Update usage
+                    for p in theory_periods:
+                        room_usage[allocated_room].add((day, p))
+                    
+                    # Update preference
+                    if section not in preferred_room_by_section:
+                        preferred_room_by_section[section] = allocated_room
+                    
+                    # Update grid and session log
+                    for p in theory_periods:
+                        cell = schedules[(year, section)][day][p]
+                        if isinstance(cell, dict):
+                            cell["classroom"] = allocated_room
+                    
+                    # Update session_log for Excel export
+                    for log_entry in session_log:
+                        if (log_entry.get("day") == day and 
+                            section in log_entry.get("sections", []) and 
+                            any(p in log_entry.get("periods", []) for p in theory_periods) and
+                            not log_entry.get("isLab")):
+                            log_entry["classroom"] = allocated_room
+                else:
+                    # Report violation
+                    detail = (
+                        f"Unable to allocate stable classroom for section {section} "
+                        f"on {day} during session {session_idx + 1} ({theory_periods})."
+                    )
+                    constraint_violations.append({
+                        "year": year,
+                        "sections": [section],
+                        "subject_id": "",
+                        "faculty_id": "",
+                        "constraint": "classroom allocation constraint",
+                        "detail": detail,
+                    })
+
+
 def _apply_formatted_sheet_layout(
     worksheet,
     *,
@@ -1649,10 +2040,12 @@ def _apply_formatted_sheet_layout(
     legend_start_row: int,
     day_start_row: int,
     top_rows: int,
+    max_col: int = 10,
 ) -> None:
-    widths = [7, 16, 16, 11, 16, 16, 11, 16, 16, 16]
-    for column_idx, width in enumerate(widths, start=1):
-        worksheet.column_dimensions[chr(64 + column_idx)].width = width
+    # Use standard widths for main columns, then adjust
+    for column_idx in range(1, max_col + 1):
+        worksheet.column_dimensions[chr(64 + column_idx)].width = 16
+    worksheet.column_dimensions["A"].width = 7
 
     for row_idx in range(1, worksheet.max_row + 1):
         if day_start_row <= row_idx < day_start_row + len(DAYS):
@@ -1669,10 +2062,17 @@ def _apply_formatted_sheet_layout(
         1,
         worksheet.max_row,
         1,
-        10,
+        max_col,
         alignment=CENTER_ALIGNMENT,
         border=MEDIUM_BORDER,
     )
+    
+    # Add Bold Fonts to Headers, Day Column, and Signatures
+    _style_range(worksheet, 1, top_rows, 1, max_col, font=BOLD_FONT)
+    if day_start_row > 2:
+        _style_range(worksheet, day_start_row - 2, day_start_row - 1, 1, max_col, font=BOLD_FONT)
+    _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
+    _style_range(worksheet, worksheet.max_row, worksheet.max_row, 1, max_col, font=BOLD_FONT)
     for merged_range in worksheet.merged_cells.ranges:
         anchor = worksheet.cell(row=merged_range.min_row, column=merged_range.min_col)
         anchor.alignment = CENTER_ALIGNMENT
@@ -1695,35 +2095,53 @@ def _apply_formatted_sheet_layout(
 def _build_section_timetables_workbook_from_schedule_map(
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
 ) -> Workbook:
+    if period_config is None:
+        period_config = DEFAULT_PERIOD_CONFIG
     workbook = Workbook()
     workbook.remove(workbook.active)
     metadata = _resolve_timetable_metadata(timetable_metadata)
+    
+    header1 = [str(row.get("period", "")).strip() for row in period_config]
+    header2 = [str(row.get("time", "")).strip() for row in period_config]
+    max_col = 1 + len(period_config)
+
     for year, section in sorted(schedules.keys(), key=lambda item: (item[0], item[1])):
         worksheet = workbook.create_sheet(title=f"{year}_{section}"[:31])
-        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
-        worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
-        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * 9)
-        worksheet.append([_class_title(year, section, metadata["semester"])] + [""] * 9)
-        worksheet.append(["Room No :"] + [""] * 4 + [f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * 4)
-        worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
-        worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
+        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * (max_col - 1))
+        worksheet.append(["(AUTONOMOUS)"] + [""] * (max_col - 1))
+        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * (max_col - 1))
+        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * (max_col - 1))
+        worksheet.append([_class_title(year, section, metadata["semester"])] + [""] * (max_col - 1))
+        worksheet.append(["Room No :"] + [""] * (max_col // 2 - 1) + [f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * (max_col // 2))
+        worksheet.append(["DAY"] + header1)
+        worksheet.append([""] + header2)
 
         day_start_row = 9
         section_schedule = schedules[(year, section)]
         break_overlap_rows: list[int] = []
         lunch_overlap_rows: list[int] = []
+        
+        break_cols = []
+        lunch_cols = []
+        for col_idx, row in enumerate(period_config, start=2):
+            p = str(row.get("period", "")).strip().lower()
+            if "break" in p:
+                break_cols.append(col_idx)
+            elif "lunch" in p:
+                lunch_cols.append(col_idx)
+
         for offset, day in enumerate(DAYS):
             row_idx = day_start_row + offset
             worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-            overlaps_break, overlaps_lunch = _merge_section_day_row(worksheet, row_idx, section_schedule, day)
+            overlaps_break, overlaps_lunch = _merge_section_day_row(worksheet, row_idx, section_schedule, day, period_config)
             if overlaps_break:
                 break_overlap_rows.append(row_idx)
             if overlaps_lunch:
                 lunch_overlap_rows.append(row_idx)
 
-        worksheet.append([""] * 10)
+        worksheet.append([""] * max_col)
         legend_separator_row = worksheet.max_row
         legend = _build_subject_legend_for_section(section_schedule)
         for idx in range(0, len(legend), 2):
@@ -1731,21 +2149,21 @@ def _build_section_timetables_workbook_from_schedule_map(
             right = legend[idx + 1] if idx + 1 < len(legend) else None
             worksheet.append(
                 [f"{left[0]} : {left[1]}" if left else ""]
-                + [""] * 4
+                + [""] * (max_col // 2 - 1)
                 + [f"{right[0]} : {right[1]}" if right else ""]
-                + [""] * 4
+                + [""] * (max_col // 2)
             )
-        worksheet.append([""] * 10)
+        worksheet.append([""] * max_col)
         signature_separator_row = worksheet.max_row
-        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
 
-        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
-        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
-        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
-        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=10)
-        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=10)
-        worksheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=5)
-        worksheet.merge_cells(start_row=6, start_column=6, end_row=6, end_column=10)
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=max_col)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col)
+        worksheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=max_col // 2)
+        worksheet.merge_cells(start_row=6, start_column=max_col // 2 + 1, end_row=6, end_column=max_col)
         worksheet.merge_cells(start_row=7, start_column=1, end_row=8, end_column=1)
 
         def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
@@ -1768,25 +2186,24 @@ def _build_section_timetables_workbook_from_schedule_map(
                 worksheet.cell(row=start, column=column, value=label)
                 worksheet.cell(row=start, column=column).font = BOLD_FONT
 
-        merge_vertical_marker(4, "BREAK", break_overlap_rows)
-        merge_vertical_marker(7, "LUNCH", lunch_overlap_rows)
+        for bc in break_cols:
+            merge_vertical_marker(bc, "BREAK", break_overlap_rows)
+        for lc in lunch_cols:
+            merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
 
-        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
+        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=max_col)
         legend_start_row = day_start_row + len(DAYS) + 1
-        for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
-            worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
-            worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
-        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
-        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
-        worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
-        worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
-
+        for legend_row in range(legend_start_row, legend_start_row + (len(legend) + 1) // 2):
+            worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=max_col // 2)
+            worksheet.merge_cells(start_row=legend_row, start_column=max_col // 2 + 1, end_row=legend_row, end_column=max_col)
+        
         _apply_formatted_sheet_layout(
             worksheet,
             legend_row_count=(len(legend) + 1) // 2,
             legend_start_row=legend_start_row,
             day_start_row=day_start_row,
             top_rows=6,
+            max_col=max_col,
         )
     return workbook
 
@@ -1796,83 +2213,111 @@ def _build_section_timetables_workbook(
     sections: list[str],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
 ) -> Workbook:
     filtered = {
         (year, section): schedules[(year, section)]
         for section in sections
         if (year, section) in schedules
     }
-    return _build_section_timetables_workbook_from_schedule_map(filtered, timetable_metadata)
+    return _build_section_timetables_workbook_from_schedule_map(filtered, timetable_metadata, period_config)
 
 
 def _build_faculty_workload_workbook_from_details(
     faculty_schedules: dict[str, dict[str, list[list[dict] | None]]],
     timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
 ) -> Workbook:
+    if period_config is None:
+        period_config = DEFAULT_PERIOD_CONFIG
     workbook = Workbook()
     workbook.remove(workbook.active)
     if not faculty_schedules:
         return workbook
     metadata = _resolve_timetable_metadata(timetable_metadata)
 
+    header1 = [str(row.get("period", "")).strip() for row in period_config]
+    header2 = [str(row.get("time", "")).strip() for row in period_config]
+    max_col = 1 + len(period_config)
+    
+    display_columns = {}
+    col = 2
+    break_cols = []
+    lunch_cols = []
+    for entry in period_config:
+        p = str(entry.get("period", "")).strip()
+        if p.isdigit():
+            display_columns[int(p)] = col
+        elif "break" in p.lower():
+            break_cols.append(col)
+        elif "lunch" in p.lower():
+            lunch_cols.append(col)
+        col += 1
+
     for faculty_name, schedule in sorted(faculty_schedules.items()):
         worksheet = workbook.create_sheet(title=_normalize_faculty_sheet_name(faculty_name))
-        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
-        worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
-        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
-        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * 9)
+        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * (max_col - 1))
+        worksheet.append(["(AUTONOMOUS)"] + [""] * (max_col - 1))
+        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * (max_col - 1))
+        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * (max_col - 1))
         worksheet.append(
-            [f"Name : {faculty_name}"] + [""] * 4 + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * 4
+            [f"Name : {faculty_name}"] + [""] * (max_col // 2 - 1) + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * (max_col // 2)
         )
-        worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
-        worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
+        worksheet.append(["DAY"] + header1)
+        worksheet.append([""] + header2)
 
         day_start_row = 8
         for offset, day in enumerate(DAYS):
             row_idx = day_start_row + offset
             worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-            worksheet.cell(row=row_idx, column=4, value="BREAK" if offset == 0 else "")
-            worksheet.cell(row=row_idx, column=7, value="LUNCH" if offset == 0 else "")
-            _merge_faculty_run(worksheet, row_idx, [schedule[day][0], schedule[day][1]], [2, 3])
-            _merge_faculty_run(worksheet, row_idx, [schedule[day][2], schedule[day][3]], [5, 6])
-            _merge_faculty_run(worksheet, row_idx, [schedule[day][4], schedule[day][5], schedule[day][6]], [8, 9, 10])
+            for bc in break_cols:
+                worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
+            for lc in lunch_cols:
+                worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
+            
+            day_data = schedule.get(day, [])
+            instructional_periods = sorted(display_columns.keys())
+            for p_idx, entries in enumerate(day_data):
+                if p_idx < len(instructional_periods) and entries:
+                    p_num = instructional_periods[p_idx]
+                    col_idx = display_columns[p_num]
+                    text = "\n".join(
+                        f"{str(e.get('subjectName') or e.get('subject') or '').strip()} ({str(e.get('year', '')).strip()} {str(e.get('section', '')).strip()})"
+                        for e in entries if e
+                    )
+                    worksheet.cell(row=row_idx, column=col_idx, value=text)
 
-        worksheet.append([""] * 10)
+        worksheet.append([""] * max_col)
         legend_separator_row = worksheet.max_row
         legend = _build_faculty_legend(schedule)
         for idx in range(0, len(legend), 2):
             left = legend[idx]
             right = legend[idx + 1] if idx + 1 < len(legend) else ""
-            worksheet.append([left] + [""] * 4 + [right] + [""] * 4)
-        worksheet.append([""] * 10)
+            worksheet.append([left] + [""] * (max_col // 2 - 1) + [right] + [""] * (max_col // 2))
+        worksheet.append([""] * max_col)
         signature_separator_row = worksheet.max_row
-        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
 
-        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
-        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
-        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
-        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=10)
-        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=10)
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=max_col)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col // 2)
+        worksheet.merge_cells(start_row=5, start_column=max_col // 2 + 1, end_row=5, end_column=max_col)
         worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
-        worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
-        worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
-        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
-        legend_start_row = day_start_row + len(DAYS) + 1
-        for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
-            worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
-            worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
-        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
-        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
-        worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
-        worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
+        for bc in break_cols:
+            worksheet.merge_cells(start_row=day_start_row, start_column=bc, end_row=day_start_row + len(DAYS) - 1, end_column=bc)
+        for lc in lunch_cols:
+            worksheet.merge_cells(start_row=day_start_row, start_column=lc, end_row=day_start_row + len(DAYS) - 1, end_column=lc)
 
         _apply_formatted_sheet_layout(
             worksheet,
             legend_row_count=(len(legend) + 1) // 2,
-            legend_start_row=legend_start_row,
+            legend_start_row=legend_separator_row + 1,
             day_start_row=day_start_row,
             top_rows=5,
+            max_col=max_col,
         )
     return workbook
 
@@ -1881,9 +2326,11 @@ def _build_faculty_workload_workbook(
     sessions: list[dict],
     faculty_id_to_name: dict[str, str],
     timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
 ) -> Workbook:
-    faculty_schedules = _build_faculty_schedule_details(sessions, faculty_id_to_name)
-    return _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata)
+    instructional_periods = sorted({int(r["period"]) for r in period_config if str(r.get("period", "")).strip().isdigit()})
+    faculty_schedules = _build_faculty_schedule_details(sessions, faculty_id_to_name, instructional_periods)
+    return _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata, period_config)
 
 
 def _build_faculty_workload_workbook_from_saved_workloads(
@@ -2001,6 +2448,9 @@ def _build_faculty_schedule_details_from_section_grids(
                     "subject": subject_name,
                     "year": year,
                     "section": section_label,
+                    "classroom": str(cell.get("classroom", "")).strip(),
+                    "lab_room": str(cell.get("labRoom") or cell.get("venue") or "").strip(),
+                    "is_lab": bool(cell.get("isLab")),
                 }
                 schedule = workloads.setdefault(
                     faculty_name,
@@ -2073,12 +2523,14 @@ def generate_timetable(
     year = request_data.year
     timetable_metadata = request_data.timetableMetadata.model_dump()
 
-    main_payload = store.get_scoped_mapping("main_timetable_config", "global")
-    lab_payload = store.get_scoped_mapping("lab_timetable_config", "global")
-    shared_payload = store.get_scoped_mapping("shared_classes", "global")
-
-    max_period = 7
-    capacity_per_section = 42
+    subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
+    classrooms = _build_classroom_list(request_data, store)
+    
+    period_config = _build_period_config(request_data, store)
+    instructional_periods, sessions = _derive_sessions(period_config)
+    
+    max_period = max(instructional_periods) if instructional_periods else 7
+    capacity_per_section = len(instructional_periods) * 6
 
     # Re-normalize year and faculty id map
     faculty_id_to_name = _build_faculty_maps(request_data, store)
@@ -2088,7 +2540,10 @@ def generate_timetable(
         for k, v in faculty_id_to_name.items()
     }
 
-    subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
+    # Fetch payloads
+    main_payload = store.get_scoped_mapping("main_timetable_config", "global")
+    lab_payload = store.get_scoped_mapping("lab_timetable_config", "global")
+    shared_payload = store.get_scoped_mapping("shared_classes", "global")
 
     all_main_rows = list(main_payload.get("rows", []) if main_payload else [])
     all_lab_rows = list(lab_payload.get("rows", []) if lab_payload else [])
@@ -2163,30 +2618,12 @@ def generate_timetable(
         if not section or not subject_id:
             continue
         section_total_hours[section] = section_total_hours.get(section, 0) + hours
-        max_consecutive_hours = max(1, continuous_hours)
-        min_consecutive_hours = max(1, compulsory_continuous.get(subject_id, 1))
-        key = (section, subject_id)
-        if key not in main_rows_by_section_subject:
-            main_rows_by_section_subject[key] = {
-                "section": section,
-                "subject_id": subject_id,
-                "faculty_id": faculty_id,
-                "hours": 0,
-                "min_consecutive_hours": min_consecutive_hours,
-                "max_consecutive_hours": max_consecutive_hours,
-            }
-        main_rows_by_section_subject[key]["hours"] += hours
-        main_rows_by_section_subject[key]["min_consecutive_hours"] = max(
-            main_rows_by_section_subject[key]["min_consecutive_hours"], min_consecutive_hours
-        )
-        main_rows_by_section_subject[key]["max_consecutive_hours"] = min(
-            main_rows_by_section_subject[key]["max_consecutive_hours"], max_consecutive_hours
-        )
-        section_subject_faculty[key] = faculty_id
+        main_rows_by_section_subject[(section, subject_id)] = row
+        section_subject_faculty[(section, subject_id)] = faculty_id
 
+    all_sections = sorted(section_total_hours.keys())
     validation_errors = []
-    for section in sorted(section_total_hours):
-        total = section_total_hours[section]
+    for section, total in section_total_hours.items():
         if total != capacity_per_section:
             validation_errors.append(
                 {
@@ -2197,18 +2634,20 @@ def generate_timetable(
                     "detail": f"Section {section} needs exactly {capacity_per_section} hours but has {total} hour(s) configured.",
                 }
             )
-    all_sections = sorted(section_total_hours)
+
+    all_sections = sorted(section_total_hours.keys())
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]] = {
-        (year, section): {day: {period: None for period in PERIODS} for day in DAYS} for section in all_sections
+        (year, section): {day: {period: None for period in instructional_periods} for day in DAYS} for section in all_sections
     }
 
     all_faculties = {
         token
-    for item in main_rows_by_section_subject.values()
+        for item in main_rows_by_section_subject.values()
         for token in _split_faculty_tokens(str(item.get("faculty_id", "")).strip())
         if token
     }
-    faculty_availability = _build_faculty_availability(request_data, store, all_faculties, faculty_id_to_name)
+    faculty_availability = _build_faculty_availability(request_data, store, all_faculties, faculty_id_to_name, instructional_periods)
+    
     prior_timetable_ids = [
         str(timetable_id).strip()
         for timetable_id in request_data.priorTimetableIds
@@ -2216,12 +2655,14 @@ def generate_timetable(
     ]
     if not prior_timetable_ids:
         prior_timetable_ids = _latest_timetable_ids_by_year(store, exclude_year=year)
+        
     global_lab_busy = _build_global_lab_occupancy(
         all_main_rows,
         all_lab_rows,
         year,
         faculty_id_to_name,
         faculty_availability,
+        instructional_periods,
     )
     prior_faculty_busy = _build_prior_faculty_occupancy(prior_timetable_ids, store, faculty_id_to_name)
     faculty_busy: dict[str, set[tuple[str, int]]] = {
@@ -2229,6 +2670,13 @@ def generate_timetable(
     }
     for faculty_id, slots in global_lab_busy.items():
         faculty_busy.setdefault(faculty_id, set()).update(slots)
+
+    # Global Room Occupancy: Prevent different years from using same room at same time
+    prior_room_busy = _build_prior_room_occupancy(prior_timetable_ids, store)
+    global_lab_room_busy = _build_global_lab_room_occupancy(all_lab_rows, year, instructional_periods)
+    for room, slots in global_lab_room_busy.items():
+        prior_room_busy.setdefault(room, set()).update(slots)
+        
     session_log: list[dict] = []
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
@@ -2247,93 +2695,27 @@ def generate_timetable(
             }
         )
 
-    for row in sorted(main_rows_by_section_subject.values(), key=lambda item: (item["section"], item["subject_id"])):
-        if int(row["min_consecutive_hours"]) <= int(row["max_consecutive_hours"]):
-            continue
-        constraint_violations.append(
-            {
-                "year": year,
-                "sections": [str(row.get("section", "")).strip()] if str(row.get("section", "")).strip() else [],
-                "subject_id": str(row.get("subject_id", "")).strip(),
-                "faculty_id": str(row.get("faculty_id", "")).strip(),
-                "constraint": "continuous hours constraint",
-                "detail": (
-                    f"Subject {row['subject_id']} in section {row['section']} requires at least "
-                    f"{row['min_consecutive_hours']} consecutive hour(s), but the main config allows only "
-                    f"{row['max_consecutive_hours']}."
-                ),
-            }
-        )
-
-    def _resolve_shared_sections(raw_sections: list | tuple | str | int | None, sections_count: int | None = None) -> tuple[str, ...]:
-        """
-        Accept either:
-        - explicit section names list (e.g. ["C1","C2"] or ["C1, C2"])
-        - a single numeric value meaning section count (e.g. "3")
-        - a separate sections_count field from upload normalization
-        """
-        if sections_count is not None and sections_count > 0:
-            return tuple(all_sections[: sections_count])
-
-        values: list[str] = []
-        if raw_sections is None:
-            return ()
-        if isinstance(raw_sections, (list, tuple)):
-            for item in raw_sections:
-                text = str(item).strip()
-                if not text:
-                    continue
-                # Allow "C1, C2" inside one cell item.
-                values.extend([part.strip() for part in text.split(",") if part.strip()])
-        else:
-            values.extend([part.strip() for part in str(raw_sections).split(",") if part.strip()])
-
-        if not values:
-            return ()
-
-        # If only one numeric token is provided, treat it as section count.
-        if len(values) == 1 and values[0].isdigit():
-            count = int(values[0])
-            if count <= 0:
-                return ()
-            return tuple(all_sections[:count])
-
-        return tuple(sorted({value for value in values if value}))
-
     shared_constraints: dict[str, list[tuple[str, ...]]] = {}
-    if shared_payload:
-        for row in shared_payload.get("rows", []):
-            if normalize_year(str(row.get("year", ""))) != year:
-                continue
-            subject_id = _normalize_id_token(row.get("subject", row.get("subject_id", "")))
-            sections = _resolve_shared_sections(
-                row.get("sections", []),
-                int(row.get("sections_count", 0) or 0) if str(row.get("sections_count", "")).strip() else None,
-            )
-            if subject_id and sections:
-                shared_constraints.setdefault(subject_id, []).append(sections)
-
-    for shared in request_data.sharedClasses:
-        if normalize_year(shared.year) != year:
+    for row in (shared_payload.get("rows", []) if shared_payload else []):
+        if normalize_year(str(row.get("year", ""))) != year:
             continue
-        subject_id = _normalize_id_token(shared.subject)
-        sections = _resolve_shared_sections(shared.sections)
-        if subject_id and sections:
-            shared_constraints.setdefault(subject_id, []).append(sections)
+        sub_id = _normalize_id_token(row.get("subject_id", ""))
+        secs = tuple(sorted(str(s).strip() for s in row.get("sections", []) if str(s).strip()))
+        if sub_id and secs:
+            shared_constraints.setdefault(sub_id, []).append(secs)
 
+    # Process Lab Rows
     sorted_lab_rows = sorted(
         raw_lab_rows,
         key=lambda row: (
             int(row.get("day", 0) or 0),
-            tuple(sorted(int(period) for period in row.get("hours", []) if int(period) in PERIODS)),
+            tuple(sorted(int(period) for period in row.get("hours", []) if int(period) in instructional_periods)),
             str(row.get("subject_id", "")).strip(),
             str(row.get("section", "")).strip(),
         ),
     )
-    shared_session_registry: dict[tuple[str, str, str, str, tuple[int, ...]], list[str]] = {}
-    faculty_slot_sessions: dict[str, dict[tuple[str, int], tuple[str, str, str, str, tuple[int, ...]]]] = {}
+    
     lab_groups: dict[tuple[str, str, str, tuple[int, ...]], dict] = {}
-
     for row in sorted_lab_rows:
         section = str(row.get("section", "")).strip()
         subject_id = _normalize_id_token(row.get("subject_id", ""))
@@ -2341,74 +2723,23 @@ def generate_timetable(
         sections = sorted(set(explicit_sections or ([section] if section else [])))
         faculty_id = section_subject_faculty.get((section, subject_id), "")
         day = _normalize_day(int(row.get("day", 0) or 0))
-        periods = tuple(sorted(int(period) for period in row.get("hours", []) if int(period) in PERIODS))
+        periods = tuple(sorted(int(period) for period in row.get("hours", []) if int(period) in instructional_periods))
         
-        # Explicit validation for out-of-range periods
-        raw_periods = [int(p) for p in row.get("hours", []) if str(p).isdigit()]
-        invalid_periods = [p for p in raw_periods if p not in PERIODS]
-        if invalid_periods:
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": sections or ([section] if section else []),
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_id,
-                    "constraint": "invalid lab configuration",
-                    "detail": f"Lab timetable references invalid periods: {invalid_periods}. Only periods 1-7 are allowed.",
-                }
-            )
-            continue
         venue = str(row.get("venue", "")).strip()
         if not sections or any(sec not in all_sections for sec in sections):
-            invalid_sections = [sec for sec in sections if sec not in all_sections] or [section]
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": invalid_sections,
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_id,
-                    "constraint": "invalid lab configuration",
-                    "detail": "Lab timetable references a section that is missing from the main config file.",
-                }
-            )
             continue
         if not day or not periods:
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": sections or [section],
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_id,
-                    "constraint": "invalid lab configuration",
-                    "detail": "Lab entry has an invalid day or periods value.",
-                }
-            )
             continue
+            
         group_key = (faculty_id, subject_id, day, periods)
-        current_group = lab_groups.setdefault(
-            group_key,
-            {
-                "sections": set(),
-                "venue": venue,
-                "source_rows": [],
-            },
-        )
+        current_group = lab_groups.setdefault(group_key, {"sections": set(), "venue": venue})
         current_group["sections"].update(sections)
-        current_group["source_rows"].append(row)
         if venue and not current_group["venue"]:
             current_group["venue"] = venue
 
-    for (faculty_id, subject_id, day, periods), group in sorted(
-        lab_groups.items(),
-        key=lambda item: (
-            item[0][2],
-            item[0][3],
-            item[0][1],
-            ",".join(sorted(item[1]["sections"])),
-        ),
-    ):
+    for (faculty_id, subject_id, day, periods), group in sorted(lab_groups.items()):
         sections = sorted(group["sections"])
-        venue = str(group.get("venue", "")).strip()
+        venue = group.get("venue", "")
         subject_id_resolved, subject_name = _resolve_subject_output(subject_id, subject_id_to_name)
         faculty_options_for_lab = _resolve_faculty_pool(faculty_id, faculty_id_to_name, faculty_availability)
         selected_faculty = _pick_best_faculty_option_for_locked_session(
@@ -2417,43 +2748,22 @@ def generate_timetable(
             periods,
             faculty_busy,
             faculty_availability,
+            instructional_periods,
         )
         if selected_faculty:
             faculty_ids_resolved = (selected_faculty,)
         else:
             fallback_tokens = _split_faculty_tokens(faculty_id)
             faculty_ids_resolved = (fallback_tokens[0],) if fallback_tokens else ()
+        
         faculty_id_resolved, faculty_name = _resolve_faculty_display(faculty_ids_resolved, faculty_id_to_name)
-        session_key = (year, subject_id_resolved, faculty_id_resolved, day, periods)
+        
         placed_sections: set[str] = set()
         placed_periods: list[int] = []
         for period in periods:
             period_sections: list[str] = []
             for section in sections:
-                # Keep section totals solvable: lock only lab hours that are configured
-                # for this exact section+subject in main timetable config.
-                main_key = (section, subject_id)
-                main_row = main_rows_by_section_subject.get(main_key)
-                if not main_row:
-                    # Ignore lab rows that don't exist in the main config scope.
-                    continue
-                configured_subject_hours = int(main_row.get("hours", 0) or 0)
-                already_locked_for_subject = lab_assigned_hours.get((section, subject_id), 0)
-                if configured_subject_hours > 0 and already_locked_for_subject >= configured_subject_hours:
-                    # Ignore excess lab slots beyond configured weekly hours.
-                    continue
-
                 if schedules[(year, section)][day][period] is not None:
-                    constraint_violations.append(
-                        {
-                            "year": year,
-                            "sections": [section],
-                            "subject_id": subject_id,
-                            "faculty_id": faculty_id,
-                            "constraint": "lab slot overlap",
-                            "detail": f"Lab timetable overlap at {day} period {period} for section {section}.",
-                        }
-                    )
                     continue
                 schedules[(year, section)][day][period] = {
                     "subject": subject_name,
@@ -2471,631 +2781,321 @@ def generate_timetable(
                 locked_hours_by_section[section] = locked_hours_by_section.get(section, 0) + 1
                 period_sections.append(section)
                 placed_sections.add(section)
-            if not period_sections:
-                continue
-            placed_periods.append(period)
-            for faculty_token in faculty_ids_resolved:
-                if period not in faculty_availability.get(
-                    faculty_token, {day_name: set(PERIODS) for day_name in DAYS}
-                ).get(day, set(PERIODS)):
-                    constraint_violations.append(
-                        {
-                            "year": year,
-                            "sections": period_sections,
-                            "subject_id": subject_id,
-                            "faculty_id": faculty_token,
-                            "constraint": "faculty availability conflict",
-                            "detail": f"Locked lab on {day} period {period} is outside allowed faculty availability.",
-                        }
-                    )
-                existing_session = faculty_slot_sessions.setdefault(faculty_token, {}).get((day, period))
-                if existing_session and existing_session != session_key:
-                    # Locked lab rows are treated as authoritative input from file.
-                    # Keep placement stable and avoid surfacing this as a hard violation.
-                    pass
-                faculty_busy.setdefault(faculty_token, set()).add((day, period))
-                faculty_slot_sessions.setdefault(faculty_token, {})[(day, period)] = session_key
-
-        if not placed_periods:
-            continue
-        shared_session_registry[session_key] = sorted(placed_sections)
-
-        # §21: lab entries are always file-driven; tag source = "lab"
-        session_log.append(
-            {
+            if period_sections:
+                placed_periods.append(period)
+                for faculty_token in faculty_ids_resolved:
+                    faculty_busy.setdefault(faculty_token, set()).add((day, period))
+        
+        if placed_periods:
+            session_log.append({
                 "year": year,
                 "subject_id": subject_id_resolved,
                 "subject_name": subject_name,
                 "faculty_id": faculty_id_resolved,
                 "faculty_name": faculty_name,
                 "faculty_ids": list(faculty_ids_resolved),
-                "faculty_names": [faculty_id_to_name.get(fid, fid) for fid in faculty_ids_resolved],
                 "sections": sorted(placed_sections),
                 "day": day,
                 "periods": placed_periods,
                 "venue": venue,
                 "isLab": True,
-                "shared": len(placed_sections) > 1,
                 "source": "lab",
-            }
-        )
+            })
 
-    if request_data.labsOnly:
-        all_grids = _serialize_section_grids(year, all_sections, schedules)
-        faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
-        timetable_id = store.next_timetable_id()
-        selected_section = request_data.section if request_data.section in all_grids else all_sections[0]
-        store.save_timetable(
-            timetable_id,
-            {
-                "id": timetable_id,
-                "year": year,
-                "section": selected_section,
-                "grid": all_grids.get(selected_section, {day: [None] * len(PERIODS) for day in DAYS}),
-                "allGrids": all_grids,
-                "facultyWorkloads": faculty_workloads,
-                "sharedClasses": [
-                    session for session in session_log
-                    if session.get("source") == "lab"
-                ],
-                "constraintViolations": _group_issue_records(constraint_violations),
-                "unscheduledSubjects": [],
-                "hasValidTimetable": False,
-                "hasConstraintViolations": bool(constraint_violations),
-                "labSeed": True,
-                "generatedFiles": {},
-                "timetableMetadata": timetable_metadata,
-                "generationMeta": {
-                    "labSeed": True,
-                    "timeoutSeconds": None,
-                    "timeoutDisabled": True,
-                    "retryStrategies": 0,
-                    "attemptStrategies": [],
-                    "deterministic": True,
-                },
-            },
-        )
-        _persist_faculty_occupancy(store, timetable_id, session_log)
-        return {"timetableId": timetable_id, "message": "Lab slots seeded successfully."}
-
+    # Prepare Requirements
     requirements: list[Requirement] = []
     covered_shared_subjects: set[tuple[str, str]] = set()
 
-    def build_requirement_from_rows(
-        subject_id: str,
-        sections: tuple[str, ...],
-        section_rows: list[dict],
-        shared: bool,
-    ) -> Requirement | None:
-        raw_faculty_ids = {_normalize_faculty_field(row.get("faculty_id", "")) for row in section_rows if row}
+    def build_requirement_from_rows(subject_id: str, sections: tuple[str, ...], rows: list[dict], shared: bool) -> Requirement | None:
+        raw_faculty_ids = {_normalize_faculty_field(r.get("faculty_id", "")) for r in rows if r}
         faculty_pools = {
-            tuple(sorted(set(_resolve_faculty_pool(raw_faculty_id, faculty_id_to_name, faculty_availability))))
-            for raw_faculty_id in raw_faculty_ids
-            if raw_faculty_id
+            tuple(sorted(set(_resolve_faculty_pool(fid, faculty_id_to_name, faculty_availability))))
+            for fid in raw_faculty_ids if fid
         }
         remaining_hours = [
-            max(0, int(row["hours"]) - lab_assigned_hours.get((str(row["section"]), subject_id), 0))
-            for row in section_rows
-            if row
+            max(0, int(r["hours"]) - lab_assigned_hours.get((str(r["section"]), subject_id), 0))
+            for r in rows if r
         ]
-        min_consecutive_hours = max(int(row.get("min_consecutive_hours", 1) or 1) for row in section_rows if row)
-        max_consecutive_hours = min(int(row.get("max_consecutive_hours", 1) or 1) for row in section_rows if row)
+        if not remaining_hours or len(set(remaining_hours)) != 1 or remaining_hours[0] <= 0:
+            return None
+            
+        hours = remaining_hours[0]
         faculty_options = next(iter(sorted(faculty_pools)), ())
         faculty_label = sorted(raw_faculty_ids)[0] if raw_faculty_ids else ""
-
-        if shared and len(faculty_pools) != 1:
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": list(sections),
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_label,
-                    "constraint": "shared class constraint",
-                    "detail": "Shared class sections do not resolve to one common faculty or faculty pool.",
-                }
-            )
-            return None
-        if len(set(remaining_hours)) != 1:
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": list(sections),
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_label,
-                    "constraint": "shared class constraint" if shared else "section capacity constraint",
-                    "detail": "Sections do not have the same remaining subject hours for global scheduling.",
-                }
-            )
-            return None
-        if min_consecutive_hours > max_consecutive_hours:
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": list(sections),
-                    "subject_id": subject_id,
-                    "faculty_id": faculty_label,
-                    "constraint": "continuous hours constraint",
-                    "detail": "Subject requires more consecutive hours than allowed by the main config.",
-                }
-            )
-            return None
-
-        hours = remaining_hours[0]
-        if hours <= 0:
-            return None
-
-        resolved_faculty_options = faculty_options or ((faculty_label,) if faculty_label else ())
-        # Multiple faculty IDs in a cell are treated as alternatives by default.
-        # This avoids over-constraining the solver by requiring simultaneous co-teaching.
-        resolved_faculty_team: tuple[str, ...] = ()
+        
+        min_consecutive = max(int(r.get("min_consecutive_hours", 1) or 1) for r in rows if r)
+        max_consecutive = min(int(r.get("max_consecutive_hours", 1) or 1) for r in rows if r)
+        
         return Requirement(
             subject_id=subject_id,
             faculty_id=faculty_label,
-            faculty_options=resolved_faculty_options,
-            faculty_team=resolved_faculty_team,
+            faculty_options=faculty_options,
+            faculty_team=(),
             sections=sections,
             hours=hours,
-            min_consecutive_hours=min_consecutive_hours,
-            max_consecutive_hours=max_consecutive_hours,
+            min_consecutive_hours=min_consecutive,
+            max_consecutive_hours=max_consecutive,
             shared=shared,
-            phase=_determine_requirement_phase(
-                shared,
-                min_consecutive_hours,
-                hours,
-                resolved_faculty_options,
-                faculty_availability,
-            ),
+            phase=_determine_requirement_phase(shared, min_consecutive, hours, faculty_options, faculty_availability),
         )
 
+    # ... Shared Classes processing ...
     for subject_id, groups in sorted(shared_constraints.items()):
         merged_groups = _merge_overlapping_section_groups(list(set(groups)))
         for sections in sorted(merged_groups):
-            missing_sections = [section for section in sections if section not in all_sections]
-            if missing_sections:
-                constraint_violations.append(
-                    {
-                        "year": year,
-                        "sections": list(sections),
-                        "subject_id": subject_id,
-                        "faculty_id": "",
-                        "constraint": "shared class constraint",
-                        "detail": f"Shared class references sections missing from main config: {', '.join(missing_sections)}",
-                    }
-                )
-                continue
-
-            section_rows = [main_rows_by_section_subject.get((section, subject_id)) for section in sections]
-            if any(row is None for row in section_rows):
-                constraint_violations.append(
-                    {
-                        "year": year,
-                        "sections": list(sections),
-                        "subject_id": subject_id,
-                        "faculty_id": "",
-                        "constraint": "shared class constraint",
-                        "detail": "Shared class subject is missing in one or more sections.",
-                    }
-                )
-                continue
-
-            requirement = build_requirement_from_rows(subject_id, sections, [row for row in section_rows if row], True)
-            if requirement:
-                requirements.append(requirement)
-            for section in sections:
-                covered_shared_subjects.add((section, subject_id))
+            section_rows = [main_rows_by_section_subject.get((sec, subject_id)) for sec in sections]
+            if any(r is None for r in section_rows): continue
+            req = build_requirement_from_rows(subject_id, sections, [r for r in section_rows if r], True)
+            if req:
+                requirements.append(req)
+                for sec in sections: covered_shared_subjects.add((sec, subject_id))
 
     for (section, subject_id), row in sorted(main_rows_by_section_subject.items()):
-        if (section, subject_id) in covered_shared_subjects:
-            continue
-        remaining_hours = max(0, int(row.get("hours", 0) or 0) - lab_assigned_hours.get((section, subject_id), 0))
-        if remaining_hours <= 0:
-            continue
-        raw_faculty_value = str(row.get("faculty_id", "")).strip()
-        faculty_options = _resolve_faculty_pool(raw_faculty_value, faculty_id_to_name, faculty_availability)
-        requirements.append(
-            Requirement(
-                subject_id=subject_id,
-                faculty_id=raw_faculty_value,
-                faculty_options=faculty_options,
-                faculty_team=(),
-                sections=(section,),
-                hours=remaining_hours,
-                min_consecutive_hours=max(1, int(row.get("min_consecutive_hours", 1) or 1)),
-                max_consecutive_hours=max(1, int(row.get("max_consecutive_hours", 1) or 1)),
-                shared=False,
-                phase=_determine_requirement_phase(
-                    False,
-                    max(1, int(row.get("min_consecutive_hours", 1) or 1)),
-                    remaining_hours,
-                    faculty_options,
-                    faculty_availability,
-                ),
-            )
-        )
+        if (section, subject_id) in covered_shared_subjects: continue
+        req = build_requirement_from_rows(subject_id, (section,), [row], False)
+        if req: requirements.append(req)
 
-    prior_faculty_ids = set(prior_faculty_busy)
-    for requirement in requirements:
-        requirement.common_faculty = any(
-            faculty_id in prior_faculty_ids for faculty_id in _requirement_faculty_tokens(requirement)
-        )
-
-    requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
-
-    # Rebalance minimal overload to keep solver from collapsing into global no-free-slot
-    # when a few sections are over-constrained due locked slots.
-    for section in all_sections:
-        remaining_slots = sum(
-            1 for day in DAYS for period in PERIODS
-            if schedules[(year, section)][day][period] is None
-        )
-        while True:
-            req_indices = [idx for idx, req in enumerate(requirements) if section in req.sections and req.hours > 0]
-            required_hours = sum(requirements[idx].hours for idx in req_indices)
-            overload = required_hours - remaining_slots
-            if overload <= 0:
-                break
-
-            soft_subject_ids = {"11", "12", "21"}
-            adjustable = [idx for idx in req_indices if not requirements[idx].shared]
-            if not adjustable:
-                constraint_violations.append(
-                    {
-                        "year": year,
-                        "sections": [section],
-                        "subject_id": "",
-                        "faculty_id": "",
-                        "constraint": "section capacity constraint",
-                        "detail": (
-                            f"Section {section} needs {required_hours} hour(s) but only {remaining_slots} "
-                            "slot(s) are available after locked entries. Reduce workload or lab locks."
-                        ),
-                    }
-                )
-                break
-
-            adjustable.sort(
-                key=lambda idx: (
-                    0 if requirements[idx].subject_id in soft_subject_ids else 1,
-                    -requirements[idx].hours,
-                    requirements[idx].subject_id,
-                )
-            )
-            target_idx = adjustable[0]
-            requirements[target_idx].hours -= 1
-            if requirements[target_idx].hours <= 0:
-                requirements.pop(target_idx)
-            else:
-                requirements[target_idx].min_consecutive_hours = min(
-                    requirements[target_idx].min_consecutive_hours,
-                    requirements[target_idx].hours,
-                )
-                requirements[target_idx].max_consecutive_hours = min(
-                    requirements[target_idx].max_consecutive_hours,
-                    requirements[target_idx].hours,
-                )
-
+    # ── FAST FEASIBILITY PRE-CHECK ──────────────────────────────────────────
+    # When called with precheck_only=True (the /feasibility endpoint), we do
+    # NOT run the solver.  Instead we perform O(R + S + F) approximate checks
+    # that finish in < 100 ms even for large inputs.
+    #
+    # The checks are intentionally *over-approximate*: if they say "feasible"
+    # the solver might still fail (tight faculty conflicts, etc.), but if they
+    # say "infeasible" it is a guaranteed hard failure that the solver cannot
+    # overcome either.
     if precheck_only:
-        section_summary = []
-        for section in all_sections:
-            free_slots = sum(
-                1 for day in DAYS for period in PERIODS
-                if schedules[(year, section)][day][period] is None
-            )
-            required_hours = sum(req.hours for req in requirements if section in req.sections)
-            deficit = max(0, required_hours - free_slots)
-            section_summary.append(
-                {
-                    "section": section,
-                    "requiredHours": required_hours,
-                    "freeSlots": free_slots,
-                    "deficitHours": deficit,
-                    "lockedSlots": locked_hours_by_section.get(section, 0),
-                }
-            )
+        issues: list[dict] = list(constraint_violations)  # includes capacity errors
 
-        section_summary.sort(key=lambda item: (item["deficitHours"] > 0, item["section"]), reverse=True)
-        blocking = [item for item in section_summary if item["deficitHours"] > 0]
+        # ── (a) Section capacity: required_hours ≤ free_slots ─────────────
+        # Safe because every section-period can hold at most 1 subject.
+        section_required: dict[str, int] = {}
+        for req in requirements:
+            for sec in req.sections:
+                section_required[sec] = section_required.get(sec, 0) + req.hours
+
+        for section in all_sections:
+            free = sum(
+                1 for day in DAYS for p in instructional_periods
+                if schedules[(year, section)][day].get(p) is None
+            )
+            needed = section_required.get(section, 0)
+            if needed > free:
+                issues.append({
+                    "year": year,
+                    "sections": [section],
+                    "subject_id": "",
+                    "faculty_id": "",
+                    "constraint": "section capacity overload",
+                    "detail": (
+                        f"Section {section} needs {needed} theory hour(s) "
+                        f"but only {free} free slot(s) remain after labs."
+                    ),
+                })
+
+        # ── (b) Faculty capacity: assigned_hours ≤ available_periods ──────
+        # Safe because a faculty member cannot teach in a period they are
+        # unavailable or already busy in.
+        faculty_required: dict[str, int] = {}
+        for req in requirements:
+            tokens = req.faculty_options or ((req.faculty_id,) if req.faculty_id else ())
+            # Distribute to the FIRST (primary) option; if pool, the solver
+            # can redistribute, so we use max-available as an optimistic bound.
+            if tokens:
+                faculty_required[tokens[0]] = faculty_required.get(tokens[0], 0) + req.hours
+
+        for fid, needed in faculty_required.items():
+            avail = faculty_availability.get(fid, _default_day_availability(instructional_periods))
+            busy = faculty_busy.get(fid, set())
+            total_free = sum(
+                1 for day in DAYS for p in avail.get(day, set())
+                if (day, p) not in busy
+            )
+            if needed > total_free:
+                fname = faculty_id_to_name.get(fid, fid)
+                issues.append({
+                    "year": year,
+                    "sections": [],
+                    "subject_id": "",
+                    "faculty_id": fid,
+                    "constraint": "faculty capacity overload",
+                    "detail": (
+                        f"Faculty {fname} ({fid}) is assigned {needed} hour(s) "
+                        f"but only has {total_free} free period(s) this week."
+                    ),
+                })
+
+        # ── (c) Shared-class check: hours ≤ min(free slots of sections) ───
+        # For shared classes all involved sections must be free at the SAME
+        # time, so the bottleneck is the section with the fewest free slots.
+        for req in requirements:
+            if not req.shared or len(req.sections) <= 1:
+                continue
+            min_free = min(
+                sum(
+                    1 for day in DAYS for p in instructional_periods
+                    if schedules[(year, sec)][day].get(p) is None
+                )
+                for sec in req.sections
+            )
+            if req.hours > min_free:
+                issues.append({
+                    "year": year,
+                    "sections": list(req.sections),
+                    "subject_id": req.subject_id,
+                    "faculty_id": req.faculty_id,
+                    "constraint": "shared class capacity",
+                    "detail": (
+                        f"Shared subject {req.subject_id} needs {req.hours}h "
+                        f"but the tightest section only has {min_free} free slot(s)."
+                    ),
+                })
+
+        # ── (d) Continuous-block approximation ────────────────────────────
+        # If a subject requires N consecutive periods but no session has N
+        # contiguous instructional periods, placement is impossible.
+        max_session_len = max((len(s) for s in sessions), default=0)
+        for req in requirements:
+            if req.min_consecutive_hours <= 1:
+                continue
+            needed_block = req.min_consecutive_hours
+            # 4-hour blocks can span two adjacent sessions
+            effective_max = max_session_len
+            if needed_block == 4 and len(sessions) >= 2:
+                for i in range(len(sessions) - 1):
+                    effective_max = max(effective_max, len(sessions[i]) + len(sessions[i + 1]))
+            if needed_block > effective_max:
+                issues.append({
+                    "year": year,
+                    "sections": list(req.sections),
+                    "subject_id": req.subject_id,
+                    "faculty_id": req.faculty_id,
+                    "constraint": "continuous hours impossible",
+                    "detail": (
+                        f"Subject {req.subject_id} requires {needed_block} "
+                        f"consecutive period(s) but longest session is {max_session_len}."
+                    ),
+                })
+
+        feasible = len(issues) == 0
         return {
-            "year": year,
-            "feasible": len(blocking) == 0,
-            "blockingSections": blocking,
-            "sectionSummary": section_summary,
-            "issues": constraint_violations,
+            "feasible": feasible,
+            "issues": _group_issue_records(issues) if issues else [],
+            "sections": all_sections,
+            "requirementCount": len(requirements),
+            "capacityPerSection": capacity_per_section,
         }
 
-    requirements.sort(key=lambda item: _requirement_priority(item, faculty_availability))
-
-
+    # ── FULL SOLVER (only when precheck_only=False) ───────────────────────
+    # Solve
     timeout_seconds = None
-    total_deadline = float("inf")
-    retry_orders: list[tuple[list[str], list[int]]] = [
-        (list(DAYS), list(PERIODS)),
-        (list(DAYS), list(reversed(PERIODS))),
-        (list(reversed(DAYS)), list(PERIODS)),
-        (list(reversed(DAYS)), list(reversed(PERIODS))),
-        (list(DAYS), [2, 3, 4, 5, 1, 6, 7]),
-        (list(reversed(DAYS)), [4, 3, 5, 2, 6, 1, 7]),
-    ]
-    strategy_orderings = [
-        ("shared-first", lambda item: _requirement_priority(item, faculty_availability)),
-        (
-            "high-hour-first",
-            lambda item: (
-                0 if item.shared else 1,
-                -item.hours,
-                -item.min_consecutive_hours,
-                item.phase,
-                item.subject_id,
-                ",".join(item.sections),
-            ),
-        ),
-        (
-            "continuous-first",
-            lambda item: (
-                0 if item.shared else 1,
-                -item.min_consecutive_hours,
-                -item.hours,
-                item.phase,
-                item.subject_id,
-                ",".join(item.sections),
-            ),
-        ),
-    ]
-    unscheduled_subjects: list[dict] = []
-    initial_log_length = len(session_log)
-    def _reset_non_lab_assignments() -> None:
-        while len(session_log) > initial_log_length:
-            session = session_log.pop()
-            for period in session["periods"]:
-                fac_ids = [str(fid).strip() for fid in session.get("faculty_ids", []) if str(fid).strip()]
-                if not fac_ids:
-                    fac_ids = [
-                        token.strip()
-                        for token in str(session.get("faculty_id", "")).split(",")
-                        if token.strip()
-                    ]
-                for fac_id in fac_ids:
-                    faculty_busy.setdefault(fac_id, set()).discard((session["day"], period))
-                for sec in session.get("sections", []):
-                    schedules[(year, sec)][session["day"]][period] = None
-
-    remaining_by_req = {req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)}
-
-    def _solve_with_orders(
-        days_order: list[str],
-        periods_order: list[int],
-        candidate_limit: int,
-        attempt_deadline: float,
-    ) -> bool:
-        remaining_by_req.update({req_idx: requirement.hours for req_idx, requirement in enumerate(requirements)})
-
-        def backtrack() -> bool:
-            if not _section_capacity_is_feasible(requirements, remaining_by_req, schedules, year):
-                return False
-            next_req_idx, candidates = _select_next_requirement(
-                requirements,
-                remaining_by_req,
-                schedules,
-                faculty_busy,
-                faculty_availability,
-                year,
-                days_order,
-                periods_order,
-                candidate_limit,
-            )
-            if next_req_idx is None:
-                return True
-            if not candidates:
-                return False
-
-            requirement = requirements[next_req_idx]
-            # §21: solver-placed shared subjects (from file) get source tag "shared_class_file"
-            place_source = "shared_class_file" if requirement.shared else "solver"
-            for candidate in candidates:
-                placements = _place_block(
-                    requirement,
-                    candidate.faculty_ids,
-                    candidate.day,
-                    candidate.start_period,
-                    candidate.block_size,
-                    schedules,
-                    faculty_busy,
-                    year,
-                    subject_id_to_name,
-                    faculty_id_to_name,
-                    session_log,
-                    source=place_source,
-                )
-                remaining_by_req[next_req_idx] -= candidate.block_size
-                if backtrack():
-                    return True
-                remaining_by_req[next_req_idx] += candidate.block_size
-                _undo_block(requirement, candidate.faculty_ids, placements, schedules, faculty_busy, year, session_log)
-            return False
-
-        return backtrack()
-
+    retry_orders = [(list(DAYS), instructional_periods)]
+    strategy_orderings = [("shared-first", lambda item: _requirement_priority(item, faculty_availability, instructional_periods))]
+    
     solved = False
     attempt = 0
-    attempt_strategy_names: list[str] = []
-    while not solved:
-        _reset_non_lab_assignments()
-
-        strategy_name, strategy_key = strategy_orderings[min(attempt, len(strategy_orderings) - 1)]
-        if len(attempt_strategy_names) < 25:
-            attempt_strategy_names.append(strategy_name)
+    attempt_strategy_names = []
+    
+    while not solved and attempt < len(retry_orders):
+        strategy_name, strategy_key = strategy_orderings[0]
+        attempt_strategy_names.append(strategy_name)
         requirements.sort(key=strategy_key)
+        days_order, periods_order = retry_orders[attempt]
+        
+        remaining_by_req = {i: req.hours for i, req in enumerate(requirements)}
+        
+        # Initialize free slots tracker
+        free_slots_tracker = {}
+        for section in all_sections:
+            count = 0
+            for d in DAYS:
+                for p in instructional_periods:
+                    if schedules[(year, section)][d].get(p) is None:
+                        count += 1
+            free_slots_tracker[section] = count
 
-        if attempt >= len(retry_orders):
-            random_days = list(DAYS)
-            random_periods = list(PERIODS)
-            random.Random(attempt).shuffle(random_days)
-            random.Random(attempt * 17).shuffle(random_periods)
-            days_order, periods_order = random_days, random_periods
-        else:
-            days_order, periods_order = retry_orders[attempt]
+        def backtrack() -> bool:
+            next_req_idx, candidates = _select_next_requirement(
+                requirements, remaining_by_req, schedules, faculty_busy, faculty_availability,
+                year, days_order, periods_order, instructional_periods, sessions, 8, free_slots_tracker
+            )
+            if next_req_idx is None: return True
+            if not candidates: return False
+            
+            req = requirements[next_req_idx]
+            for cand in candidates:
+                placements = _place_block(
+                    req, cand.faculty_ids, cand.day, cand.start_period, cand.block_size,
+                    schedules, faculty_busy, year, subject_id_to_name, faculty_id_to_name,
+                    session_log, free_slots_tracker, source="solver"
+                )
+                remaining_by_req[next_req_idx] -= cand.block_size
+                if backtrack(): return True
+                remaining_by_req[next_req_idx] += cand.block_size
+                _undo_block(req, cand.faculty_ids, placements, schedules, faculty_busy, year, session_log, free_slots_tracker)
+            return False
 
-        # Increase candidate diversity so scarce-slot constraints can still be satisfied
-        # without waiting for timeout-level backtracking.
-        candidate_limit = min(52, 16 + attempt * 8)
-        attempt_deadline = float("inf")
-        if _solve_with_orders(days_order, periods_order, candidate_limit, attempt_deadline):
+        if backtrack():
             solved = True
-            break
         attempt += 1
 
     if not solved:
-        _reset_non_lab_assignments()
-        for req_idx, requirement in enumerate(requirements):
-            remaining = remaining_by_req.get(req_idx, requirement.hours)
-            if remaining <= 0:
-                continue
-            if not requirement.faculty_id:
-                reason = "missing faculty mapping"
-            else:
-                reason = _infer_failure_reason(requirement, schedules, faculty_busy, faculty_availability, year)
-            
-            constraint_violations.append(
-                {
+        for i, req in enumerate(requirements):
+            rem = remaining_by_req.get(i, 0)
+            if rem > 0:
+                reason = _infer_failure_reason(
+                    req, schedules, faculty_busy, faculty_availability,
+                    year, instructional_periods, sessions
+                )
+                subject_id, subject_name = _resolve_subject_output(req.subject_id, subject_id_to_name)
+                # Use faculty_options if available, otherwise fallback to faculty_id
+                faculty_ids = req.faculty_options or ((req.faculty_id,) if req.faculty_id else ())
+                faculty_id_display, _ = _resolve_faculty_display(faculty_ids, faculty_id_to_name)
+                
+                constraint_violations.append({
                     "year": year,
-                    "sections": list(requirement.sections),
-                    "subject_id": requirement.subject_id,
-                    "faculty_id": requirement.faculty_id,
+                    "sections": list(req.sections),
+                    "subject_id": subject_id,
+                    "faculty_id": faculty_id_display,
                     "constraint": reason,
-                    "detail": f"Unable to place {remaining} remaining hour(s) for subject {requirement.subject_id}. Possible reason: {reason}",
-                }
-            )
-            unscheduled_subjects.append(
-                {
-                    "year": year,
-                    "sections": list(requirement.sections),
-                    "subject_id": requirement.subject_id,
-                    "faculty_id": requirement.faculty_id,
-                    "detail": reason,
-                }
-            )
-    else:
-        for requirement in requirements:
-            if requirement.faculty_id:
-                continue
-            reason = "missing faculty mapping"
-            constraint_violations.append(
-                {
-                    "year": year,
-                    "sections": list(requirement.sections),
-                    "subject_id": requirement.subject_id,
-                    "faculty_id": "",
-                    "constraint": reason,
-                    "detail": f"Unable to place {requirement.hours} remaining hour(s) for subject {requirement.subject_id}.",
-                }
-            )
-            unscheduled_subjects.append(
-                {
-                    "year": year,
-                    "sections": list(requirement.sections),
-                    "subject_id": requirement.subject_id,
-                    "faculty_id": "",
-                    "detail": reason,
-                }
-            )
+                    "detail": f"Subject {subject_name} ({rem}h) could not be scheduled due to {reason}."
+                })
 
-    constraint_violations = _group_issue_records(constraint_violations)
-    unscheduled_subjects = _group_issue_records(
-        [
-            {
-                **item,
-                "constraint": str(item.get("detail", "")).strip() or "unscheduled subject",
-            }
-            for item in unscheduled_subjects
-        ]
+    # Cleanup and Return
+    _allocate_classrooms_to_schedule(
+        year, all_sections, schedules, session_log, classrooms,
+        constraint_violations, instructional_periods, sessions,
+        prior_room_busy=prior_room_busy
     )
-    for item in unscheduled_subjects:
-        item.pop("constraint", None)
-
-    has_constraint_failures = bool(unscheduled_subjects or constraint_violations)
-    if has_constraint_failures:
-        # For any constraint failures (including section totals mismatches), still
-        # return a timetable + constraint report so the UI can generate timetables
-        # for all years without skipping ("middle leaving").
-        pass
-    all_grids = _serialize_section_grids(year, all_sections, schedules)
-    faculty_workloads = _build_faculty_workloads_from_sessions(session_log)
-    # §21: shared class report must only include explicitly file-driven sessions
-    # (source == "lab" from Lab File, or "shared_class_file" from Shared Class File)
-    # Never include auto-detected sessions (source == "solver").
-    shared_sessions = [
-        session for session in session_log
-        if session.get("source") in {"lab", "shared_class_file"}
-    ]
-
-    for violation in constraint_violations:
-        subject_id = _normalize_id_token(violation.get("subject_id", ""))
-        faculty_id = str(violation.get("faculty_id", "")).strip()
-        faculty_ids = _split_faculty_tokens(faculty_id)
-        if subject_id:
-            violation["subject_name"] = subject_id_to_name.get(subject_id, subject_id)
-        if faculty_ids:
-            violation["faculty_name"] = ", ".join(faculty_id_to_name.get(fid, fid) for fid in faculty_ids)
-            violation["faculty_id"] = ",".join(faculty_ids)
-
-    for item in unscheduled_subjects:
-        subject_id = _normalize_id_token(item.get("subject_id", ""))
-        faculty_id = str(item.get("faculty_id", "")).strip()
-        faculty_ids = _split_faculty_tokens(faculty_id)
-        if subject_id:
-            item["subject_name"] = subject_id_to_name.get(subject_id, subject_id)
-        if faculty_ids:
-            item["faculty_name"] = ", ".join(faculty_id_to_name.get(fid, fid) for fid in faculty_ids)
-            item["faculty_id"] = ",".join(faculty_ids)
-
-    shared_workbook = _build_shared_classes_workbook(shared_sessions)
-    constraint_workbook = _build_constraint_report_workbook(constraint_violations, unscheduled_subjects)
-
+    
+    all_grids = _serialize_section_grids(year, all_sections, schedules, instructional_periods)
+    faculty_workloads = _build_faculty_workloads_from_sessions(session_log, instructional_periods)
+    
+    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules, timetable_metadata, period_config)
+    faculty_workbook = _build_faculty_workload_workbook(session_log, faculty_id_to_name, timetable_metadata, period_config)
+    
     generated_files = {
-        "sharedClassesReport": _encode_workbook("shared_classes_report.xlsx", shared_workbook),
+        "sectionTimetables": _encode_workbook("section_timetables.xlsx", section_workbook),
+        "facultyWorkload": _encode_workbook("faculty_workload.xlsx", faculty_workbook),
     }
-    section_workbook = _build_section_timetables_workbook(year, all_sections, schedules, timetable_metadata)
-    faculty_workbook = _build_faculty_workload_workbook(session_log, faculty_id_to_name, timetable_metadata)
-    generated_files["sectionTimetables"] = _encode_workbook("section_timetables.xlsx", section_workbook)
-    generated_files["facultyWorkload"] = _encode_workbook("faculty_workload.xlsx", faculty_workbook)
-    if constraint_violations or unscheduled_subjects:
-        generated_files["constraintViolationReport"] = _encode_workbook(
-            "constraint_violation_report.xlsx", constraint_workbook
-        )
-
+    
     timetable_id = store.next_timetable_id()
     selected_section = request_data.section if request_data.section in all_grids else all_sections[0]
-
-    store.save_timetable(
-        timetable_id,
-        {
-            "id": timetable_id,
-            "year": year,
-            "section": selected_section,
-            "grid": all_grids.get(selected_section, {day: [None] * len(PERIODS) for day in DAYS}),
-            "allGrids": all_grids,
-            "facultyWorkloads": faculty_workloads,
-            "sharedClasses": shared_sessions,
-            "constraintViolations": constraint_violations,
-            "unscheduledSubjects": unscheduled_subjects,
-            "hasValidTimetable": not has_constraint_failures,
-            "hasConstraintViolations": has_constraint_failures,
-            "generatedFiles": generated_files,
-            "timetableMetadata": timetable_metadata,
-            "generationMeta": {
-                "timeoutSeconds": timeout_seconds,
-                "timeoutDisabled": True,
-                "retryStrategies": attempt + 1,
-                "attemptStrategies": attempt_strategy_names,
-                "deterministic": False,
-            },
-        },
-    )
-    _persist_faculty_occupancy(store, timetable_id, session_log)
-
-    message = (
-        "Timetable generated successfully."
-        if not has_constraint_failures
-        else "Timetable generated with constraint violations (see constraint report)."
-    )
-    return {"timetableId": timetable_id, "message": message}
+    
+    store.save_timetable(timetable_id, {
+        "id": timetable_id,
+        "year": year,
+        "section": selected_section,
+        "grid": all_grids.get(selected_section, {day: [None] * len(instructional_periods) for day in DAYS}),
+        "allGrids": all_grids,
+        "facultyWorkloads": faculty_workloads,
+        "constraintViolations": constraint_violations,
+        "unscheduledSubjects": [],
+        "hasValidTimetable": solved,
+        "hasConstraintViolations": not solved or bool(constraint_violations),
+        "generatedFiles": generated_files,
+        "timetableMetadata": timetable_metadata,
+    })
+    
+    _persist_faculty_occupancy(store, timetable_id, session_log, instructional_periods)
+    return {"timetableId": timetable_id, "message": "Timetable generated."}

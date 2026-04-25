@@ -43,6 +43,8 @@ export type TimetableCell = {
   faculty?: string;
   facultyName?: string;
   isLab?: boolean;
+  classroom?: string;
+  labRoom?: string;
   sharedSections?: string[];
 };
 

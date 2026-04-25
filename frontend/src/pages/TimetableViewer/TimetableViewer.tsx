@@ -84,6 +84,17 @@ function getSubjectLabel(
   return cell?.subjectName ?? cell?.subject ?? "";
 }
 
+function getTimetableCellText(
+  cell: SectionTimetable["grid"][string][number] | null | undefined,
+): string {
+  if (!cell) return "";
+  const subject = getSubjectLabel(cell);
+  if (cell.isLab) {
+    return cell.labRoom ? `${subject}\n(${cell.labRoom})` : subject;
+  }
+  return cell.classroom ? `${subject}\n(${cell.classroom})` : subject;
+}
+
 function areCellsEquivalent(
   left: SectionTimetable["grid"][string][number] | null | undefined,
   right: SectionTimetable["grid"][string][number] | null | undefined,
@@ -141,9 +152,10 @@ function appendMergedRowWithBreakLunch(
 
   runs.forEach((run, index) => {
     const label = getSubjectLabel(run.cell);
+    const displayText = getTimetableCellText(run.cell);
     const span = run.end - run.start + 1;
 
-    row.push(label);
+    row.push(displayText);
     for (let i = 1; i < span; i += 1) {
       row.push("");
     }

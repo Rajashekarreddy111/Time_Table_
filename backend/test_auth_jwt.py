@@ -16,6 +16,7 @@ def _isolated_store() -> MemoryStore:
 
 def test_jwt_survives_username_change_and_rotates_on_password_change(monkeypatch):
     store = _isolated_store()
+    monkeypatch.setenv("REQUIRE_MONGODB", "false")
     monkeypatch.setattr(auth_service, "store", store)
     monkeypatch.setattr(main, "store", store)
 

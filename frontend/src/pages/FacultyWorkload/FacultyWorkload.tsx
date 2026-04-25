@@ -25,6 +25,9 @@ type FacultyScheduleEntry = {
   subject: string;
   year: string;
   section: string;
+  classroom?: string;
+  labRoom?: string;
+  isLab?: boolean;
 };
 
 type FacultyWorkloadType = {
@@ -49,7 +52,10 @@ function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
 }
 
 function formatWorkloadEntry(entry: FacultyScheduleEntry): string {
-  return `${entry.subject}\n${entry.year} ${entry.section}`;
+  const roomLine = entry.isLab
+    ? entry.labRoom ? `\n(${entry.labRoom})` : ""
+    : entry.classroom ? `\n(${entry.classroom})` : "";
+  return `${entry.subject}\n${entry.year} ${entry.section}${roomLine}`;
 }
 
 function buildWorkloadCellText(entries: FacultyScheduleEntry[] | null | undefined): string {
@@ -237,6 +243,9 @@ function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[
           subject: subjectName,
           year,
           section: sections,
+          classroom: cell.classroom,
+          labRoom: cell.labRoom,
+          isLab: cell.isLab,
         };
 
         const facultySchedule = ensureFacultySchedule(facultyName);
@@ -354,11 +363,16 @@ const FacultyWorkload = () => {
     return (
       <div className={`flex flex-col gap-1 ${isConflict ? "text-destructive" : ""}`}>
         {entries.map((entry, i) => (
-          <div key={i} className="font-semibold text-[11px] leading-tight">
+            <div key={i} className="font-semibold text-[11px] leading-tight">
             {entry.subject}
             <div className="font-normal text-[10px] text-muted-foreground">
               {entry.year} {entry.section}
             </div>
+            {(entry.classroom || entry.labRoom) && (
+              <div className="font-normal text-[10px] text-muted-foreground">
+                {entry.isLab ? `(${entry.labRoom})` : `(${entry.classroom})`}
+              </div>
+            )}
           </div>
         ))}
         {isConflict && (
@@ -436,14 +450,14 @@ const FacultyWorkload = () => {
         <div className="bg-card rounded-xl p-4 sm:p-6 xl:p-8 shadow-sm overflow-x-auto w-full">
           {workload ? (
             <>
-              <div className="text-center mb-3 border border-border min-w-[980px]">
-                <h3 className="text-base font-semibold uppercase leading-tight border-b border-border py-1">{ACADEMIC_METADATA.COLLEGE_NAME}</h3>
-                <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">(AUTONOMOUS)</p>
-                <p className="text-sm font-semibold leading-tight border-b border-border py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
-                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">ACADEMIC YEAR : {resolvedAcademicYear} {resolvedSemester}</div>
-                <div className="text-sm font-semibold leading-tight border-b border-border py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
+              <div className="timetable-sheet-frame text-center mb-3 border min-w-[980px]">
+                <h3 className="text-base font-semibold uppercase leading-tight border-b py-1">{ACADEMIC_METADATA.COLLEGE_NAME}</h3>
+                <p className="text-sm font-semibold leading-tight border-b py-0.5">(AUTONOMOUS)</p>
+                <p className="text-sm font-semibold leading-tight border-b py-0.5">{ACADEMIC_METADATA.DEPARTMENT_NAME}</p>
+                <div className="text-sm font-semibold leading-tight border-b py-0.5">ACADEMIC YEAR : {resolvedAcademicYear} {resolvedSemester}</div>
+                <div className="text-sm font-semibold leading-tight border-b py-0.5">FACULTY WORKLOAD : {selectedFaculty}</div>
                 <div className="grid grid-cols-2 text-xs font-semibold text-center">
-                  <div className="px-2 py-0.5 border-r border-border">Room No :</div>
+                  <div className="px-2 py-0.5 border-r">Room No :</div>
                   <div className="px-2 py-0.5">With effect from : {resolvedWithEffectFrom}</div>
                 </div>
               </div>
@@ -498,7 +512,7 @@ const FacultyWorkload = () => {
                 })}
 
                 <tr>
-                  <td colSpan={10} className="bg-white p-0.5 border-b border-border"></td>
+                  <td colSpan={10} className="bg-white p-0.5 border-b"></td>
                 </tr>
 
                 {Array.from({ length: Math.ceil(legend.length / 2) }).map((_, rowIdx) => {

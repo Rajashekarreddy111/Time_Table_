@@ -70,6 +70,10 @@ export interface MappingStatusResponse {
   sharedClassesFileName?: string | null;
   facultyAvailabilityUploaded?: boolean;
   facultyAvailabilityFileName?: string | null;
+  classroomsUploaded?: boolean;
+  classroomsFileName?: string | null;
+  periodConfigUploaded?: boolean;
+  periodConfigFileName?: string | null;
 }
 
 export interface FacultyIdStatusResponse {
@@ -133,6 +137,8 @@ export interface GenerateTimetableRequest {
     labTimetableConfig?: string;
     subjectIdMapping?: string;
     subjectContinuousRules?: string;
+    classrooms?: string;
+    periodConfig?: string;
   };
   subjectIdNameMapping?: SubjectIdNameMappingEntry[];
   subjectContinuousRules?: SubjectContinuousRuleEntry[];
@@ -180,6 +186,8 @@ export interface TimetableRecord {
       faculty?: string;
       facultyName?: string;
       isLab?: boolean;
+      classroom?: string;
+      labRoom?: string;
       sharedSections?: string[];
     } | null)[]
   >;
@@ -193,6 +201,8 @@ export interface TimetableRecord {
         faculty?: string;
         facultyName?: string;
         isLab?: boolean;
+        classroom?: string;
+        labRoom?: string;
         sharedSections?: string[];
       } | null)[]
     >
@@ -494,6 +504,43 @@ export async function uploadSharedClasses(file: File): Promise<UploadResponse> {
   formData.append("file", file);
 
   const path = "/uploads/shared-classes";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+export async function uploadClassrooms(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/classrooms";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadPeriodConfig(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/period-config";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",
