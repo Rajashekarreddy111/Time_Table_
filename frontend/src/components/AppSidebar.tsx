@@ -43,7 +43,8 @@ import { useState } from "react";
 const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Timetable Generator", url: "/generator", icon: Calendar },
-  { title: "View Timetables", url: "/timetables", icon: GraduationCap },
+  { title: "Class Timetables", url: "/timetables", icon: GraduationCap },
+  { title: "Room Timetables", url: "/rooms", icon: GraduationCap },
   { title: "Faculty Workload", url: "/workload", icon: Clock },
   { title: "Generated Outputs", url: "/outputs", icon: FileText },
   { title: "Invisilation Finder", url: "/availability", icon: Users },

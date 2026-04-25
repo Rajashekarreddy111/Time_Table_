@@ -2,6 +2,7 @@ import { Navigate, Outlet, Route, Routes } from "react-router-dom";
 import Index from "@/pages/Dashboard/Index";
 import TimetableGenerator from "@/pages/TimetableGenerator/TimetableGenerator";
 import TimetableViewer from "@/pages/TimetableViewer/TimetableViewer";
+import RoomTimetableViewer from "@/pages/RoomTimetableViewer/RoomTimetableViewer";
 import FacultyWorkload from "@/pages/FacultyWorkload/FacultyWorkload";
 import FacultyAvailability from "@/pages/FacultyAvailability/FacultyAvailability";
 import GeneratedOutputs from "@/pages/GeneratedOutputs/GeneratedOutputs";
@@ -43,6 +44,7 @@ export function AppRoutes() {
         <Route path="/" element={<Index />} />
         <Route path="/generator" element={<TimetableGenerator />} />
         <Route path="/timetables" element={<TimetableViewer />} />
+        <Route path="/rooms" element={<RoomTimetableViewer />} />
         <Route path="/workload" element={<FacultyWorkload />} />
         <Route path="/outputs" element={<GeneratedOutputs />} />
         <Route path="/availability" element={<FacultyAvailability />} />

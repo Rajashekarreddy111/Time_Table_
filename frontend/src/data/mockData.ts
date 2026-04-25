@@ -46,7 +46,10 @@ export type TimetableCell = {
   classroom?: string;
   labRoom?: string;
   sharedSections?: string[];
+  year?: string;
+  section?: string;
 };
+
 
 export type SectionTimetable = {
   year: string;
@@ -65,4 +68,8 @@ export type FacultyWorkload = {
   schedule: Record<string, (FacultyScheduleEntry | null)[]>;
 };
 
-
+export type RoomTimetable = {
+  year?: string;
+  section: string; // The section key is reused for room name
+  grid: Record<string, (TimetableCell & { year?: string, section?: string } | null)[]>; // day -> periods
+};

@@ -1754,7 +1754,15 @@ def _section_cell_text(entry: dict | None) -> str:
         lab_room = str(entry.get("labRoom") or entry.get("venue") or "").strip()
         return f"{main_line}\n({lab_room})" if lab_room else main_line
     classroom = str(entry.get("classroom", "")).strip()
-    return f"{main_line}\n({classroom})" if classroom else main_line
+    fallback_lab = str(entry.get("fallbackLab", "")).strip()
+    
+    if fallback_lab and classroom:
+        return f"{main_line}\n({fallback_lab}/{classroom})"
+    elif fallback_lab:
+        return f"{main_line}\n({fallback_lab})"
+    elif classroom:
+        return f"{main_line}\n({classroom})"
+    return main_line
 
 
 def _merge_section_day_row(
@@ -1834,6 +1842,7 @@ def _build_faculty_schedule_details(
             "section": sections,
             "classroom": str(session.get("classroom", "")).strip(),
             "lab_room": str(session.get("lab_room") or session.get("venue") or "").strip(),
+            "fallback_lab": str(session.get("fallbackLab", "")).strip(),
             "is_lab": bool(session.get("isLab")),
         }
 
@@ -1882,7 +1891,12 @@ def _faculty_slot_text(entries: list[dict] | None) -> str:
                 lines.append(f"({lab_room})")
         else:
             classroom = str(entry.get("classroom", "")).strip()
-            if classroom:
+            fallback_lab = str(entry.get("fallback_lab", "")).strip()
+            if fallback_lab and classroom:
+                lines.append(f"({fallback_lab}/{classroom})")
+            elif fallback_lab:
+                lines.append(f"({fallback_lab})")
+            elif classroom:
                 lines.append(f"({classroom})")
         rendered.append("\n".join(line for line in lines if line))
     return "\n\n".join(rendered)
@@ -1967,50 +1981,48 @@ def _allocate_classrooms_to_schedule(
     preferred_room_by_section: dict[str, str] = {}
 
     # Strict Room Stability: One room per section-session
+    lab_fallback_queue = []
+
+    # Pass 1: Normal Allocation for non-lab sessions
     for day in DAYS:
         for session_idx, academic_session in enumerate(academic_sessions):
             for section in sections:
-                # Identify if this section has theory classes in this academic session
                 theory_periods = []
+                has_lab_in_session = False
+                lab_venue = ""
+                
                 for period in academic_session:
                     cell = schedules[(year, section)][day].get(period)
-                    if isinstance(cell, dict) and not cell.get("isLab"):
-                        theory_periods.append(period)
+                    if isinstance(cell, dict):
+                        if cell.get("isLab"):
+                            has_lab_in_session = True
+                            lab_venue = cell.get("labRoom") or cell.get("venue") or ""
+                        else:
+                            theory_periods.append(period)
                 
                 if not theory_periods:
                     continue
                 
-                # Attempt to allocate ONE room for ALL theory periods in this session
+                if has_lab_in_session and lab_venue:
+                    lab_fallback_queue.append((day, session_idx, academic_session, section, theory_periods, lab_venue))
+                    continue
+
+                # Pass 1: Normal Allocation (Session-based, purely dynamic)
                 allocated_room = ""
-                
-                # Try preferred room
-                pref = preferred_room_by_section.get(section)
-                if pref and all((day, p) not in room_usage[pref] for p in theory_periods):
-                    allocated_room = pref
-                
-                # Try any available room
-                if not allocated_room:
-                    for room in normalized_rooms:
-                        if all((day, p) not in room_usage[room] for p in theory_periods):
-                            allocated_room = room
-                            break
+                for room in normalized_rooms:
+                    if all((day, p) not in room_usage[room] for p in theory_periods):
+                        allocated_room = room
+                        break
                 
                 if allocated_room:
-                    # Update usage
                     for p in theory_periods:
                         room_usage[allocated_room].add((day, p))
                     
-                    # Update preference
-                    if section not in preferred_room_by_section:
-                        preferred_room_by_section[section] = allocated_room
-                    
-                    # Update grid and session log
                     for p in theory_periods:
                         cell = schedules[(year, section)][day][p]
                         if isinstance(cell, dict):
                             cell["classroom"] = allocated_room
                     
-                    # Update session_log for Excel export
                     for log_entry in session_log:
                         if (log_entry.get("day") == day and 
                             section in log_entry.get("sections", []) and 
@@ -2018,7 +2030,6 @@ def _allocate_classrooms_to_schedule(
                             not log_entry.get("isLab")):
                             log_entry["classroom"] = allocated_room
                 else:
-                    # Report violation
                     detail = (
                         f"Unable to allocate stable classroom for section {section} "
                         f"on {day} during session {session_idx + 1} ({theory_periods})."
@@ -2031,6 +2042,44 @@ def _allocate_classrooms_to_schedule(
                         "constraint": "classroom allocation constraint",
                         "detail": detail,
                     })
+
+    # Pass 2 & 3: Handle Lab Fallback sessions
+    for day, session_idx, academic_session, section, theory_periods, lab_venue in lab_fallback_queue:
+        # First, fallback to lab venue implicitly
+        for p in theory_periods:
+            cell = schedules[(year, section)][day][p]
+            if isinstance(cell, dict):
+                cell["fallbackLab"] = lab_venue
+        
+        for log_entry in session_log:
+            if (log_entry.get("day") == day and 
+                section in log_entry.get("sections", []) and 
+                any(p in log_entry.get("periods", []) for p in theory_periods) and
+                not log_entry.get("isLab")):
+                log_entry["fallbackLab"] = lab_venue
+
+        # Attempt to upgrade to a free classroom (Pass 3, purely dynamic)
+        allocated_room = ""
+        for room in normalized_rooms:
+            if all((day, p) not in room_usage[room] for p in theory_periods):
+                allocated_room = room
+                break
+        
+        if allocated_room:
+            for p in theory_periods:
+                room_usage[allocated_room].add((day, p))
+                
+            for p in theory_periods:
+                cell = schedules[(year, section)][day][p]
+                if isinstance(cell, dict):
+                    cell["classroom"] = allocated_room
+                    
+            for log_entry in session_log:
+                if (log_entry.get("day") == day and 
+                    section in log_entry.get("sections", []) and 
+                    any(p in log_entry.get("periods", []) for p in theory_periods) and
+                    not log_entry.get("isLab")):
+                    log_entry["classroom"] = allocated_room
 
 
 def _apply_formatted_sheet_layout(
@@ -2484,7 +2533,7 @@ def _build_shared_classes_workbook(shared_sessions: list[dict]) -> Workbook:
     return workbook
 
 
-def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[dict]) -> Workbook:
+def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[dict], shared_classes: list[dict]) -> Workbook:
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "ConstraintViolations"
@@ -2511,6 +2560,20 @@ def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[
                 item.get("detail", ""),
             ]
         )
+        
+    shared_sheet = workbook.create_sheet(title="SharedClasses")
+    shared_sheet.append(["DAY", "PERIODS", "YEAR", "SECTIONS", "SUBJECT", "FACULTY", "ROOM"])
+    for sc in shared_classes:
+        shared_sheet.append([
+            sc.get("day", ""),
+            ",".join(str(p) for p in sc.get("periods", [])),
+            sc.get("year", ""),
+            ",".join(sc.get("sections", [])),
+            sc.get("subject_name", "") or sc.get("subject_id", ""),
+            ", ".join(sc.get("faculty_names", [])),
+            sc.get("classroom", "") or sc.get("labRoom", "") or sc.get("venue", ""),
+        ])
+        
     return workbook
 
 
@@ -3074,9 +3137,31 @@ def generate_timetable(
     section_workbook = _build_section_timetables_workbook(year, all_sections, schedules, timetable_metadata, period_config)
     faculty_workbook = _build_faculty_workload_workbook(session_log, faculty_id_to_name, timetable_metadata, period_config)
     
+    shared_classes = []
+    for log_entry in session_log:
+        if len(log_entry.get("sections", [])) > 1:
+            shared_classes.append(log_entry)
+            
+    constraint_report_workbook = _build_constraint_report_workbook(constraint_violations, [], shared_classes)
+    room_schedules = _build_room_schedule_map(schedules, classrooms)
+    room_workbook = _build_room_timetables_workbook(classrooms, room_schedules, timetable_metadata, period_config)
+    
+    # Serialize room grids for the frontend JSON
+    room_grids = {}
+    for room, days in room_schedules.items():
+        grid = {day: [None] * len(instructional_periods) for day in DAYS}
+        for day in DAYS:
+            for p_idx, p in enumerate(instructional_periods):
+                cell = days.get(day, {}).get(p)
+                if cell:
+                    grid[day][p_idx] = cell
+        room_grids[room] = grid
+    
     generated_files = {
         "sectionTimetables": _encode_workbook("section_timetables.xlsx", section_workbook),
         "facultyWorkload": _encode_workbook("faculty_workload.xlsx", faculty_workbook),
+        "constraintReport": _encode_workbook("constraint_report.xlsx", constraint_report_workbook),
+        "roomTimetables": _encode_workbook("room_timetables.xlsx", room_workbook),
     }
     
     timetable_id = store.next_timetable_id()
@@ -3088,6 +3173,7 @@ def generate_timetable(
         "section": selected_section,
         "grid": all_grids.get(selected_section, {day: [None] * len(instructional_periods) for day in DAYS}),
         "allGrids": all_grids,
+        "roomGrids": room_grids,
         "facultyWorkloads": faculty_workloads,
         "constraintViolations": constraint_violations,
         "unscheduledSubjects": [],
@@ -3095,7 +3181,190 @@ def generate_timetable(
         "hasConstraintViolations": not solved or bool(constraint_violations),
         "generatedFiles": generated_files,
         "timetableMetadata": timetable_metadata,
+        "sharedClasses": shared_classes,
     })
     
     _persist_faculty_occupancy(store, timetable_id, session_log, instructional_periods)
     return {"timetableId": timetable_id, "message": "Timetable generated."}
+
+
+def _build_room_schedule_map(
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    classrooms: list[str]
+) -> dict[str, dict[str, dict[int, dict | None]]]:
+    room_schedules = {room.strip(): {d: {p: None for p in PERIODS} for d in DAYS} for room in classrooms if room.strip()}
+    
+    for (year, section), grid in schedules.items():
+        for day in DAYS:
+            for p in PERIODS:
+                cell = grid.get(day, {}).get(p)
+                if not cell:
+                    continue
+                room = str(cell.get("classroom") or cell.get("labRoom") or cell.get("venue") or "").strip()
+                if not room:
+                    room = str(cell.get("fallbackLab") or "").strip()
+                if room and room in room_schedules:
+                    cloned_cell = cell.copy()
+                    cloned_cell["year"] = year
+                    cloned_cell["section"] = section
+                    # Handle multiple sections sharing a lab/classroom by appending
+                    existing = room_schedules[room][day][p]
+                    if existing:
+                        cloned_cell["section"] = f"{existing['section']}, {section}"
+                    room_schedules[room][day][p] = cloned_cell
+    
+    return room_schedules
+
+
+def _build_room_timetables_workbook_from_schedule_map(
+    room_schedules: dict[str, dict[str, dict[int, dict | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
+) -> Workbook:
+    if period_config is None:
+        period_config = DEFAULT_PERIOD_CONFIG
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    metadata = _resolve_timetable_metadata(timetable_metadata)
+    
+    header1 = [str(row.get("period", "")).strip() for row in period_config]
+    header2 = [str(row.get("time", "")).strip() for row in period_config]
+    max_col = 1 + len(period_config)
+
+    for room in sorted(room_schedules.keys()):
+        worksheet = workbook.create_sheet(title=room[:31])
+        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * (max_col - 1))
+        worksheet.append(["(AUTONOMOUS)"] + [""] * (max_col - 1))
+        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * (max_col - 1))
+        worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * (max_col - 1))
+        worksheet.append([f"ROOM TIMETABLE: {room}"] + [""] * (max_col - 1))
+        worksheet.append([""] * (max_col // 2) + [f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * (max_col // 2))
+        worksheet.append(["DAY"] + header1)
+        worksheet.append([""] + header2)
+
+        day_start_row = 9
+        section_schedule = room_schedules[room]
+        break_overlap_rows: list[int] = []
+        lunch_overlap_rows: list[int] = []
+        
+        break_cols = []
+        lunch_cols = []
+        for col_idx, row in enumerate(period_config, start=2):
+            p = str(row.get("period", "")).strip().lower()
+            if "break" in p:
+                break_cols.append(col_idx)
+            elif "lunch" in p:
+                lunch_cols.append(col_idx)
+
+        def _room_cell_text(entry: dict | None) -> str:
+            if not entry:
+                return ""
+            subject = str(entry.get("subjectName") or entry.get("subject") or "").strip()
+            year = str(entry.get("year", "")).strip()
+            section = str(entry.get("section", "")).strip()
+            return f"{subject}\n{year} {section}"
+
+        for offset, day in enumerate(DAYS):
+            row_idx = day_start_row + offset
+            worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
+            
+            display_columns = {}
+            col = 2
+            for entry in period_config:
+                p = str(entry.get("period", "")).strip()
+                if p.isdigit():
+                    display_columns[int(p)] = col
+                col += 1
+            instructional_periods = sorted(display_columns.keys())
+            
+            idx = 0
+            while idx < len(instructional_periods):
+                p = instructional_periods[idx]
+                entry = section_schedule[day].get(p)
+                worksheet.cell(row=row_idx, column=display_columns[p], value=_room_cell_text(entry))
+                
+                end_idx = idx
+                while end_idx + 1 < len(instructional_periods):
+                    next_p = instructional_periods[end_idx + 1]
+                    next_entry = section_schedule[day].get(next_p)
+                    if (
+                        display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1 
+                        and _same_section_entry(entry, next_entry) 
+                        and entry 
+                        and next_entry
+                        and entry.get("year") == next_entry.get("year") 
+                        and entry.get("section") == next_entry.get("section")
+                    ):
+                        end_idx += 1
+                    else:
+                        break
+                
+                if end_idx > idx:
+                    worksheet.merge_cells(
+                        start_row=row_idx, 
+                        start_column=display_columns[p], 
+                        end_row=row_idx, 
+                        end_column=display_columns[instructional_periods[end_idx]]
+                    )
+                idx = end_idx + 1
+                
+            overlaps_break = any(worksheet.cell(row=row_idx, column=c).value for c in break_cols)
+            overlaps_lunch = any(worksheet.cell(row=row_idx, column=c).value for c in lunch_cols)
+            if overlaps_break: break_overlap_rows.append(row_idx)
+            if overlaps_lunch: lunch_overlap_rows.append(row_idx)
+
+        worksheet.append([""] * max_col)
+        legend_separator_row = worksheet.max_row
+        worksheet.append([""] * max_col)
+        signature_separator_row = worksheet.max_row
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
+
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=max_col)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col)
+        worksheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=max_col // 2)
+        worksheet.merge_cells(start_row=6, start_column=max_col // 2 + 1, end_row=6, end_column=max_col)
+        worksheet.merge_cells(start_row=7, start_column=1, end_row=8, end_column=1)
+
+        def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
+            all_rows = [day_start_row + i for i in range(len(DAYS))]
+            segments: list[tuple[int, int]] = []
+            segment_start = None
+            for r in all_rows:
+                if r in blocked_rows:
+                    if segment_start is not None:
+                        segments.append((segment_start, r - 1))
+                        segment_start = None
+                else:
+                    if segment_start is None: segment_start = r
+            if segment_start is not None: segments.append((segment_start, all_rows[-1]))
+
+            for start, end in segments:
+                worksheet.merge_cells(start_row=start, start_column=column, end_row=end, end_column=column)
+                worksheet.cell(row=start, column=column, value=label)
+                worksheet.cell(row=start, column=column).font = BOLD_FONT
+
+        for bc in break_cols: merge_vertical_marker(bc, "BREAK", break_overlap_rows)
+        for lc in lunch_cols: merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
+
+        _apply_formatted_sheet_layout(
+            worksheet,
+            legend_row_count=0,
+            legend_start_row=legend_separator_row + 1,
+            day_start_row=day_start_row,
+            top_rows=6,
+            max_col=max_col,
+        )
+    return workbook
+
+
+def _build_room_timetables_workbook(
+    rooms: list[str],
+    room_schedules: dict[str, dict[str, dict[int, dict | None]]],
+    timetable_metadata: dict[str, Any] | None = None,
+    period_config: list[dict[str, str]] | None = None,
+) -> Workbook:
+    filtered = {room: room_schedules[room] for room in rooms if room in room_schedules}
+    return _build_room_timetables_workbook_from_schedule_map(filtered, timetable_metadata, period_config)

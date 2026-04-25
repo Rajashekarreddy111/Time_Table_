@@ -207,12 +207,32 @@ export interface TimetableRecord {
       } | null)[]
     >
   >;
+  roomGrids?: Record<
+    string,
+    Record<
+      string,
+      ({
+        subject: string;
+        subjectName?: string;
+        faculty?: string;
+        facultyName?: string;
+        isLab?: boolean;
+        classroom?: string;
+        labRoom?: string;
+        sharedSections?: string[];
+        year?: string;
+        section?: string;
+      } | null)[]
+    >
+  >;
   facultyWorkloads?: Record<string, Record<string, (string | null)[]>>;
   generatedFiles?: {
     sectionTimetables?: GeneratedWorkbookFile;
     facultyWorkload?: GeneratedWorkbookFile;
     sharedClassesReport?: GeneratedWorkbookFile;
     constraintViolationReport?: GeneratedWorkbookFile;
+    roomTimetables?: GeneratedWorkbookFile;
+    constraintReport?: GeneratedWorkbookFile;
   };
   sharedClasses?: Array<{
     year: string;
@@ -641,6 +661,28 @@ export function exportBulkFacultyAvailabilityReport(
 export function getAllSectionsWorkbook() {
   return apiRequest<GeneratedWorkbookFile>(
     "/timetables/all-sections-workbook",
+    "GET",
+  );
+}
+
+export function getAllRoomsWorkbook(room?: string) {
+  const query = room ? `?room=${encodeURIComponent(room)}` : "";
+  return apiRequest<GeneratedWorkbookFile>(
+    `/timetables/all-rooms-workbook${query}`,
+    "GET",
+  );
+}
+
+export function getRoomWorkbook(timetableId: string) {
+  return apiRequest<GeneratedWorkbookFile>(
+    `/timetables/${encodeURIComponent(timetableId)}/room-workbook`,
+    "GET",
+  );
+}
+
+export function getConstraintReportWorkbook(timetableId: string) {
+  return apiRequest<GeneratedWorkbookFile>(
+    `/timetables/${encodeURIComponent(timetableId)}/constraint-report-workbook`,
     "GET",
   );
 }

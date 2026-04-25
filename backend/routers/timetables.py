@@ -1,4 +1,5 @@
 from typing import Any
+import copy
 
 from fastapi import APIRouter, HTTPException
 from openpyxl import Workbook
@@ -11,6 +12,7 @@ from services.timetable_generator import (
     _build_faculty_workload_workbook_from_details,
     _build_section_timetables_workbook_from_schedule_map,
     _build_section_timetables_workbook,
+    _build_room_timetables_workbook_from_schedule_map,
     _encode_workbook,
     generate_timetable,
 )
@@ -253,6 +255,68 @@ def _section_schedules_from_grids(
     }
 
 
+def _latest_room_grids(
+    records: list[dict[str, Any]],
+    include_invalid: bool = False,
+    require_data: bool = True,
+) -> dict[str, dict[str, list[Any]]]:
+    latest: dict[str, dict[str, list[Any]]] = {}
+    for raw_record in records:
+        record = _enrich_subject_names(raw_record)
+        if not include_invalid and record.get("hasValidTimetable") is False:
+            continue
+        grids = record.get("roomGrids")
+        if isinstance(grids, dict) and grids:
+            for room, grid in grids.items():
+                if isinstance(grid, dict) and (not require_data or _grid_has_data(grid)):
+                    if room not in latest:
+                        latest[room] = copy.deepcopy(grid)
+                    else:
+                        for day, slots in grid.items():
+                            if day not in latest[room]:
+                                latest[room][day] = copy.deepcopy(slots)
+                                continue
+                            
+                            for idx, slot in enumerate(slots):
+                                if slot is not None:
+                                    if len(latest[room][day]) <= idx:
+                                        latest[room][day].extend([None] * (idx - len(latest[room][day]) + 1))
+                                    current = latest[room][day][idx]
+                                    if current is None:
+                                        latest[room][day][idx] = copy.deepcopy(slot)
+                                    else:
+                                        y1 = str(current.get("year") or "").replace(" Year", "").strip()
+                                        y2 = str(slot.get("year") or "").replace(" Year", "").strip()
+                                        years = {y.strip() for y in y1.split(",") if y.strip()}
+                                        if y2:
+                                            years.update({y.strip() for y in y2.split(",") if y.strip()})
+                                            
+                                        s1 = str(current.get("section") or "").strip()
+                                        s2 = str(slot.get("section") or "").strip()
+                                        sections = {s.strip() for s in s1.split(",") if s.strip()}
+                                        if s2:
+                                            sections.update({s.strip() for s in s2.split(",") if s.strip()})
+                                            
+                                        current["year"] = ", ".join(filter(None, sorted(list(years))))
+                                        current["section"] = ", ".join(filter(None, sorted(list(sections))))
+    return latest
+
+
+def _room_schedules_from_grids(
+    room_grids: dict[str, dict[str, list[Any]]],
+) -> dict[str, dict[str, dict[int, dict[str, Any] | None]]]:
+    return {
+        room: {
+            day: {
+                period: (grid.get(day, [None] * len(PERIODS))[period - 1] if len(grid.get(day, [])) >= period else None)
+                for period in PERIODS
+            }
+            for day in DAYS
+        }
+        for room, grid in room_grids.items()
+    }
+
+
 @router.post("/timetables/generate", response_model=GenerateTimetableResponse)
 async def create_timetable(payload: GenerateTimetableRequest):
     result = generate_timetable(payload, store)
@@ -288,6 +352,33 @@ async def get_all_sections_workbook():
         workbook = _build_section_timetables_workbook_from_schedule_map(schedules, metadata, _get_global_period_config())
 
     return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
+
+
+@router.get("/timetables/all-rooms-workbook")
+async def get_all_rooms_workbook(room: str | None = None):
+    records = store.list_timetables()
+    metadata = _resolve_download_metadata(records)
+    room_grids = _latest_room_grids(records)
+
+    if room:
+        room_grids = {r: g for r, g in room_grids.items() if r == room}
+
+    if not room_grids:
+        workbook = Workbook()
+        ws = workbook.active
+        ws.title = "No Timetables"
+        ws.append(["No Timetables Found"])
+        if room:
+            ws.append([f"No data for room: {room}"])
+        ws.append([f"Total records in database: {len(records)}"])
+        ws.append(["Please generate timetables first before downloading."])
+        file_name = f"Room_Timetable_{room.replace(' ', '_')}.xlsx" if room else "All_Room_Timetables_Format.xlsx"
+        return _encode_workbook(file_name, workbook)
+    else:
+        schedules = _room_schedules_from_grids(room_grids)
+        workbook = _build_room_timetables_workbook_from_schedule_map(schedules, metadata, _get_global_period_config())
+        file_name = f"Room_Timetable_{room.replace(' ', '_')}.xlsx" if room else "All_Room_Timetables_Format.xlsx"
+        return _encode_workbook(file_name, workbook)
 
 
 @router.get("/timetables/{timetable_id}")
@@ -402,3 +493,26 @@ async def reset_all_timetables():
     deleted_count = store.delete_all_timetables()
     store.delete_occupancy_by_source(None)
     return {"message": f"Deleted {deleted_count} timetables", "deletedCount": deleted_count}
+
+
+
+
+
+from fastapi.responses import Response
+import base64
+
+@router.get("/timetables/{timetable_id}/room-workbook")
+async def get_room_workbook(timetable_id: str):
+    payload = store.get_timetable(timetable_id)
+    if not payload or not payload.get("generatedFiles", {}).get("roomTimetables"):
+        raise HTTPException(status_code=404, detail="Room workbook not found")
+    
+    return payload["generatedFiles"]["roomTimetables"]
+
+@router.get("/timetables/{timetable_id}/constraint-report-workbook")
+async def get_constraint_report_workbook(timetable_id: str):
+    payload = store.get_timetable(timetable_id)
+    if not payload or not payload.get("generatedFiles", {}).get("constraintReport"):
+        raise HTTPException(status_code=404, detail="Constraint report not found")
+        
+    return payload["generatedFiles"]["constraintReport"]

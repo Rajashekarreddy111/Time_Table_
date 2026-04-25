@@ -12,6 +12,8 @@ interface TimetableGridProps {
     room?: string;
     withEffectFrom?: string;
   };
+  isRoomTimetable?: boolean;
+  hideLegend?: boolean;
 }
 
 function getCellLabel(cell: TimetableCell | null | undefined): string {
@@ -31,13 +33,15 @@ function areGridCellsEquivalent(
     (left.classroom ?? "") === (right.classroom ?? "") &&
     (left.labRoom ?? "") === (right.labRoom ?? "") &&
     (left.sharedSections ?? []).join(",") ===
-      (right.sharedSections ?? []).join(",")
+      (right.sharedSections ?? []).join(",") &&
+    (left.year ?? "") === (right.year ?? "") &&
+    (left.section ?? "") === (right.section ?? "")
   );
 }
 
 
 
-export function TimetableGrid({ grid, header }: TimetableGridProps) {
+export function TimetableGrid({ grid, header, isRoomTimetable, hideLegend }: TimetableGridProps) {
   const legendRows = buildLegend(grid);
 
   const renderDayRow = (day: string, rowIndex: number) => {
@@ -80,11 +84,15 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
                   <div className="font-semibold text-[11px] leading-tight text-foreground">
                     {currentGroup.cell?.subjectName ?? currentGroup.cell?.subject ?? ""}
                   </div>
-                  {(currentGroup.cell?.classroom || currentGroup.cell?.labRoom) && (
+                  {isRoomTimetable && currentGroup.cell?.section ? (
+                    <div className="font-normal text-[10px] text-muted-foreground leading-tight">
+                      {currentGroup.cell.year ? `${currentGroup.cell.year.replace(" Year", "")} - ` : ""}{currentGroup.cell.section}
+                    </div>
+                  ) : (currentGroup.cell?.classroom || currentGroup.cell?.labRoom) ? (
                     <div className="font-normal text-[10px] text-muted-foreground leading-tight">
                       {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               </td>,
             );
@@ -106,11 +114,15 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
               <div className="font-semibold text-[11px] leading-tight text-foreground">
                 {currentGroup.cell?.subjectName ?? currentGroup.cell?.subject ?? ""}
               </div>
-              {(currentGroup.cell?.classroom || currentGroup.cell?.labRoom) && (
+              {isRoomTimetable && currentGroup.cell?.section ? (
+                <div className="font-normal text-[10px] text-muted-foreground leading-tight">
+                  {currentGroup.cell.year ? `${currentGroup.cell.year.replace(" Year", "")} - ` : ""}{currentGroup.cell.section}
+                </div>
+              ) : (currentGroup.cell?.classroom || currentGroup.cell?.labRoom) ? (
                 <div className="font-normal text-[10px] text-muted-foreground leading-tight">
                   {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
                 </div>
-              )}
+              ) : null}
             </div>
           </td>,
         );
@@ -223,7 +235,7 @@ export function TimetableGrid({ grid, header }: TimetableGridProps) {
         <tbody>
           {DISPLAY_DAYS.map((day, idx) => renderDayRow(day.full, idx))}
 
-          {legendRows.length > 0 && (
+          {!hideLegend && legendRows.length > 0 && (
             <>
               <tr>
                 <td
