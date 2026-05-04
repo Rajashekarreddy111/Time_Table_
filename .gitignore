@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -199,6 +199,7 @@ typings/
 # dotenv environment variables file
 .env
 .env.test
+.env.local
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -259,3 +260,14 @@ Desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Project-specific generated files
+dev-startup.log
+out.txt
+out_py.txt
+test_results.json
+tmp_*.xlsx
+
+# Keep application source libraries tracked
+!frontend/src/lib/
+!frontend/src/lib/**

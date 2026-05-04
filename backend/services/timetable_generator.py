@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
+from typing import Any
 
 from fastapi import HTTPException
 from openpyxl import Workbook
@@ -125,6 +126,8 @@ class Requirement:
     shared: bool
     common_faculty: bool = False
     phase: int = 4
+    has_first_hour: bool = False
+    has_last_hour: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,11 @@ class SlotCandidate:
     faculty_id: str
     faculty_ids: tuple[str, ...]
     score: int
+
+
+EDGE_SLOT_BONUS = 140
+EDGE_SLOT_DOUBLE_BONUS = 40
+EDGE_SLOT_COMPLETION_PENALTY = 110
 
 
 def _validation_error(message: str, details: list | None = None) -> HTTPException:
@@ -586,6 +594,97 @@ def _is_allowed_compulsory_block_placement(
 
 def _default_day_availability(periods: list[int]) -> dict[str, set[int]]:
     return {day: set(periods) for day in DAYS}
+
+
+def _adjusted_day_edge_period(
+    sections: tuple[str, ...],
+    day: str,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+    *,
+    reverse: bool = False,
+) -> int | None:
+    periods = list(reversed(instructional_periods)) if reverse else instructional_periods
+    for period in periods:
+        entries = [schedules[(year, section)][day].get(period) for section in sections]
+        if all(entry is None for entry in entries):
+            return period
+        if all(isinstance(entry, dict) and bool(entry.get("isLab")) for entry in entries):
+            continue
+        return None
+    return None
+
+
+def _build_requirement_day_edge_targets(
+    requirement: Requirement,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+) -> dict[str, tuple[int | None, int | None]]:
+    return {
+        day: (
+            _adjusted_day_edge_period(
+                requirement.sections,
+                day,
+                schedules,
+                year,
+                instructional_periods,
+            ),
+            _adjusted_day_edge_period(
+                requirement.sections,
+                day,
+                schedules,
+                year,
+                instructional_periods,
+                reverse=True,
+            ),
+        )
+        for day in DAYS
+    }
+
+
+def _subject_edge_state(
+    subject_id: str,
+    subject_edge_tracker: dict[str, dict[str, int]],
+) -> tuple[bool, bool]:
+    state = subject_edge_tracker.get(subject_id, {})
+    return state.get("first", 0) > 0, state.get("last", 0) > 0
+
+
+def _edge_slot_score_delta(
+    requirement: Requirement,
+    day: str,
+    start_period: int,
+    block_size: int,
+    day_edge_targets: dict[str, tuple[int | None, int | None]],
+    remaining_hours: int,
+) -> int:
+    edge_first, edge_last = day_edge_targets.get(day, (None, None))
+    end_period = start_period + block_size - 1
+    hits_first = edge_first is not None and start_period == edge_first
+    hits_last = edge_last is not None and end_period == edge_last
+
+    score = 0
+    if hits_first and not requirement.has_first_hour:
+        score += EDGE_SLOT_BONUS
+    if hits_last and not requirement.has_last_hour:
+        score += EDGE_SLOT_BONUS
+    if hits_first and hits_last:
+        score += EDGE_SLOT_DOUBLE_BONUS
+
+    missing_after_slot = 0
+    if not requirement.has_first_hour and not hits_first:
+        missing_after_slot += 1
+    if not requirement.has_last_hour and not hits_last:
+        missing_after_slot += 1
+
+    if remaining_hours <= block_size and missing_after_slot > 0:
+        score -= EDGE_SLOT_COMPLETION_PENALTY * missing_after_slot
+    elif remaining_hours <= max(block_size + 1, requirement.min_consecutive_hours + 1) and missing_after_slot > 0:
+        score -= (EDGE_SLOT_COMPLETION_PENALTY // 2) * missing_after_slot
+
+    return score
 
 
 def _sections_are_free(
@@ -1074,6 +1173,8 @@ def _score_slot_candidate(
     empty_slots: int,
     section_flex: int,
     subject_load: int,
+    requirement_day_edges: dict[str, tuple[int | None, int | None]],
+    remaining_hours: int,
 ) -> int:
     # §14: slot scoring weights – +5 section free, +5 faculty available, +3 continuous, -5 conflict
     faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability, instructional_periods)
@@ -1105,6 +1206,14 @@ def _score_slot_candidate(
         + faculty_flex
         + faculty_load_penalty
         + clustering_penalty
+        + _edge_slot_score_delta(
+            requirement,
+            day,
+            start_period,
+            block_size,
+            requirement_day_edges,
+            remaining_hours,
+        )
     )
 
 
@@ -1119,6 +1228,8 @@ def _score_slot_candidate_fast(
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
     instructional_periods: list[int],
+    requirement_day_edges: dict[str, tuple[int | None, int | None]],
+    remaining_hours: int,
 ) -> int:
     """
     Performance-focused scoring:
@@ -1162,6 +1273,14 @@ def _score_slot_candidate_fast(
     score += (block_size * 2)  # prefer longer blocks
     score += center_bonus
     score += shared_bonus
+    score += _edge_slot_score_delta(
+        requirement,
+        day,
+        start_period,
+        block_size,
+        requirement_day_edges,
+        remaining_hours,
+    )
     return int(score)
 
 
@@ -1178,6 +1297,7 @@ def _enumerate_slot_candidates(
     sessions: list[tuple[int, ...]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
+    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> list[SlotCandidate]:
     """
     Optimized candidate enumeration:
@@ -1188,6 +1308,16 @@ def _enumerate_slot_candidates(
     - DETERMINISTIC: sort includes faculty_id for stable tie-breaking
     """
     candidates: list[SlotCandidate] = []
+    requirement.has_first_hour, requirement.has_last_hour = _subject_edge_state(
+        requirement.subject_id,
+        subject_edge_tracker,
+    )
+    requirement_day_edges = _build_requirement_day_edge_targets(
+        requirement,
+        schedules,
+        year,
+        instructional_periods,
+    )
     # Pre-compute once per call (O(1) via tracker)
     empty_slots = _remaining_empty_slots_for_sections(requirement.sections, free_slots_tracker)
     tail_fill = 3 if empty_slots <= len(requirement.sections) * 8 else 0
@@ -1258,6 +1388,14 @@ def _enumerate_slot_candidates(
                     + section_flex
                     + faculty_flex
                     + (-3 * max(0, faculty_load + block_size - 4))
+                    + _edge_slot_score_delta(
+                        requirement,
+                        day,
+                        start_period,
+                        block_size,
+                        requirement_day_edges,
+                        remaining_hours,
+                    )
                 )
 
                 candidates.append(SlotCandidate(
@@ -1292,6 +1430,7 @@ def _select_next_requirement(
     sessions: list[tuple[int, ...]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
+    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> tuple[int | None, list[SlotCandidate]]:
     """
     MRV (Minimum Remaining Values) heuristic:
@@ -1303,18 +1442,24 @@ def _select_next_requirement(
     """
     best_idx: int | None = None
     best_candidates: list[SlotCandidate] = []
-    best_key: tuple[int, int, int, int, str, str] | None = None
+    best_key: tuple[int, int, int, int, int, str, str] | None = None
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
         if remaining <= 0 or not requirement.faculty_id:
             continue
 
+        requirement.has_first_hour, requirement.has_last_hour = _subject_edge_state(
+            requirement.subject_id,
+            subject_edge_tracker,
+        )
+
         candidates = _enumerate_slot_candidates(
             requirement, remaining, schedules, faculty_busy,
             faculty_availability, year, days_order, periods_order,
             instructional_periods, sessions, candidate_limit,
             free_slots_tracker,
+            subject_edge_tracker,
         )
 
         # FAIL FAST: 0 candidates means this branch is dead
@@ -1324,6 +1469,7 @@ def _select_next_requirement(
         # Deterministic MRV key — avoids expensive _requirement_weekly_capacity
         key = (
             len(candidates),                       # fewer candidates = more constrained
+            -(int(not requirement.has_first_hour) + int(not requirement.has_last_hour)),
             0 if requirement.common_faculty else 1, # common faculty first
             -requirement.min_consecutive_hours,     # harder blocks first
             -remaining,                             # more hours remaining first
@@ -1355,6 +1501,8 @@ def _place_block(
     faculty_id_to_name: dict[str, str],
     session_log: list[dict],
     free_slots_tracker: dict[str, int],
+    subject_edge_tracker: dict[str, dict[str, int]],
+    instructional_periods: list[int],
     source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
@@ -1363,6 +1511,15 @@ def _place_block(
     faculty_ids = tuple(_normalize_id_token(fid) for fid in faculty_ids if _normalize_id_token(fid))
     faculty_id, faculty_name = _resolve_faculty_display(faculty_ids, faculty_id_to_name)
     periods = list(range(start_period, start_period + block_size))
+    day_edges = _build_requirement_day_edge_targets(
+        requirement,
+        schedules,
+        year,
+        instructional_periods,
+    )
+    edge_first, edge_last = day_edges.get(day, (None, None))
+    hits_first = edge_first is not None and start_period == edge_first
+    hits_last = edge_last is not None and periods[-1] == edge_last
     for period in periods:
         for faculty_token in faculty_ids:
             faculty_busy.setdefault(faculty_token, set()).add((day, period))
@@ -1381,6 +1538,12 @@ def _place_block(
             }
             if section in free_slots_tracker:
                 free_slots_tracker[section] -= 1
+    if hits_first or hits_last:
+        edge_state = subject_edge_tracker.setdefault(subject_id, {"first": 0, "last": 0})
+        if hits_first:
+            edge_state["first"] += 1
+        if hits_last:
+            edge_state["last"] += 1
     # §21: tag source so only file-driven sessions appear in the shared class report
     session_log.append(
         {
@@ -1398,6 +1561,8 @@ def _place_block(
             "isLab": False,
             "shared": len(requirement.sections) > 1,
             "source": source,
+            "satisfiesFirstHour": hits_first,
+            "satisfiesLastHour": hits_last,
         }
     )
     return [(day, period) for period in periods]
@@ -1412,6 +1577,7 @@ def _undo_block(
     year: str,
     session_log: list[dict],
     free_slots_tracker: dict[str, int],
+    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> None:
     for day, period in placements:
         for faculty_token in faculty_ids:
@@ -1421,7 +1587,75 @@ def _undo_block(
             if section in free_slots_tracker:
                 free_slots_tracker[section] += 1
     if session_log:
-        session_log.pop()
+        removed = session_log.pop()
+        subject_id = _normalize_id_token(removed.get("subject_id", ""))
+        if subject_id and subject_id in subject_edge_tracker:
+            if removed.get("satisfiesFirstHour"):
+                subject_edge_tracker[subject_id]["first"] = max(0, subject_edge_tracker[subject_id].get("first", 0) - 1)
+            if removed.get("satisfiesLastHour"):
+                subject_edge_tracker[subject_id]["last"] = max(0, subject_edge_tracker[subject_id].get("last", 0) - 1)
+
+
+def _evaluate_subject_edge_coverage(
+    requirements: list[Requirement],
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+) -> tuple[dict[str, dict[str, bool]], list[dict]]:
+    subject_sections: dict[str, set[str]] = {}
+    coverage: dict[str, dict[str, bool]] = {}
+
+    for requirement in requirements:
+        subject_sections.setdefault(requirement.subject_id, set()).update(requirement.sections)
+        coverage.setdefault(requirement.subject_id, {"first": False, "last": False})
+
+    for requirement in requirements:
+        day_edges = _build_requirement_day_edge_targets(
+            requirement,
+            schedules,
+            year,
+            instructional_periods,
+        )
+        for day in DAYS:
+            edge_first, edge_last = day_edges.get(day, (None, None))
+            if edge_first is not None:
+                first_entry = schedules[(year, requirement.sections[0])][day].get(edge_first)
+                if isinstance(first_entry, dict):
+                    subject_id = _normalize_id_token(first_entry.get("subjectId", "") or first_entry.get("subject", ""))
+                    if subject_id in coverage:
+                        coverage[subject_id]["first"] = True
+            if edge_last is not None:
+                last_entry = schedules[(year, requirement.sections[0])][day].get(edge_last)
+                if isinstance(last_entry, dict):
+                    subject_id = _normalize_id_token(last_entry.get("subjectId", "") or last_entry.get("subject", ""))
+                    if subject_id in coverage:
+                        coverage[subject_id]["last"] = True
+
+    violations: list[dict] = []
+    for subject_id, state in sorted(coverage.items()):
+        missing: list[str] = []
+        if not state.get("first"):
+            missing.append("first-hour slot")
+        if not state.get("last"):
+            missing.append("last-hour slot")
+        if not missing:
+            continue
+        sections = sorted(subject_sections.get(subject_id, set()))
+        violations.append(
+            {
+                "year": year,
+                "sections": sections,
+                "subject_id": subject_id,
+                "faculty_id": "",
+                "constraint": "subject edge-hour preference",
+                "detail": (
+                    f"Subject {subject_id} could not be placed in {' and '.join(missing)} "
+                    "after applying lab-safe day-edge adjustments."
+                ),
+            }
+        )
+
+    return coverage, violations
 
 
 def _infer_failure_reason(
@@ -2741,6 +2975,7 @@ def generate_timetable(
         prior_room_busy.setdefault(room, set()).update(slots)
         
     session_log: list[dict] = []
+    subject_edge_tracker: dict[str, dict[str, int]] = {}
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
     locked_hours_by_section: dict[str, int] = {}
@@ -3080,7 +3315,8 @@ def generate_timetable(
         def backtrack() -> bool:
             next_req_idx, candidates = _select_next_requirement(
                 requirements, remaining_by_req, schedules, faculty_busy, faculty_availability,
-                year, days_order, periods_order, instructional_periods, sessions, 8, free_slots_tracker
+                year, days_order, periods_order, instructional_periods, sessions, 8, free_slots_tracker,
+                subject_edge_tracker,
             )
             if next_req_idx is None: return True
             if not candidates: return False
@@ -3090,12 +3326,22 @@ def generate_timetable(
                 placements = _place_block(
                     req, cand.faculty_ids, cand.day, cand.start_period, cand.block_size,
                     schedules, faculty_busy, year, subject_id_to_name, faculty_id_to_name,
-                    session_log, free_slots_tracker, source="solver"
+                    session_log, free_slots_tracker, subject_edge_tracker, instructional_periods, source="solver"
                 )
                 remaining_by_req[next_req_idx] -= cand.block_size
                 if backtrack(): return True
                 remaining_by_req[next_req_idx] += cand.block_size
-                _undo_block(req, cand.faculty_ids, placements, schedules, faculty_busy, year, session_log, free_slots_tracker)
+                _undo_block(
+                    req,
+                    cand.faculty_ids,
+                    placements,
+                    schedules,
+                    faculty_busy,
+                    year,
+                    session_log,
+                    free_slots_tracker,
+                    subject_edge_tracker,
+                )
             return False
 
         if backtrack():
@@ -3130,6 +3376,13 @@ def generate_timetable(
         constraint_violations, instructional_periods, sessions,
         prior_room_busy=prior_room_busy
     )
+    _, edge_constraint_violations = _evaluate_subject_edge_coverage(
+        requirements,
+        schedules,
+        year,
+        instructional_periods,
+    )
+    constraint_violations.extend(edge_constraint_violations)
     
     all_grids = _serialize_section_grids(year, all_sections, schedules, instructional_periods)
     faculty_workloads = _build_faculty_workloads_from_sessions(session_log, instructional_periods)
