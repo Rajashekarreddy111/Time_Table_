@@ -22,6 +22,13 @@ export function getCellByPeriod(
   return grid[day]?.[period - 1] ?? null;
 }
 
+export function getCellRoomLabel(cell: TimetableCell | null | undefined): string {
+  if (!cell) return "";
+  if (cell.isLab) return cell.labRoom ?? "";
+  if (cell.fallbackLab && cell.classroom) return `${cell.fallbackLab}/${cell.classroom}`;
+  return cell.fallbackLab ?? cell.classroom ?? "";
+}
+
 export function buildLegend(grid: Record<string, (TimetableCell | null)[]>): LegendItem[] {
   const seen = new Map<string, LegendItem>();
 

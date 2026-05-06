@@ -42,37 +42,43 @@ def _clean_excel_cell(value) -> str | None:
     return text or None
 
 
-def _looks_like_grouped_main_timetable_header(rows: list[tuple]) -> bool:
-    if len(rows) < 2:
-        return False
+def _normalize_grouped_header_token(value) -> str:
+    text = (_clean_excel_cell(value) or "").upper()
+    return " ".join(text.replace("_", " ").replace("-", " ").split())
 
-    first_row = [_clean_excel_cell(value) for value in rows[0]]
-    second_row = [_clean_excel_cell(value) for value in rows[1]]
 
+def _is_grouped_main_header_pair(first_row: list[str | None], second_row: list[str | None]) -> bool:
     if len(first_row) < 5 or len(second_row) < 5:
         return False
 
-    fixed_headers = [cell.upper() if cell else "" for cell in first_row[:2]]
+    fixed_headers = [_normalize_grouped_header_token(cell) for cell in first_row[:2]]
     if fixed_headers != ["YEAR", "SUBJECT"]:
         return False
 
     section_seen = False
-
     for column_index in range(2, len(second_row), 3):
         if column_index + 2 >= len(second_row):
             break
-
         section = first_row[column_index]
         triplet = second_row[column_index:column_index + 3]
         if not section:
             continue
-
-        normalized_triplet = [cell.upper() if cell else "" for cell in triplet]
-        if normalized_triplet != ["NO OF HOURS", "FACULTY-ID", "CONTINUOUS HOURS"]:
+        normalized_triplet = [_normalize_grouped_header_token(cell) for cell in triplet]
+        if normalized_triplet != ["NO OF HOURS", "FACULTY ID", "CONTINUOUS HOURS"]:
             return False
         section_seen = True
-
     return section_seen
+
+
+def _looks_like_grouped_main_timetable_header(rows: list[tuple]) -> bool:
+    if len(rows) < 2:
+        return False
+    for row_index in range(len(rows) - 1):
+        first_row = [_clean_excel_cell(value) for value in rows[row_index]]
+        second_row = [_clean_excel_cell(value) for value in rows[row_index + 1]]
+        if _is_grouped_main_header_pair(first_row, second_row):
+            return True
+    return False
 
 
 def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
@@ -93,8 +99,8 @@ def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
             triplet = subheader_row[column_index:column_index + 3]
             if not section:
                 continue
-            normalized_triplet = [cell.upper() if cell else "" for cell in triplet]
-            if normalized_triplet != ["NO OF HOURS", "FACULTY-ID", "CONTINUOUS HOURS"]:
+            normalized_triplet = [_normalize_grouped_header_token(cell) for cell in triplet]
+            if normalized_triplet != ["NO OF HOURS", "FACULTY ID", "CONTINUOUS HOURS"]:
                 continue
             section_name = str(section).strip().upper()
             columns.extend(
@@ -114,8 +120,7 @@ def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
         first_row = [_clean_excel_cell(value) for value in rows[row_index]]
         second_row = [_clean_excel_cell(value) for value in rows[row_index + 1]]
 
-        header_prefix = [(cell or "").upper() for cell in first_row[:2]]
-        if header_prefix != ["YEAR", "SUBJECT"]:
+        if not _is_grouped_main_header_pair(first_row, second_row):
             row_index += 1
             continue
 
@@ -133,8 +138,8 @@ def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
                 row_index += 1
                 continue
 
-            next_header_prefix = [(cell or "").upper() for cell in cleaned_current[:2]]
-            if next_header_prefix == ["YEAR", "SUBJECT"]:
+            next_second_row = [_clean_excel_cell(value) for value in rows[row_index + 1]] if row_index + 1 < len(rows) else []
+            if _is_grouped_main_header_pair(cleaned_current, next_second_row):
                 break
 
             values = current_row[:block_width]

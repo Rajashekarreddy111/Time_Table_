@@ -13,7 +13,13 @@ from models.schemas import (  # noqa: E402
     ManualLabEntry,
     SharedClassEntry,
 )
-from services.timetable_generator import DAYS, generate_timetable  # noqa: E402
+from services.timetable_generator import (  # noqa: E402
+    DAYS,
+    _allocate_classrooms_to_schedule,
+    _build_room_inventory,
+    _build_section_strength_map,
+    generate_timetable,
+)
 from storage.memory_store import MemoryStore  # noqa: E402
 
 
@@ -39,6 +45,167 @@ def _metadata() -> dict[str, object]:
 
 
 class TimetableSolverTests(unittest.TestCase):
+    def test_single_section_keeps_same_room_within_session(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "SUB1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "SUB2",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            ["A"],
+            schedules,
+            session_log,
+            ["C101", "C102"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            section_strength_map={"A": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual(
+            schedules[(year, "A")]["Monday"][1].get("classroom"),
+            schedules[(year, "A")]["Monday"][2].get("classroom"),
+        )
+
+    def test_partial_session_shared_class_uses_same_room_only_for_shared_period(self) -> None:
+        year = "2nd Year"
+        sections = ["A", "B"]
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+            (year, "B"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "A1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "B")]["Monday"][1] = {
+            "subject": "B1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "SHARED",
+            "isLab": False,
+            "sharedSections": ["A", "B"],
+        }
+        schedules[(year, "B")]["Monday"][2] = {
+            "subject": "SHARED",
+            "isLab": False,
+            "sharedSections": ["A", "B"],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [1], "sections": ["B"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A", "B"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            sections,
+            schedules,
+            session_log,
+            ["C101", "C102", "C103"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            section_strength_map={"A": 30, "B": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertNotEqual(
+            schedules[(year, "A")]["Monday"][1].get("classroom"),
+            schedules[(year, "B")]["Monday"][1].get("classroom"),
+        )
+        self.assertEqual(
+            schedules[(year, "A")]["Monday"][2].get("classroom"),
+            schedules[(year, "B")]["Monday"][2].get("classroom"),
+        )
+
+    def test_strength_can_push_allocation_to_lab_room_when_needed(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "BIG",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "BIG2",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            ["A"],
+            schedules,
+            session_log,
+            ["C101", "L201"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            lab_room_names={"L201"},
+            room_capacity_map={"C101": 60, "L201": 80},
+            section_strength_map={"2nd Year|A": 75},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual("L201", schedules[(year, "A")]["Monday"][1].get("classroom"))
+        self.assertEqual("L201", schedules[(year, "A")]["Monday"][2].get("classroom"))
+
+    def test_classroom_template_2c1_section_maps_strength_from_same_file(self) -> None:
+        store = MemoryStore()
+        store.save_scoped_mapping(
+            "classrooms",
+            "global",
+            {
+                "rows": [
+                    {"class_number": "1101", "room_type": "classroom", "capacity": 75, "section": "2C1", "strength": 70},
+                    {"class_number": "1108", "room_type": "classroom", "capacity": 170, "section": "2G1", "strength": 70},
+                    {"class_number": "2301", "room_type": "lab", "capacity": "", "section": "3C4", "strength": 70},
+                ]
+            },
+            allow_overwrite=True,
+        )
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="C1",
+            timetableMetadata=_metadata(),
+        )
+
+        room_inventory = _build_room_inventory(request, store)
+        section_strength_map = _build_section_strength_map(request, store)
+
+        self.assertEqual(70, section_strength_map.get("2nd Year|C1"))
+        self.assertEqual("1101", room_inventory[0].get("name"))
+        self.assertEqual(75, room_inventory[0].get("capacity"))
+
     def test_post_allocation_assigns_classroom_and_keeps_continuous_block_room(self) -> None:
         store = MemoryStore()
         store.save_scoped_mapping(

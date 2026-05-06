@@ -340,9 +340,9 @@ async def classrooms_template(
     return _template_response(
         "classrooms-template.xlsx",
         [
-            {"class_number": "C101"},
-            {"class_number": "C102"},
-            {"class_number": "C103"},
+            {"class_number": "C101", "room_type": "classroom", "capacity": 72, "section": "3rd-G1", "strength": 68},
+            {"class_number": "C102", "room_type": "classroom", "capacity": 66, "section": "3rd-G2", "strength": 64},
+            {"class_number": "L2202", "room_type": "lab", "capacity": "", "section": "3rd-C1", "strength": 60},
         ],
         template_type,
     )

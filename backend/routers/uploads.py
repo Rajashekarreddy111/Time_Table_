@@ -23,7 +23,13 @@ def _validation_error(message: str, details: list | None = None) -> HTTPExceptio
 def _to_text(value) -> str:
     if value is None:
         return ""
-    return str(value).strip()
+    try:
+        if value != value:
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    return "" if text.lower() == "nan" else text
 
 
 def _normalize_workload_day(value) -> str:
@@ -47,6 +53,11 @@ def _normalize_workload_day(value) -> str:
 
 
 def _normalize_token_id(value) -> str:
+    token = _to_text(value)
+    return token[:-2] if token.endswith(".0") else token
+
+
+def _normalize_room_or_section_text(value) -> str:
     token = _to_text(value)
     return token[:-2] if token.endswith(".0") else token
 
@@ -266,17 +277,71 @@ def _normalize_continuous_rules(rows: list[dict]) -> list[dict]:
 
 def _normalize_classroom_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, bool]] = set()
     for row in rows:
         classroom = (
-            _to_text(row.get("class_number"))
-            or _to_text(row.get("classroom"))
-            or _to_text(row.get("room"))
+            _normalize_room_or_section_text(row.get("class_number"))
+            or _normalize_room_or_section_text(row.get("classroom"))
+            or _normalize_room_or_section_text(row.get("room"))
         )
-        if not classroom or classroom in seen:
-            continue
-        seen.add(classroom)
-        normalized.append({"class_number": classroom})
+        room_type = (
+            _to_text(row.get("room_type"))
+            or _to_text(row.get("type"))
+            or _to_text(row.get("category"))
+        ).lower()
+        is_lab_value = _to_text(row.get("is_lab")).lower()
+        is_lab = room_type == "lab" or is_lab_value in {"1", "true", "yes", "y"}
+        capacity_text = (
+            _to_text(row.get("capacity"))
+            or _to_text(row.get("room_capacity"))
+            or _to_text(row.get("class_capacity"))
+        )
+        section_name = (
+            _normalize_room_or_section_text(row.get("section"))
+            or _normalize_room_or_section_text(row.get("section_name"))
+            or _normalize_room_or_section_text(row.get("section_names"))
+        )
+        strength_text = (
+            _to_text(row.get("strength"))
+            or _to_text(row.get("section_strength"))
+            or _to_text(row.get("student_strength"))
+        )
+        capacity = None
+        strength = None
+        if capacity_text:
+            try:
+                capacity = int(float(capacity_text))
+            except ValueError:
+                capacity = None
+        if strength_text:
+            try:
+                strength = int(float(strength_text))
+            except ValueError:
+                strength = None
+        if classroom:
+            key = (classroom, is_lab)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "class_number": classroom,
+                    "is_lab": is_lab,
+                    "capacity": capacity,
+                    "section_name": section_name,
+                    "strength": strength,
+                }
+            )
+        elif section_name and strength is not None:
+            normalized.append(
+                {
+                    "class_number": "",
+                    "is_lab": False,
+                    "capacity": None,
+                    "section_name": section_name,
+                    "strength": strength,
+                }
+            )
     if not normalized:
         raise _validation_error(
             "Required columns are missing in classroom file",
@@ -295,7 +360,7 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
             continue
 
         # Accept both "1,2,3" and "1, 2, 3" formats.
-        sections = [s.strip() for s in sections_raw.split(",") if s.strip()]
+        sections = [_normalize_room_or_section_text(s) for s in sections_raw.split(",") if _normalize_room_or_section_text(s)]
         if not sections:
             continue
 
@@ -308,6 +373,7 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
                     "sections": [],
                     "sections_count": int(sections[0]),
                     "subject": subject,
+                    "subject_id": subject,
                 }
             )
             continue
@@ -317,6 +383,7 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
                 "year": year,
                 "sections": sections,
                 "subject": subject,
+                "subject_id": subject,
             }
         )
         

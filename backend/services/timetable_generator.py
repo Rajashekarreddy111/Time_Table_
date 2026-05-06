@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
-from typing import Any
 
 from fastapi import HTTPException
 from openpyxl import Workbook
@@ -126,8 +125,6 @@ class Requirement:
     shared: bool
     common_faculty: bool = False
     phase: int = 4
-    has_first_hour: bool = False
-    has_last_hour: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,11 +135,6 @@ class SlotCandidate:
     faculty_id: str
     faculty_ids: tuple[str, ...]
     score: int
-
-
-EDGE_SLOT_BONUS = 140
-EDGE_SLOT_DOUBLE_BONUS = 40
-EDGE_SLOT_COMPLETION_PENALTY = 110
 
 
 def _validation_error(message: str, details: list | None = None) -> HTTPException:
@@ -183,9 +175,32 @@ def _resolve_subject_output(subject_id: str, subject_id_to_name: dict[str, str])
 
 def _normalize_id_token(value: str | int | float | None) -> str:
     token = str(value or "").strip()
+    if token.lower() == "nan":
+        return ""
     if token.endswith(".0"):
         token = token[:-2]
     return token
+
+
+def _parse_year_and_section_token(value: str | int | float | None) -> tuple[str, str]:
+    import re
+
+    text = _normalize_id_token(value)
+    if not text:
+        return "", ""
+
+    normalized_text = re.sub(r"\s+", " ", text).strip()
+    match = re.search(
+        r"(?P<year>(?:\d+(?:ST|ND|RD|TH)?|I|II|III|IV))\s*(?:YEAR)?\s*[-/]?\s*(?P<section>[A-Z]\d+)",
+        normalized_text,
+        re.IGNORECASE,
+    )
+    if not match:
+        compact = re.sub(r"[^A-Z0-9]", "", normalized_text.upper())
+        match = re.search(r"(?P<year>(?:1|2|3|4|I|II|III|IV))(?P<section>[A-Z]\d+)", compact, re.IGNORECASE)
+    if not match:
+        return "", ""
+    return normalize_year(match.group("year") or ""), _normalize_id_token(match.group("section") or "").upper()
 
 
 def _split_faculty_tokens(raw_faculty_id: str) -> tuple[str, ...]:
@@ -371,23 +386,82 @@ def _build_classroom_list(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
 ) -> list[str]:
+    return [item["name"] for item in _build_room_inventory(request_data, store)]
+
+
+def _build_room_inventory(
+    request_data: GenerateTimetableRequest,
+    store: MemoryStore,
+) -> list[dict[str, object]]:
     payload = store.get_scoped_mapping("classrooms", "global")
     if (not payload or not payload.get("rows")) and request_data.mappingFileIds and request_data.mappingFileIds.classrooms:
         payload = store.get_file_map(request_data.mappingFileIds.classrooms)
 
-    classrooms: list[str] = []
+    rooms: list[dict[str, object]] = []
     seen: set[str] = set()
     for row in (payload or {}).get("rows", []):
-        classroom = str(
+        room_name = _normalize_id_token(
             row.get("class_number", "")
             or row.get("classroom", "")
             or row.get("room", "")
-        ).strip()
-        if not classroom or classroom in seen:
+        )
+        if not room_name or room_name in seen:
             continue
-        seen.add(classroom)
-        classrooms.append(classroom)
-    return classrooms
+        seen.add(room_name)
+        room_type = str(row.get("room_type", "") or row.get("type", "") or row.get("category", "")).strip().lower()
+        is_lab_flag = str(row.get("is_lab", "")).strip().lower()
+        is_lab = room_type == "lab" or is_lab_flag in {"1", "true", "yes", "y"}
+        raw_capacity = row.get("capacity", row.get("room_capacity", row.get("class_capacity")))
+        capacity = None
+        if str(raw_capacity or "").strip():
+            try:
+                capacity = int(float(str(raw_capacity).strip()))
+            except ValueError:
+                capacity = None
+        rooms.append(
+            {
+                "name": room_name,
+                "is_lab": is_lab,
+                "capacity": capacity,
+            }
+        )
+    return rooms
+
+
+def _build_section_strength_map(
+    request_data: GenerateTimetableRequest,
+    store: MemoryStore,
+) -> dict[str, int]:
+    payload = store.get_scoped_mapping("classrooms", "global")
+    if (not payload or not payload.get("rows")) and request_data.mappingFileIds and request_data.mappingFileIds.classrooms:
+        payload = store.get_file_map(request_data.mappingFileIds.classrooms)
+
+    strengths: dict[str, int] = {}
+    for row in (payload or {}).get("rows", []):
+        section_name = str(
+            _normalize_id_token(
+                row.get("section_name", "")
+                or row.get("section", "")
+                or row.get("section_names", "")
+            )
+        ).strip()
+        raw_strength = row.get("strength", row.get("section_strength", row.get("student_strength")))
+        if not section_name or not str(raw_strength or "").strip():
+            continue
+        try:
+            strength = int(float(str(raw_strength).strip()))
+        except ValueError:
+            continue
+        candidate_keys = {section_name, section_name.upper()}
+        parsed_year, parsed_section = _parse_year_and_section_token(section_name)
+        if parsed_section:
+            candidate_keys.add(parsed_section)
+        if parsed_year and parsed_section:
+            candidate_keys.add(f"{parsed_year}|{parsed_section}")
+        for key in candidate_keys:
+            if key and key not in strengths:
+                strengths[key] = strength
+    return strengths
 
 
 def _build_faculty_availability(
@@ -594,97 +668,6 @@ def _is_allowed_compulsory_block_placement(
 
 def _default_day_availability(periods: list[int]) -> dict[str, set[int]]:
     return {day: set(periods) for day in DAYS}
-
-
-def _adjusted_day_edge_period(
-    sections: tuple[str, ...],
-    day: str,
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    year: str,
-    instructional_periods: list[int],
-    *,
-    reverse: bool = False,
-) -> int | None:
-    periods = list(reversed(instructional_periods)) if reverse else instructional_periods
-    for period in periods:
-        entries = [schedules[(year, section)][day].get(period) for section in sections]
-        if all(entry is None for entry in entries):
-            return period
-        if all(isinstance(entry, dict) and bool(entry.get("isLab")) for entry in entries):
-            continue
-        return None
-    return None
-
-
-def _build_requirement_day_edge_targets(
-    requirement: Requirement,
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    year: str,
-    instructional_periods: list[int],
-) -> dict[str, tuple[int | None, int | None]]:
-    return {
-        day: (
-            _adjusted_day_edge_period(
-                requirement.sections,
-                day,
-                schedules,
-                year,
-                instructional_periods,
-            ),
-            _adjusted_day_edge_period(
-                requirement.sections,
-                day,
-                schedules,
-                year,
-                instructional_periods,
-                reverse=True,
-            ),
-        )
-        for day in DAYS
-    }
-
-
-def _subject_edge_state(
-    subject_id: str,
-    subject_edge_tracker: dict[str, dict[str, int]],
-) -> tuple[bool, bool]:
-    state = subject_edge_tracker.get(subject_id, {})
-    return state.get("first", 0) > 0, state.get("last", 0) > 0
-
-
-def _edge_slot_score_delta(
-    requirement: Requirement,
-    day: str,
-    start_period: int,
-    block_size: int,
-    day_edge_targets: dict[str, tuple[int | None, int | None]],
-    remaining_hours: int,
-) -> int:
-    edge_first, edge_last = day_edge_targets.get(day, (None, None))
-    end_period = start_period + block_size - 1
-    hits_first = edge_first is not None and start_period == edge_first
-    hits_last = edge_last is not None and end_period == edge_last
-
-    score = 0
-    if hits_first and not requirement.has_first_hour:
-        score += EDGE_SLOT_BONUS
-    if hits_last and not requirement.has_last_hour:
-        score += EDGE_SLOT_BONUS
-    if hits_first and hits_last:
-        score += EDGE_SLOT_DOUBLE_BONUS
-
-    missing_after_slot = 0
-    if not requirement.has_first_hour and not hits_first:
-        missing_after_slot += 1
-    if not requirement.has_last_hour and not hits_last:
-        missing_after_slot += 1
-
-    if remaining_hours <= block_size and missing_after_slot > 0:
-        score -= EDGE_SLOT_COMPLETION_PENALTY * missing_after_slot
-    elif remaining_hours <= max(block_size + 1, requirement.min_consecutive_hours + 1) and missing_after_slot > 0:
-        score -= (EDGE_SLOT_COMPLETION_PENALTY // 2) * missing_after_slot
-
-    return score
 
 
 def _sections_are_free(
@@ -999,7 +982,15 @@ def _extract_room_occupancy_from_timetable(record: dict | None) -> dict[str, set
             for period_index, slot in enumerate(slots, start=1):
                 if not isinstance(slot, dict):
                     continue
-                room = str(slot.get("classroom") or slot.get("labRoom") or slot.get("venue") or "").strip()
+                # For cross-year room reuse, a mixed lab-session should reserve the lab first.
+                # The optional classroom assignment for that same slot must not block another year.
+                room = _normalize_id_token(
+                    slot.get("fallbackLab")
+                    or slot.get("labRoom")
+                    or slot.get("venue")
+                    or slot.get("classroom")
+                    or ""
+                )
                 if room:
                     occupancy.setdefault(room, set()).add((day, period_index))
     return occupancy
@@ -1101,7 +1092,7 @@ def _build_global_lab_room_occupancy(
             continue
         day = _normalize_day(int(row.get("day", 0) or 0))
         periods = [int(period) for period in row.get("hours", []) if int(period) in instructional_periods]
-        venue = str(row.get("venue") or "").strip()
+        venue = _normalize_id_token(row.get("venue") or "")
         if not day or not periods or not venue:
             continue
         occupancy.setdefault(venue, set()).update((day, period) for period in periods)
@@ -1173,8 +1164,6 @@ def _score_slot_candidate(
     empty_slots: int,
     section_flex: int,
     subject_load: int,
-    requirement_day_edges: dict[str, tuple[int | None, int | None]],
-    remaining_hours: int,
 ) -> int:
     # §14: slot scoring weights – +5 section free, +5 faculty available, +3 continuous, -5 conflict
     faculty_flex = _count_available_periods_for_faculty(faculty_id, day, faculty_busy, faculty_availability, instructional_periods)
@@ -1206,14 +1195,6 @@ def _score_slot_candidate(
         + faculty_flex
         + faculty_load_penalty
         + clustering_penalty
-        + _edge_slot_score_delta(
-            requirement,
-            day,
-            start_period,
-            block_size,
-            requirement_day_edges,
-            remaining_hours,
-        )
     )
 
 
@@ -1228,8 +1209,6 @@ def _score_slot_candidate_fast(
     faculty_availability: dict[str, dict[str, set[int]]],
     year: str,
     instructional_periods: list[int],
-    requirement_day_edges: dict[str, tuple[int | None, int | None]],
-    remaining_hours: int,
 ) -> int:
     """
     Performance-focused scoring:
@@ -1273,14 +1252,6 @@ def _score_slot_candidate_fast(
     score += (block_size * 2)  # prefer longer blocks
     score += center_bonus
     score += shared_bonus
-    score += _edge_slot_score_delta(
-        requirement,
-        day,
-        start_period,
-        block_size,
-        requirement_day_edges,
-        remaining_hours,
-    )
     return int(score)
 
 
@@ -1297,7 +1268,6 @@ def _enumerate_slot_candidates(
     sessions: list[tuple[int, ...]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
-    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> list[SlotCandidate]:
     """
     Optimized candidate enumeration:
@@ -1308,16 +1278,6 @@ def _enumerate_slot_candidates(
     - DETERMINISTIC: sort includes faculty_id for stable tie-breaking
     """
     candidates: list[SlotCandidate] = []
-    requirement.has_first_hour, requirement.has_last_hour = _subject_edge_state(
-        requirement.subject_id,
-        subject_edge_tracker,
-    )
-    requirement_day_edges = _build_requirement_day_edge_targets(
-        requirement,
-        schedules,
-        year,
-        instructional_periods,
-    )
     # Pre-compute once per call (O(1) via tracker)
     empty_slots = _remaining_empty_slots_for_sections(requirement.sections, free_slots_tracker)
     tail_fill = 3 if empty_slots <= len(requirement.sections) * 8 else 0
@@ -1388,14 +1348,6 @@ def _enumerate_slot_candidates(
                     + section_flex
                     + faculty_flex
                     + (-3 * max(0, faculty_load + block_size - 4))
-                    + _edge_slot_score_delta(
-                        requirement,
-                        day,
-                        start_period,
-                        block_size,
-                        requirement_day_edges,
-                        remaining_hours,
-                    )
                 )
 
                 candidates.append(SlotCandidate(
@@ -1430,7 +1382,6 @@ def _select_next_requirement(
     sessions: list[tuple[int, ...]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
-    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> tuple[int | None, list[SlotCandidate]]:
     """
     MRV (Minimum Remaining Values) heuristic:
@@ -1442,24 +1393,18 @@ def _select_next_requirement(
     """
     best_idx: int | None = None
     best_candidates: list[SlotCandidate] = []
-    best_key: tuple[int, int, int, int, int, str, str] | None = None
+    best_key: tuple[int, int, int, int, str, str] | None = None
 
     for req_idx, requirement in enumerate(requirements):
         remaining = remaining_hours.get(req_idx, 0)
         if remaining <= 0 or not requirement.faculty_id:
             continue
 
-        requirement.has_first_hour, requirement.has_last_hour = _subject_edge_state(
-            requirement.subject_id,
-            subject_edge_tracker,
-        )
-
         candidates = _enumerate_slot_candidates(
             requirement, remaining, schedules, faculty_busy,
             faculty_availability, year, days_order, periods_order,
             instructional_periods, sessions, candidate_limit,
             free_slots_tracker,
-            subject_edge_tracker,
         )
 
         # FAIL FAST: 0 candidates means this branch is dead
@@ -1469,7 +1414,6 @@ def _select_next_requirement(
         # Deterministic MRV key — avoids expensive _requirement_weekly_capacity
         key = (
             len(candidates),                       # fewer candidates = more constrained
-            -(int(not requirement.has_first_hour) + int(not requirement.has_last_hour)),
             0 if requirement.common_faculty else 1, # common faculty first
             -requirement.min_consecutive_hours,     # harder blocks first
             -remaining,                             # more hours remaining first
@@ -1501,8 +1445,6 @@ def _place_block(
     faculty_id_to_name: dict[str, str],
     session_log: list[dict],
     free_slots_tracker: dict[str, int],
-    subject_edge_tracker: dict[str, dict[str, int]],
-    instructional_periods: list[int],
     source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
@@ -1511,15 +1453,6 @@ def _place_block(
     faculty_ids = tuple(_normalize_id_token(fid) for fid in faculty_ids if _normalize_id_token(fid))
     faculty_id, faculty_name = _resolve_faculty_display(faculty_ids, faculty_id_to_name)
     periods = list(range(start_period, start_period + block_size))
-    day_edges = _build_requirement_day_edge_targets(
-        requirement,
-        schedules,
-        year,
-        instructional_periods,
-    )
-    edge_first, edge_last = day_edges.get(day, (None, None))
-    hits_first = edge_first is not None and start_period == edge_first
-    hits_last = edge_last is not None and periods[-1] == edge_last
     for period in periods:
         for faculty_token in faculty_ids:
             faculty_busy.setdefault(faculty_token, set()).add((day, period))
@@ -1538,12 +1471,6 @@ def _place_block(
             }
             if section in free_slots_tracker:
                 free_slots_tracker[section] -= 1
-    if hits_first or hits_last:
-        edge_state = subject_edge_tracker.setdefault(subject_id, {"first": 0, "last": 0})
-        if hits_first:
-            edge_state["first"] += 1
-        if hits_last:
-            edge_state["last"] += 1
     # §21: tag source so only file-driven sessions appear in the shared class report
     session_log.append(
         {
@@ -1561,8 +1488,6 @@ def _place_block(
             "isLab": False,
             "shared": len(requirement.sections) > 1,
             "source": source,
-            "satisfiesFirstHour": hits_first,
-            "satisfiesLastHour": hits_last,
         }
     )
     return [(day, period) for period in periods]
@@ -1577,7 +1502,6 @@ def _undo_block(
     year: str,
     session_log: list[dict],
     free_slots_tracker: dict[str, int],
-    subject_edge_tracker: dict[str, dict[str, int]],
 ) -> None:
     for day, period in placements:
         for faculty_token in faculty_ids:
@@ -1587,75 +1511,7 @@ def _undo_block(
             if section in free_slots_tracker:
                 free_slots_tracker[section] += 1
     if session_log:
-        removed = session_log.pop()
-        subject_id = _normalize_id_token(removed.get("subject_id", ""))
-        if subject_id and subject_id in subject_edge_tracker:
-            if removed.get("satisfiesFirstHour"):
-                subject_edge_tracker[subject_id]["first"] = max(0, subject_edge_tracker[subject_id].get("first", 0) - 1)
-            if removed.get("satisfiesLastHour"):
-                subject_edge_tracker[subject_id]["last"] = max(0, subject_edge_tracker[subject_id].get("last", 0) - 1)
-
-
-def _evaluate_subject_edge_coverage(
-    requirements: list[Requirement],
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    year: str,
-    instructional_periods: list[int],
-) -> tuple[dict[str, dict[str, bool]], list[dict]]:
-    subject_sections: dict[str, set[str]] = {}
-    coverage: dict[str, dict[str, bool]] = {}
-
-    for requirement in requirements:
-        subject_sections.setdefault(requirement.subject_id, set()).update(requirement.sections)
-        coverage.setdefault(requirement.subject_id, {"first": False, "last": False})
-
-    for requirement in requirements:
-        day_edges = _build_requirement_day_edge_targets(
-            requirement,
-            schedules,
-            year,
-            instructional_periods,
-        )
-        for day in DAYS:
-            edge_first, edge_last = day_edges.get(day, (None, None))
-            if edge_first is not None:
-                first_entry = schedules[(year, requirement.sections[0])][day].get(edge_first)
-                if isinstance(first_entry, dict):
-                    subject_id = _normalize_id_token(first_entry.get("subjectId", "") or first_entry.get("subject", ""))
-                    if subject_id in coverage:
-                        coverage[subject_id]["first"] = True
-            if edge_last is not None:
-                last_entry = schedules[(year, requirement.sections[0])][day].get(edge_last)
-                if isinstance(last_entry, dict):
-                    subject_id = _normalize_id_token(last_entry.get("subjectId", "") or last_entry.get("subject", ""))
-                    if subject_id in coverage:
-                        coverage[subject_id]["last"] = True
-
-    violations: list[dict] = []
-    for subject_id, state in sorted(coverage.items()):
-        missing: list[str] = []
-        if not state.get("first"):
-            missing.append("first-hour slot")
-        if not state.get("last"):
-            missing.append("last-hour slot")
-        if not missing:
-            continue
-        sections = sorted(subject_sections.get(subject_id, set()))
-        violations.append(
-            {
-                "year": year,
-                "sections": sections,
-                "subject_id": subject_id,
-                "faculty_id": "",
-                "constraint": "subject edge-hour preference",
-                "detail": (
-                    f"Subject {subject_id} could not be placed in {' and '.join(missing)} "
-                    "after applying lab-safe day-edge adjustments."
-                ),
-            }
-        )
-
-    return coverage, violations
+        session_log.pop()
 
 
 def _infer_failure_reason(
@@ -1851,9 +1707,9 @@ def _build_faculty_workloads_from_sessions(
                     if lab_room:
                         room_line = f"\n({lab_room})"
                 else:
-                    classroom = str(session.get("classroom", "")).strip()
-                    if classroom:
-                        room_line = f"\n({classroom})"
+                    room_label = _format_non_lab_room_label(session)
+                    if room_label:
+                        room_line = f"\n({room_label})"
                 faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])}){room_line}"
     
     final_workloads: dict[str, dict[str, list[str | None]]] = {}
@@ -1976,7 +1832,20 @@ def _same_section_entry(left: dict | None, right: dict | None) -> bool:
         == ",".join(right.get("sharedSections", []) or [])
         and str(left.get("classroom", "")).strip() == str(right.get("classroom", "")).strip()
         and str(left.get("labRoom", "")).strip() == str(right.get("labRoom", "")).strip()
+        and str(left.get("fallbackLab", "")).strip() == str(right.get("fallbackLab", "")).strip()
     )
+
+
+def _format_non_lab_room_label(entry: dict | None) -> str:
+    if not entry:
+        return ""
+    classroom = str(entry.get("classroom", "")).strip()
+    fallback_lab = str(entry.get("fallbackLab", "")).strip()
+    if fallback_lab and classroom:
+        return f"{fallback_lab}/{classroom}"
+    if fallback_lab:
+        return fallback_lab
+    return classroom
 
 
 def _section_cell_text(entry: dict | None) -> str:
@@ -1987,15 +1856,9 @@ def _section_cell_text(entry: dict | None) -> str:
     if entry.get("isLab"):
         lab_room = str(entry.get("labRoom") or entry.get("venue") or "").strip()
         return f"{main_line}\n({lab_room})" if lab_room else main_line
-    classroom = str(entry.get("classroom", "")).strip()
-    fallback_lab = str(entry.get("fallbackLab", "")).strip()
-    
-    if fallback_lab and classroom:
-        return f"{main_line}\n({fallback_lab}/{classroom})"
-    elif fallback_lab:
-        return f"{main_line}\n({fallback_lab})"
-    elif classroom:
-        return f"{main_line}\n({classroom})"
+    room_label = _format_non_lab_room_label(entry)
+    if room_label:
+        return f"{main_line}\n({room_label})"
     return main_line
 
 
@@ -2124,14 +1987,12 @@ def _faculty_slot_text(entries: list[dict] | None) -> str:
             if lab_room:
                 lines.append(f"({lab_room})")
         else:
-            classroom = str(entry.get("classroom", "")).strip()
-            fallback_lab = str(entry.get("fallback_lab", "")).strip()
-            if fallback_lab and classroom:
-                lines.append(f"({fallback_lab}/{classroom})")
-            elif fallback_lab:
-                lines.append(f"({fallback_lab})")
-            elif classroom:
-                lines.append(f"({classroom})")
+            room_label = _format_non_lab_room_label({
+                "classroom": entry.get("classroom", ""),
+                "fallbackLab": entry.get("fallback_lab", ""),
+            })
+            if room_label:
+                lines.append(f"({room_label})")
         rendered.append("\n".join(line for line in lines if line))
     return "\n\n".join(rendered)
 
@@ -2186,13 +2047,182 @@ def _allocate_classrooms_to_schedule(
     instructional_periods: list[int],
     academic_sessions: list[tuple[int, ...]],
     prior_room_busy: dict[str, set[tuple[str, int]]] | None = None,
+    lab_room_names: set[str] | None = None,
+    room_capacity_map: dict[str, int | None] | None = None,
+    section_strength_map: dict[str, int] | None = None,
 ) -> None:
     normalized_rooms = [str(room).strip() for room in classrooms if str(room).strip()]
+    lab_room_names = {str(room).strip() for room in (lab_room_names or set()) if str(room).strip()}
+    room_capacity_map = {str(room).strip(): capacity for room, capacity in (room_capacity_map or {}).items() if str(room).strip()}
+    section_strength_map = {str(section).strip(): int(value) for section, value in (section_strength_map or {}).items() if str(section).strip()}
+    preferred_rooms = [room for room in normalized_rooms if room not in lab_room_names]
+    overflow_rooms = [room for room in normalized_rooms if room in lab_room_names]
+
+    def _reserve_room(room_name: str, day: str, periods: list[int]) -> None:
+        if not room_name:
+            return
+        room_usage.setdefault(room_name, set()).update((day, period) for period in periods)
+
+    def _room_can_fit(room_name: str, required_strength: int) -> bool:
+        if required_strength <= 0:
+            return True
+        capacity = room_capacity_map.get(room_name)
+        return capacity is None or capacity >= required_strength
+
+    def _pick_available_room(
+        periods: list[int],
+        required_strength: int,
+        room_groups: list[list[str]] | None = None,
+    ) -> str:
+        for room_group in (room_groups or [preferred_rooms, overflow_rooms]):
+            for room in room_group:
+                if _room_can_fit(room, required_strength) and all((day, p) not in room_usage.setdefault(room, set()) for p in periods):
+                    return room
+        return ""
+
+    def _section_theory_periods(section: str, day: str, academic_session: tuple[int, ...]) -> list[int]:
+        periods: list[int] = []
+        for period in academic_session:
+            cell = schedules[(year, section)][day].get(period)
+            if isinstance(cell, dict) and not cell.get("isLab"):
+                periods.append(period)
+        return periods
+
+    def _bundle_details(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+    ) -> tuple[dict[str, list[int]], list[int], bool, str]:
+        per_section_periods: dict[str, list[int]] = {}
+        union_periods: list[int] = []
+        seen_periods: set[int] = set()
+        has_lab = False
+        lab_venue = ""
+        for bundle_section in bundle_sections:
+            section_periods = _section_theory_periods(bundle_section, day, academic_session)
+            if section_periods:
+                per_section_periods[bundle_section] = section_periods
+                for period in section_periods:
+                    if period not in seen_periods:
+                        seen_periods.add(period)
+                        union_periods.append(period)
+            for period in academic_session:
+                cell = schedules[(year, bundle_section)][day].get(period)
+                if isinstance(cell, dict) and cell.get("isLab"):
+                    has_lab = True
+                    if not lab_venue:
+                        lab_venue = _normalize_id_token(cell.get("labRoom") or cell.get("venue") or "")
+        union_periods.sort()
+        return per_section_periods, union_periods, has_lab, lab_venue
+
+    def _section_strength(section: str) -> int:
+        normalized_section = str(section).strip()
+        if not normalized_section:
+            return 0
+        return int(
+            section_strength_map.get(f"{year}|{normalized_section}")
+            or section_strength_map.get(normalized_section)
+            or section_strength_map.get(normalized_section.upper())
+            or 0
+        )
+
+    def _bundle_strength(bundle_sections: list[str]) -> int:
+        return sum(_section_strength(section) for section in bundle_sections)
+
+    def _update_bundle_room_assignment(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        *,
+        target_periods: list[int] | None = None,
+        classroom: str | None = None,
+        fallback_lab: str | None = None,
+    ) -> None:
+        session_periods = set(target_periods or academic_session)
+        for bundle_section in bundle_sections:
+            for period in _section_theory_periods(bundle_section, day, academic_session):
+                if period not in session_periods:
+                    continue
+                cell = schedules[(year, bundle_section)][day].get(period)
+                if isinstance(cell, dict):
+                    if fallback_lab is not None:
+                        cell["fallbackLab"] = fallback_lab
+                    if classroom is not None:
+                        cell["classroom"] = classroom
+        for log_entry in session_log:
+            if log_entry.get("day") != day or log_entry.get("isLab"):
+                continue
+            log_sections = {str(section).strip() for section in log_entry.get("sections", []) if str(section).strip()}
+            if not log_sections.intersection(bundle_sections):
+                continue
+            if not session_periods.intersection(int(period) for period in log_entry.get("periods", [])):
+                continue
+            if fallback_lab is not None:
+                existing = str(log_entry.get("fallbackLab", "")).strip()
+                if existing and fallback_lab and existing != fallback_lab:
+                    log_entry["fallbackLab"] = "/".join(dict.fromkeys([existing, fallback_lab]))
+                else:
+                    log_entry["fallbackLab"] = fallback_lab
+            if classroom is not None:
+                existing = str(log_entry.get("classroom", "")).strip()
+                if existing and classroom and existing != classroom:
+                    log_entry["classroom"] = "/".join(dict.fromkeys([existing, classroom]))
+                else:
+                    log_entry["classroom"] = classroom
+
+    def _release_room(room_name: str, day: str, periods: list[int]) -> None:
+        if not room_name:
+            return
+        usage = room_usage.setdefault(room_name, set())
+        for period in periods:
+            usage.discard((day, period))
+
+    def _allocate_shared_bundle_across_periods(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        periods: list[int],
+        required_strength: int,
+    ) -> bool:
+        if len(bundle_sections) <= 1 or not periods:
+            return False
+
+        provisional: list[tuple[list[int], str]] = []
+        idx = 0
+        while idx < len(periods):
+            found = False
+            max_size = len(periods) - idx
+            for block_size in range(max_size, 0, -1):
+                block = periods[idx: idx + block_size]
+                if block[-1] - block[0] != len(block) - 1:
+                    continue
+                room = _pick_available_room(block, required_strength)
+                if not room:
+                    continue
+                _reserve_room(room, day, block)
+                provisional.append((block, room))
+                idx += block_size
+                found = True
+                break
+            if not found:
+                for block, room in provisional:
+                    _release_room(room, day, block)
+                return False
+
+        for block, room in provisional:
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                academic_session,
+                target_periods=block,
+                classroom=room,
+            )
+        return True
 
     # First, handle labs - they already have their room (venue) locked in
     for session in session_log:
         if bool(session.get("isLab")):
-            lab_room = str(session.get("venue", "")).strip()
+            lab_room = _normalize_id_token(session.get("venue", ""))
             day = str(session.get("day", "")).strip()
             if lab_room:
                 session["lab_room"] = lab_room
@@ -2212,108 +2242,243 @@ def _allocate_classrooms_to_schedule(
         prior = (prior_room_busy or {}).get(room, set())
         room_usage[room] = prior.copy()
 
-    preferred_room_by_section: dict[str, str] = {}
+    for session in session_log:
+        if not bool(session.get("isLab")):
+            continue
+        room_name = _normalize_id_token(session.get("lab_room") or session.get("venue") or "")
+        day = str(session.get("day", "")).strip()
+        periods = [int(period) for period in session.get("periods", []) if int(period) in instructional_periods]
+        if day in DAYS and periods and room_name:
+            _reserve_room(room_name, day, periods)
 
-    # Strict Room Stability: One room per section-session
-    lab_fallback_queue = []
+    # Allocate classrooms per occupied period so partial-session shared classes
+    # only align on the periods they actually share.
+    processed_bundle_keys: set[tuple[str, int, tuple[str, ...]]] = set()
+    bundle_assignments: dict[tuple[str, int, tuple[str, ...]], dict[str, object]] = {}
+    room_period_assignments: dict[tuple[str, str, int], tuple[str, int, tuple[str, ...]]] = {}
 
-    # Pass 1: Normal Allocation for non-lab sessions
+    def _store_bundle_assignment(
+        bundle_key: tuple[str, int, tuple[str, ...]],
+        bundle_sections: list[str],
+        day: str,
+        period: int,
+        periods: list[int],
+        required_strength: int,
+        room_name: str,
+    ) -> None:
+        bundle_assignments[bundle_key] = {
+            "bundle_sections": list(bundle_sections),
+            "day": day,
+            "period": period,
+            "periods": list(periods),
+            "required_strength": required_strength,
+            "room": room_name,
+        }
+        for assigned_period in periods:
+            room_period_assignments[(room_name, day, assigned_period)] = bundle_key
+
+    def _move_existing_assignment_for_shared_bundle(
+        bundle_key: tuple[str, int, tuple[str, ...]],
+        bundle_sections: list[str],
+        day: str,
+        period: int,
+        periods: list[int],
+        required_strength: int,
+    ) -> str:
+        if len(bundle_sections) <= 1:
+            return ""
+        for target_room in preferred_rooms:
+            if not _room_can_fit(target_room, required_strength):
+                continue
+            victim_key = room_period_assignments.get((target_room, day, period))
+            if not victim_key:
+                continue
+            victim = bundle_assignments.get(victim_key)
+            if not victim:
+                continue
+            victim_sections = list(victim.get("bundle_sections", []))
+            victim_periods = list(victim.get("periods", []))
+            victim_strength = int(victim.get("required_strength", 0) or 0)
+            victim_day = str(victim.get("day", day))
+            victim_room = _normalize_id_token(victim.get("room", ""))
+            if len(victim_sections) != 1:
+                continue
+            alternate_room = _pick_available_room(
+                victim_periods,
+                victim_strength,
+                [
+                    [room for room in preferred_rooms if room != target_room],
+                    [room for room in overflow_rooms if room != target_room],
+                ],
+            )
+            if not alternate_room:
+                continue
+            _release_room(victim_room, victim_day, victim_periods)
+            for victim_period in victim_periods:
+                room_period_assignments.pop((victim_room, victim_day, victim_period), None)
+            _reserve_room(alternate_room, victim_day, victim_periods)
+            _update_bundle_room_assignment(
+                victim_sections,
+                victim_day,
+                tuple(victim_periods),
+                target_periods=victim_periods,
+                classroom=alternate_room,
+            )
+            victim["room"] = alternate_room
+            for victim_period in victim_periods:
+                room_period_assignments[(alternate_room, victim_day, victim_period)] = victim_key
+
+            _reserve_room(target_room, day, periods)
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                tuple(periods),
+                target_periods=periods,
+                classroom=target_room,
+            )
+            _store_bundle_assignment(
+                bundle_key,
+                bundle_sections,
+                day,
+                period,
+                periods,
+                required_strength,
+                target_room,
+            )
+            return target_room
+        return ""
+
+    def _session_bundle_sections(section: str, day: str, academic_session: tuple[int, ...]) -> list[str]:
+        shared_sections: set[str] = set()
+        for period in academic_session:
+            cell = schedules[(year, section)][day].get(period)
+            if not isinstance(cell, dict) or cell.get("isLab"):
+                continue
+            shared_sections.update(
+                str(shared_section).strip()
+                for shared_section in cell.get("sharedSections", []) or []
+                if str(shared_section).strip() in sections
+            )
+        shared_sections.add(section)
+        return sorted(shared_sections)
+
+    # Shared classes can change room inside a session; regular classes cannot.
     for day in DAYS:
         for session_idx, academic_session in enumerate(academic_sessions):
             for section in sections:
-                theory_periods = []
-                has_lab_in_session = False
-                lab_venue = ""
-                
-                for period in academic_session:
-                    cell = schedules[(year, section)][day].get(period)
-                    if isinstance(cell, dict):
-                        if cell.get("isLab"):
-                            has_lab_in_session = True
-                            lab_venue = cell.get("labRoom") or cell.get("venue") or ""
-                        else:
-                            theory_periods.append(period)
-                
-                if not theory_periods:
-                    continue
-                
-                if has_lab_in_session and lab_venue:
-                    lab_fallback_queue.append((day, session_idx, academic_session, section, theory_periods, lab_venue))
+                bundle_sections = _session_bundle_sections(section, day, academic_session)
+                session_periods = _section_theory_periods(section, day, academic_session)
+                if not session_periods:
                     continue
 
-                # Pass 1: Normal Allocation (Session-based, purely dynamic)
-                allocated_room = ""
-                for room in normalized_rooms:
-                    if all((day, p) not in room_usage[room] for p in theory_periods):
-                        allocated_room = room
-                        break
-                
-                if allocated_room:
-                    for p in theory_periods:
-                        room_usage[allocated_room].add((day, p))
-                    
-                    for p in theory_periods:
-                        cell = schedules[(year, section)][day][p]
-                        if isinstance(cell, dict):
-                            cell["classroom"] = allocated_room
-                    
-                    for log_entry in session_log:
-                        if (log_entry.get("day") == day and 
-                            section in log_entry.get("sections", []) and 
-                            any(p in log_entry.get("periods", []) for p in theory_periods) and
-                            not log_entry.get("isLab")):
-                            log_entry["classroom"] = allocated_room
-                else:
+                if len(bundle_sections) <= 1:
+                    bundle_key = (day, session_idx, tuple(bundle_sections))
+                    if bundle_key in processed_bundle_keys:
+                        continue
+                    processed_bundle_keys.add(bundle_key)
+                    required_strength = _bundle_strength(bundle_sections)
+                    allocated_room = _pick_available_room(session_periods, required_strength)
+                    if allocated_room:
+                        _reserve_room(allocated_room, day, session_periods)
+                        _update_bundle_room_assignment(
+                            bundle_sections,
+                            day,
+                            academic_session,
+                            target_periods=session_periods,
+                            classroom=allocated_room,
+                        )
+                        _store_bundle_assignment(
+                            bundle_key,
+                            bundle_sections,
+                            day,
+                            session_idx,
+                            session_periods,
+                            required_strength,
+                            allocated_room,
+                        )
+                        continue
+
                     detail = (
-                        f"Unable to allocate stable classroom for section {section} "
-                        f"on {day} during session {session_idx + 1} ({theory_periods})."
+                        f"Unable to allocate stable classroom for section(s) {', '.join(bundle_sections)} "
+                        f"on {day} during session {session_idx + 1} ({session_periods}) with required strength {required_strength}."
                     )
                     constraint_violations.append({
                         "year": year,
-                        "sections": [section],
+                        "sections": bundle_sections,
                         "subject_id": "",
                         "faculty_id": "",
                         "constraint": "classroom allocation constraint",
                         "detail": detail,
                     })
+                    continue
 
-    # Pass 2 & 3: Handle Lab Fallback sessions
-    for day, session_idx, academic_session, section, theory_periods, lab_venue in lab_fallback_queue:
-        # First, fallback to lab venue implicitly
-        for p in theory_periods:
-            cell = schedules[(year, section)][day][p]
-            if isinstance(cell, dict):
-                cell["fallbackLab"] = lab_venue
-        
-        for log_entry in session_log:
-            if (log_entry.get("day") == day and 
-                section in log_entry.get("sections", []) and 
-                any(p in log_entry.get("periods", []) for p in theory_periods) and
-                not log_entry.get("isLab")):
-                log_entry["fallbackLab"] = lab_venue
+                for period in session_periods:
+                    period_cell = schedules[(year, section)][day].get(period)
+                    if not isinstance(period_cell, dict) or period_cell.get("isLab"):
+                        continue
+                    period_shared_sections = {
+                        str(shared_section).strip()
+                        for shared_section in period_cell.get("sharedSections", []) or []
+                        if str(shared_section).strip() in sections
+                    }
+                    period_shared_sections.add(section)
+                    period_bundle_sections = [
+                        bundle_section
+                        for bundle_section in sorted(period_shared_sections)
+                        if isinstance(schedules[(year, bundle_section)][day].get(period), dict)
+                        and not schedules[(year, bundle_section)][day].get(period, {}).get("isLab")
+                    ]
+                    if not period_bundle_sections:
+                        continue
+                    bundle_key = (day, period, tuple(period_bundle_sections))
+                    if bundle_key in processed_bundle_keys:
+                        continue
+                    processed_bundle_keys.add(bundle_key)
 
-        # Attempt to upgrade to a free classroom (Pass 3, purely dynamic)
-        allocated_room = ""
-        for room in normalized_rooms:
-            if all((day, p) not in room_usage[room] for p in theory_periods):
-                allocated_room = room
-                break
-        
-        if allocated_room:
-            for p in theory_periods:
-                room_usage[allocated_room].add((day, p))
-                
-            for p in theory_periods:
-                cell = schedules[(year, section)][day][p]
-                if isinstance(cell, dict):
-                    cell["classroom"] = allocated_room
-                    
-            for log_entry in session_log:
-                if (log_entry.get("day") == day and 
-                    section in log_entry.get("sections", []) and 
-                    any(p in log_entry.get("periods", []) for p in theory_periods) and
-                    not log_entry.get("isLab")):
-                    log_entry["classroom"] = allocated_room
+                    required_strength = _bundle_strength(period_bundle_sections)
+                    target_periods = [period]
+                    allocated_room = _pick_available_room(target_periods, required_strength)
+                    if allocated_room:
+                        _reserve_room(allocated_room, day, target_periods)
+                        _update_bundle_room_assignment(
+                            period_bundle_sections,
+                            day,
+                            tuple(target_periods),
+                            target_periods=target_periods,
+                            classroom=allocated_room,
+                        )
+                        _store_bundle_assignment(
+                            bundle_key,
+                            period_bundle_sections,
+                            day,
+                            period,
+                            target_periods,
+                            required_strength,
+                            allocated_room,
+                        )
+                    else:
+                        relocated_room = _move_existing_assignment_for_shared_bundle(
+                            bundle_key,
+                            period_bundle_sections,
+                            day,
+                            period,
+                            target_periods,
+                            required_strength,
+                        )
+                        if relocated_room:
+                            continue
+                        detail = (
+                            f"Unable to allocate stable classroom for section(s) {', '.join(period_bundle_sections)} "
+                            f"on {day} during period {period} with required strength {required_strength}."
+                        )
+                        constraint_violations.append({
+                            "year": year,
+                            "sections": period_bundle_sections,
+                            "subject_id": "",
+                            "faculty_id": "",
+                            "constraint": "classroom allocation constraint",
+                            "detail": detail,
+                        })
 
 
 def _apply_formatted_sheet_layout(
@@ -2821,7 +2986,21 @@ def generate_timetable(
     timetable_metadata = request_data.timetableMetadata.model_dump()
 
     subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
-    classrooms = _build_classroom_list(request_data, store)
+    room_inventory = _build_room_inventory(request_data, store)
+    section_strength_map = _build_section_strength_map(request_data, store)
+    classrooms = [str(item.get("name", "")).strip() for item in room_inventory if str(item.get("name", "")).strip()]
+    lab_room_names = {
+        str(item.get("name", "")).strip()
+        for item in room_inventory
+        if bool(item.get("is_lab")) and str(item.get("name", "")).strip()
+    }
+    room_capacity_map = {
+        str(item.get("name", "")).strip(): (
+            int(item.get("capacity")) if isinstance(item.get("capacity"), int) else None
+        )
+        for item in room_inventory
+        if str(item.get("name", "")).strip()
+    }
     
     period_config = _build_period_config(request_data, store)
     instructional_periods, sessions = _derive_sessions(period_config)
@@ -2975,7 +3154,6 @@ def generate_timetable(
         prior_room_busy.setdefault(room, set()).update(slots)
         
     session_log: list[dict] = []
-    subject_edge_tracker: dict[str, dict[str, int]] = {}
     constraint_violations: list[dict] = []
     lab_assigned_hours: dict[tuple[str, str], int] = {}
     locked_hours_by_section: dict[str, int] = {}
@@ -2997,8 +3175,8 @@ def generate_timetable(
     for row in (shared_payload.get("rows", []) if shared_payload else []):
         if normalize_year(str(row.get("year", ""))) != year:
             continue
-        sub_id = _normalize_id_token(row.get("subject_id", ""))
-        secs = tuple(sorted(str(s).strip() for s in row.get("sections", []) if str(s).strip()))
+        sub_id = _normalize_id_token(row.get("subject_id", "") or row.get("subject", ""))
+        secs = tuple(sorted(_normalize_id_token(s) for s in row.get("sections", []) if _normalize_id_token(s)))
         if sub_id and secs:
             shared_constraints.setdefault(sub_id, []).append(secs)
 
@@ -3315,8 +3493,7 @@ def generate_timetable(
         def backtrack() -> bool:
             next_req_idx, candidates = _select_next_requirement(
                 requirements, remaining_by_req, schedules, faculty_busy, faculty_availability,
-                year, days_order, periods_order, instructional_periods, sessions, 8, free_slots_tracker,
-                subject_edge_tracker,
+                year, days_order, periods_order, instructional_periods, sessions, 8, free_slots_tracker
             )
             if next_req_idx is None: return True
             if not candidates: return False
@@ -3326,22 +3503,12 @@ def generate_timetable(
                 placements = _place_block(
                     req, cand.faculty_ids, cand.day, cand.start_period, cand.block_size,
                     schedules, faculty_busy, year, subject_id_to_name, faculty_id_to_name,
-                    session_log, free_slots_tracker, subject_edge_tracker, instructional_periods, source="solver"
+                    session_log, free_slots_tracker, source="solver"
                 )
                 remaining_by_req[next_req_idx] -= cand.block_size
                 if backtrack(): return True
                 remaining_by_req[next_req_idx] += cand.block_size
-                _undo_block(
-                    req,
-                    cand.faculty_ids,
-                    placements,
-                    schedules,
-                    faculty_busy,
-                    year,
-                    session_log,
-                    free_slots_tracker,
-                    subject_edge_tracker,
-                )
+                _undo_block(req, cand.faculty_ids, placements, schedules, faculty_busy, year, session_log, free_slots_tracker)
             return False
 
         if backtrack():
@@ -3374,15 +3541,11 @@ def generate_timetable(
     _allocate_classrooms_to_schedule(
         year, all_sections, schedules, session_log, classrooms,
         constraint_violations, instructional_periods, sessions,
-        prior_room_busy=prior_room_busy
+        prior_room_busy=prior_room_busy,
+        lab_room_names=lab_room_names,
+        room_capacity_map=room_capacity_map,
+        section_strength_map=section_strength_map,
     )
-    _, edge_constraint_violations = _evaluate_subject_edge_coverage(
-        requirements,
-        schedules,
-        year,
-        instructional_periods,
-    )
-    constraint_violations.extend(edge_constraint_violations)
     
     all_grids = _serialize_section_grids(year, all_sections, schedules, instructional_periods)
     faculty_workloads = _build_faculty_workloads_from_sessions(session_log, instructional_periods)
@@ -3445,26 +3608,76 @@ def _build_room_schedule_map(
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     classrooms: list[str]
 ) -> dict[str, dict[str, dict[int, dict | None]]]:
-    room_schedules = {room.strip(): {d: {p: None for p in PERIODS} for d in DAYS} for room in classrooms if room.strip()}
+    all_rooms: list[str] = []
+    seen_rooms: set[str] = set()
+
+    for room in classrooms:
+        normalized = str(room).strip()
+        if not normalized or normalized in seen_rooms:
+            continue
+        seen_rooms.add(normalized)
+        all_rooms.append(normalized)
+
+    for _, grid in schedules.items():
+        for day in DAYS:
+            for p in PERIODS:
+                cell = grid.get(day, {}).get(p)
+                if not cell:
+                    continue
+                for candidate in (
+                    cell.get("classroom"),
+                    cell.get("labRoom"),
+                    cell.get("venue"),
+                    cell.get("fallbackLab"),
+                ):
+                    normalized = str(candidate or "").strip()
+                    if not normalized or normalized in seen_rooms:
+                        continue
+                    seen_rooms.add(normalized)
+                    all_rooms.append(normalized)
+
+    room_schedules = {room: {d: {p: None for p in PERIODS} for d in DAYS} for room in all_rooms}
     
+    def _store_room_entry(
+        room: str,
+        day: str,
+        period: int,
+        cell: dict,
+        year: str,
+        section: str,
+    ) -> None:
+        if room not in room_schedules:
+            return
+        cloned_cell = cell.copy()
+        cloned_cell["year"] = year
+        cloned_cell["section"] = section
+        existing = room_schedules[room][day][period]
+        if existing:
+            existing_sections = [part.strip() for part in str(existing.get("section", "")).split(",") if part.strip()]
+            if section not in existing_sections:
+                cloned_cell["section"] = f"{existing.get('section', '')}, {section}".strip(", ")
+            else:
+                cloned_cell["section"] = str(existing.get("section", "")).strip()
+        room_schedules[room][day][period] = cloned_cell
+
     for (year, section), grid in schedules.items():
         for day in DAYS:
             for p in PERIODS:
                 cell = grid.get(day, {}).get(p)
                 if not cell:
                     continue
-                room = str(cell.get("classroom") or cell.get("labRoom") or cell.get("venue") or "").strip()
-                if not room:
-                    room = str(cell.get("fallbackLab") or "").strip()
-                if room and room in room_schedules:
-                    cloned_cell = cell.copy()
-                    cloned_cell["year"] = year
-                    cloned_cell["section"] = section
-                    # Handle multiple sections sharing a lab/classroom by appending
-                    existing = room_schedules[room][day][p]
-                    if existing:
-                        cloned_cell["section"] = f"{existing['section']}, {section}"
-                    room_schedules[room][day][p] = cloned_cell
+                room_targets: list[str] = []
+                for candidate in (
+                    cell.get("fallbackLab"),
+                    cell.get("labRoom"),
+                    cell.get("venue"),
+                    cell.get("classroom"),
+                ):
+                    room = str(candidate or "").strip()
+                    if room and room not in room_targets:
+                        room_targets.append(room)
+                for room in room_targets:
+                    _store_room_entry(room, day, p, cell, year, section)
     
     return room_schedules
 
@@ -3619,5 +3832,5 @@ def _build_room_timetables_workbook(
     timetable_metadata: dict[str, Any] | None = None,
     period_config: list[dict[str, str]] | None = None,
 ) -> Workbook:
-    filtered = {room: room_schedules[room] for room in rooms if room in room_schedules}
+    filtered = dict(room_schedules)
     return _build_room_timetables_workbook_from_schedule_map(filtered, timetable_metadata, period_config)

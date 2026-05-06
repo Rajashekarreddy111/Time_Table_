@@ -27,6 +27,7 @@ type FacultyScheduleEntry = {
   section: string;
   classroom?: string;
   labRoom?: string;
+  fallbackLab?: string;
   isLab?: boolean;
 };
 
@@ -52,9 +53,14 @@ function downloadGeneratedWorkbook(file: GeneratedWorkbookFile) {
 }
 
 function formatWorkloadEntry(entry: FacultyScheduleEntry): string {
+  const roomLabel = entry.isLab
+    ? entry.labRoom ?? ""
+    : entry.fallbackLab && entry.classroom
+      ? `${entry.fallbackLab}/${entry.classroom}`
+      : entry.fallbackLab ?? entry.classroom ?? "";
   const roomLine = entry.isLab
-    ? entry.labRoom ? `\n(${entry.labRoom})` : ""
-    : entry.classroom ? `\n(${entry.classroom})` : "";
+    ? roomLabel ? `\n(${roomLabel})` : ""
+    : roomLabel ? `\n(${roomLabel})` : "";
   return `${entry.subject}\n${entry.year} ${entry.section}${roomLine}`;
 }
 
@@ -245,6 +251,7 @@ function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[
           section: sections,
           classroom: cell.classroom,
           labRoom: cell.labRoom,
+          fallbackLab: cell.fallbackLab,
           isLab: cell.isLab,
         };
 
@@ -368,9 +375,13 @@ const FacultyWorkload = () => {
             <div className="font-normal text-[10px] text-muted-foreground">
               {entry.year} {entry.section}
             </div>
-            {(entry.classroom || entry.labRoom) && (
+            {(entry.classroom || entry.labRoom || entry.fallbackLab) && (
               <div className="font-normal text-[10px] text-muted-foreground">
-                {entry.isLab ? `(${entry.labRoom})` : `(${entry.classroom})`}
+                ({entry.isLab
+                  ? (entry.labRoom ?? "")
+                  : entry.fallbackLab && entry.classroom
+                    ? `${entry.fallbackLab}/${entry.classroom}`
+                    : entry.fallbackLab ?? entry.classroom ?? ""})
               </div>
             )}
           </div>

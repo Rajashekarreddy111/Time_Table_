@@ -18,6 +18,7 @@ import {
   buildLegend,
   DISPLAY_DAYS,
   getCellByPeriod,
+  getCellRoomLabel,
 } from "@/lib/timetableFormat";
 import {
   listTimetables,
@@ -89,10 +90,8 @@ function getTimetableCellText(
 ): string {
   if (!cell) return "";
   const subject = getSubjectLabel(cell);
-  if (cell.isLab) {
-    return cell.labRoom ? `${subject}\n(${cell.labRoom})` : subject;
-  }
-  return cell.classroom ? `${subject}\n(${cell.classroom})` : subject;
+  const roomLabel = getCellRoomLabel(cell);
+  return roomLabel ? `${subject}\n(${roomLabel})` : subject;
 }
 
 function areCellsEquivalent(
@@ -103,8 +102,11 @@ function areCellsEquivalent(
   return (
     getSubjectLabel(left) === getSubjectLabel(right) &&
     (left.facultyName ?? left.faculty ?? "") ===
-      (right.facultyName ?? right.faculty ?? "") &&
+    (right.facultyName ?? right.faculty ?? "") &&
     Boolean(left.isLab) === Boolean(right.isLab) &&
+    (left.classroom ?? "") === (right.classroom ?? "") &&
+    (left.labRoom ?? "") === (right.labRoom ?? "") &&
+    (left.fallbackLab ?? "") === (right.fallbackLab ?? "") &&
     (left.sharedSections ?? []).join(",") ===
       (right.sharedSections ?? []).join(",")
   );

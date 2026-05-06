@@ -1,5 +1,5 @@
 import { type TimetableCell } from "@/data/mockData";
-import { buildLegend, DISPLAY_DAYS } from "@/lib/timetableFormat";
+import { buildLegend, DISPLAY_DAYS, getCellRoomLabel } from "@/lib/timetableFormat";
 
 interface TimetableGridProps {
   grid: Record<string, (TimetableCell | null)[]>;
@@ -32,6 +32,7 @@ function areGridCellsEquivalent(
     Boolean(left.isLab) === Boolean(right.isLab) &&
     (left.classroom ?? "") === (right.classroom ?? "") &&
     (left.labRoom ?? "") === (right.labRoom ?? "") &&
+    (left.fallbackLab ?? "") === (right.fallbackLab ?? "") &&
     (left.sharedSections ?? []).join(",") ===
       (right.sharedSections ?? []).join(",") &&
     (left.year ?? "") === (right.year ?? "") &&
@@ -88,9 +89,9 @@ export function TimetableGrid({ grid, header, isRoomTimetable, hideLegend }: Tim
                     <div className="font-normal text-[10px] text-muted-foreground leading-tight">
                       {currentGroup.cell.year ? `${currentGroup.cell.year.replace(" Year", "")} - ` : ""}{currentGroup.cell.section}
                     </div>
-                  ) : (currentGroup.cell?.classroom || currentGroup.cell?.labRoom) ? (
+                  ) : getCellRoomLabel(currentGroup.cell) ? (
                     <div className="font-normal text-[10px] text-muted-foreground leading-tight">
-                      {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
+                      ({getCellRoomLabel(currentGroup.cell)})
                     </div>
                   ) : null}
                 </div>
@@ -118,9 +119,9 @@ export function TimetableGrid({ grid, header, isRoomTimetable, hideLegend }: Tim
                 <div className="font-normal text-[10px] text-muted-foreground leading-tight">
                   {currentGroup.cell.year ? `${currentGroup.cell.year.replace(" Year", "")} - ` : ""}{currentGroup.cell.section}
                 </div>
-              ) : (currentGroup.cell?.classroom || currentGroup.cell?.labRoom) ? (
+              ) : getCellRoomLabel(currentGroup.cell) ? (
                 <div className="font-normal text-[10px] text-muted-foreground leading-tight">
-                  {currentGroup.cell.isLab ? `(${currentGroup.cell.labRoom})` : `(${currentGroup.cell.classroom})`}
+                  ({getCellRoomLabel(currentGroup.cell)})
                 </div>
               ) : null}
             </div>

@@ -45,6 +45,7 @@ export type TimetableCell = {
   isLab?: boolean;
   classroom?: string;
   labRoom?: string;
+  fallbackLab?: string;
   sharedSections?: string[];
   year?: string;
   section?: string;
