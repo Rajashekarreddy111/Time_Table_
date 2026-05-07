@@ -464,6 +464,38 @@ def _build_section_strength_map(
     return strengths
 
 
+def _build_fixed_classroom_blocks(
+    request_data: GenerateTimetableRequest,
+    store: MemoryStore,
+) -> dict[tuple[str, str, str, int], str]:
+    payload = store.get_scoped_mapping("fixed_classroom_blocks", "global")
+    if (
+        (not payload or not payload.get("rows"))
+        and request_data.mappingFileIds
+        and request_data.mappingFileIds.fixedClassroomBlocks
+    ):
+        payload = store.get_file_map(request_data.mappingFileIds.fixedClassroomBlocks)
+
+    blocks: dict[tuple[str, str, str, int], str] = {}
+    for row in (payload or {}).get("rows", []):
+        year = normalize_year(str(row.get("year", "")))
+        section = _normalize_id_token(row.get("section", "")).upper()
+        day = _normalize_day(row.get("day", ""))
+        periods = row.get("periods", [])
+        classroom = _normalize_id_token(row.get("classroom", ""))
+        if not year or not section or not day:
+            continue
+        for raw_period in periods:
+            try:
+                period = int(raw_period)
+            except (TypeError, ValueError):
+                continue
+            if period < 1 or period > 7:
+                continue
+            blocks[(year, section, day, period)] = classroom
+    return blocks
+
+
 def _build_faculty_availability(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
@@ -628,10 +660,13 @@ def _candidate_block_sizes(
         return []
     minimum = max(1, min_consecutive_hours)
     maximum = max(minimum, max_consecutive_hours)
+    if remaining_hours < minimum:
+        return [remaining_hours]
     upper_bound = min(remaining_hours, maximum)
     sizes = list(range(upper_bound, minimum - 1, -1))
-    if minimum > 1:
-        sizes.extend(range(minimum - 1, 0, -1))
+    remainder = remaining_hours % minimum
+    if remainder > 0 and remainder not in sizes:
+        sizes.append(remainder)
     return sizes
 
 
@@ -2050,11 +2085,17 @@ def _allocate_classrooms_to_schedule(
     lab_room_names: set[str] | None = None,
     room_capacity_map: dict[str, int | None] | None = None,
     section_strength_map: dict[str, int] | None = None,
+    fixed_classroom_blocks: dict[tuple[str, str, int], str] | None = None,
 ) -> None:
     normalized_rooms = [str(room).strip() for room in classrooms if str(room).strip()]
     lab_room_names = {str(room).strip() for room in (lab_room_names or set()) if str(room).strip()}
     room_capacity_map = {str(room).strip(): capacity for room, capacity in (room_capacity_map or {}).items() if str(room).strip()}
     section_strength_map = {str(section).strip(): int(value) for section, value in (section_strength_map or {}).items() if str(section).strip()}
+    fixed_classroom_blocks = {
+        (str(section).strip(), str(day).strip(), int(period)): str(classroom).strip()
+        for (section, day, period), classroom in (fixed_classroom_blocks or {}).items()
+        if str(section).strip() and str(day).strip()
+    }
     preferred_rooms = [room for room in normalized_rooms if room not in lab_room_names]
     overflow_rooms = [room for room in normalized_rooms if room in lab_room_names]
 
@@ -2084,7 +2125,7 @@ def _allocate_classrooms_to_schedule(
         periods: list[int] = []
         for period in academic_session:
             cell = schedules[(year, section)][day].get(period)
-            if isinstance(cell, dict) and not cell.get("isLab"):
+            if isinstance(cell, dict) and not cell.get("isLab") and not cell.get("fixedClassroomBlock"):
                 periods.append(period)
         return periods
 
@@ -2170,6 +2211,27 @@ def _allocate_classrooms_to_schedule(
                 else:
                     log_entry["classroom"] = classroom
 
+    def _assign_lab_for_entire_session(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+    ) -> bool:
+        if len(bundle_sections) != 1:
+            return False
+        _, session_periods, has_lab, lab_venue = _bundle_details(bundle_sections, day, academic_session)
+        if not has_lab or not lab_venue or not session_periods:
+            return False
+        _reserve_room(lab_venue, day, list(academic_session))
+        _update_bundle_room_assignment(
+            bundle_sections,
+            day,
+            academic_session,
+            target_periods=session_periods,
+            fallback_lab=lab_venue,
+            classroom="",
+        )
+        return True
+
     def _release_room(room_name: str, day: str, periods: list[int]) -> None:
         if not room_name:
             return
@@ -2233,9 +2295,6 @@ def _allocate_classrooms_to_schedule(
                         if isinstance(cell, dict):
                             cell["labRoom"] = lab_room
 
-    if not normalized_rooms:
-        return
-
     room_usage: dict[str, set[tuple[str, int]]] = {}
     for room in normalized_rooms:
         # Initialize with prior occupancy if provided
@@ -2250,6 +2309,28 @@ def _allocate_classrooms_to_schedule(
         periods = [int(period) for period in session.get("periods", []) if int(period) in instructional_periods]
         if day in DAYS and periods and room_name:
             _reserve_room(room_name, day, periods)
+
+    for (section, day, period), classroom in fixed_classroom_blocks.items():
+        cell = schedules.get((year, section), {}).get(day, {}).get(period)
+        if not isinstance(cell, dict) or cell.get("isLab"):
+            continue
+        cell["fixedClassroomBlock"] = True
+        cell["classroom"] = classroom
+        if not classroom:
+            continue
+        if any((day, p) in room_usage.setdefault(classroom, set()) for p in [period]):
+            constraint_violations.append({
+                "year": year,
+                "sections": [section],
+                "subject_id": str(cell.get("subjectId", "")).strip(),
+                "faculty_id": str(cell.get("facultyId", "")).strip(),
+                "constraint": "fixed classroom block conflict",
+                "detail": (
+                    f"Fixed classroom {classroom} for section {section} on {day} period {period} "
+                    f"conflicts with an already occupied room slot."
+                ),
+            })
+        _reserve_room(classroom, day, [period])
 
     # Allocate classrooms per occupied period so partial-session shared classes
     # only align on the periods they actually share.
@@ -2348,6 +2429,130 @@ def _allocate_classrooms_to_schedule(
             return target_room
         return ""
 
+    def _allocate_bundle_period_by_period(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        periods: list[int],
+        required_strength: int,
+    ) -> tuple[list[int], list[int]]:
+        assigned_periods: list[int] = []
+        missing_periods: list[int] = []
+        preferred_sequence: list[str] = []
+
+        for period in periods:
+            room_groups = None
+            if preferred_sequence:
+                room_groups = [
+                    [room for room in preferred_sequence if room in preferred_rooms],
+                    [room for room in preferred_sequence if room in overflow_rooms],
+                    [room for room in preferred_rooms if room not in preferred_sequence],
+                    [room for room in overflow_rooms if room not in preferred_sequence],
+                ]
+            room_name = _pick_available_room([period], required_strength, room_groups)
+            if not room_name:
+                missing_periods.append(period)
+                continue
+            _reserve_room(room_name, day, [period])
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                academic_session,
+                target_periods=[period],
+                classroom=room_name,
+            )
+            if room_name not in preferred_sequence:
+                preferred_sequence.insert(0, room_name)
+            assigned_periods.append(period)
+        return assigned_periods, missing_periods
+
+    def _report_unassigned_theory_classrooms() -> None:
+        for section in sections:
+            missing_by_day: dict[str, list[int]] = {}
+            for day in DAYS:
+                for period in instructional_periods:
+                    cell = schedules[(year, section)][day].get(period)
+                    if not isinstance(cell, dict) or cell.get("isLab"):
+                        continue
+                    if cell.get("fixedClassroomBlock"):
+                        continue
+                    room_label = str(
+                        cell.get("classroom")
+                        or cell.get("fallbackLab")
+                        or cell.get("labRoom")
+                        or cell.get("venue")
+                        or ""
+                    ).strip()
+                    if room_label:
+                        continue
+                    missing_by_day.setdefault(day, []).append(period)
+
+            for day, periods in missing_by_day.items():
+                subject_labels = sorted(
+                    {
+                        str(schedules[(year, section)][day][period].get("subjectId") or schedules[(year, section)][day][period].get("subject") or "").strip()
+                        for period in periods
+                        if isinstance(schedules[(year, section)][day].get(period), dict)
+                    }
+                )
+                constraint_violations.append({
+                    "year": year,
+                    "sections": [section],
+                    "subject_id": ", ".join(filter(None, subject_labels)),
+                    "faculty_id": "",
+                    "constraint": "classroom allocation constraint",
+                    "detail": (
+                        f"Section {section} has no classroom assigned on {day} for period(s) "
+                        f"{', '.join(str(period) for period in periods)}."
+                    ),
+                })
+
+    def _final_assign_unassigned_theory_rooms() -> None:
+        processed_keys: set[tuple[str, int, tuple[str, ...]]] = set()
+        for day in DAYS:
+            for period in instructional_periods:
+                for section in sections:
+                    cell = schedules[(year, section)][day].get(period)
+                    if not isinstance(cell, dict) or cell.get("isLab") or cell.get("fixedClassroomBlock"):
+                        continue
+                    room_label = str(
+                        cell.get("classroom")
+                        or cell.get("fallbackLab")
+                        or cell.get("labRoom")
+                        or cell.get("venue")
+                        or ""
+                    ).strip()
+                    if room_label:
+                        continue
+
+                    bundle_sections = sorted(
+                        {
+                            str(shared_section).strip()
+                            for shared_section in (cell.get("sharedSections") or [])
+                            if str(shared_section).strip() in sections
+                            and isinstance(schedules[(year, str(shared_section).strip())][day].get(period), dict)
+                            and not schedules[(year, str(shared_section).strip())][day].get(period, {}).get("isLab")
+                        }
+                        | {section}
+                    )
+                    bundle_key = (day, period, tuple(bundle_sections))
+                    if bundle_key in processed_keys:
+                        continue
+                    processed_keys.add(bundle_key)
+
+                    required_strength = _bundle_strength(bundle_sections)
+                    room_name = _pick_available_room([period], required_strength)
+                    if not room_name:
+                        continue
+                    _reserve_room(room_name, day, [period])
+                    _update_bundle_room_assignment(
+                        bundle_sections,
+                        day,
+                        (period,),
+                        target_periods=[period],
+                        classroom=room_name,
+                    )
+
     def _session_bundle_sections(section: str, day: str, academic_session: tuple[int, ...]) -> list[str]:
         shared_sections: set[str] = set()
         for period in academic_session:
@@ -2376,6 +2581,8 @@ def _allocate_classrooms_to_schedule(
                     if bundle_key in processed_bundle_keys:
                         continue
                     processed_bundle_keys.add(bundle_key)
+                    if _assign_lab_for_entire_session(bundle_sections, day, academic_session):
+                        continue
                     required_strength = _bundle_strength(bundle_sections)
                     allocated_room = _pick_available_room(session_periods, required_strength)
                     if allocated_room:
@@ -2398,10 +2605,26 @@ def _allocate_classrooms_to_schedule(
                         )
                         continue
 
+                    assigned_periods, missing_periods = _allocate_bundle_period_by_period(
+                        bundle_sections,
+                        day,
+                        academic_session,
+                        session_periods,
+                        required_strength,
+                    )
+                    if assigned_periods and not missing_periods:
+                        continue
+
                     detail = (
                         f"Unable to allocate stable classroom for section(s) {', '.join(bundle_sections)} "
                         f"on {day} during session {session_idx + 1} ({session_periods}) with required strength {required_strength}."
                     )
+                    if assigned_periods:
+                        detail = (
+                            f"{detail} Assigned fallback rooms for period(s) "
+                            f"{', '.join(str(period) for period in assigned_periods)}, but could not assign "
+                            f"period(s) {', '.join(str(period) for period in missing_periods)}."
+                        )
                     constraint_violations.append({
                         "year": year,
                         "sections": bundle_sections,
@@ -2479,6 +2702,12 @@ def _allocate_classrooms_to_schedule(
                             "constraint": "classroom allocation constraint",
                             "detail": detail,
                         })
+
+    _final_assign_unassigned_theory_rooms()
+    _report_unassigned_theory_classrooms()
+
+    if not normalized_rooms:
+        return
 
 
 def _apply_formatted_sheet_layout(
@@ -3001,6 +3230,12 @@ def generate_timetable(
         for item in room_inventory
         if str(item.get("name", "")).strip()
     }
+    all_fixed_classroom_blocks = _build_fixed_classroom_blocks(request_data, store)
+    fixed_classroom_blocks = {
+        (section, day, period): classroom
+        for (block_year, section, day, period), classroom in all_fixed_classroom_blocks.items()
+        if block_year == year
+    }
     
     period_config = _build_period_config(request_data, store)
     instructional_periods, sessions = _derive_sessions(period_config)
@@ -3053,6 +3288,11 @@ def generate_timetable(
                 "faculty_id": fid,
                 "hours": int(entry.noOfHours),
                 "continuous_hours": int(entry.continuousHours or 1),
+                "min_consecutive_hours": max(1, int(entry.compulsoryContinuousHours or 1)),
+                "max_consecutive_hours": max(
+                    max(1, int(entry.compulsoryContinuousHours or 1)),
+                    int(entry.continuousHours or 1),
+                ),
             }
         )
         all_main_rows.append(raw_main_rows[-1])
@@ -3091,6 +3331,21 @@ def generate_timetable(
             
         hours = int(row.get("hours", 0) or 0)
         continuous_hours = max(1, int(row.get("continuous_hours", 1) or 1))
+        compulsory_hours = max(
+            1,
+            int(
+                row.get("min_consecutive_hours")
+                or row.get("compulsory_continuous_hours")
+                or compulsory_continuous.get(subject_id, 1)
+                or 1
+            ),
+        )
+        row["min_consecutive_hours"] = min(hours, compulsory_hours) if hours > 0 else compulsory_hours
+        row["max_consecutive_hours"] = max(
+            row["min_consecutive_hours"],
+            int(row.get("max_consecutive_hours", continuous_hours) or continuous_hours),
+            continuous_hours,
+        )
         if not section or not subject_id:
             continue
         section_total_hours[section] = section_total_hours.get(section, 0) + hours
@@ -3342,6 +3597,7 @@ def generate_timetable(
     # overcome either.
     if precheck_only:
         issues: list[dict] = list(constraint_violations)  # includes capacity errors
+        total_instructional_slots = len(DAYS) * len(instructional_periods)
 
         # ── (a) Section capacity: required_hours ≤ free_slots ─────────────
         # Safe because every section-period can hold at most 1 subject.
@@ -3453,9 +3709,32 @@ def generate_timetable(
                     ),
                 })
 
+        section_summary = []
+        for section in all_sections:
+            free = sum(
+                1 for day in DAYS for p in instructional_periods
+                if schedules[(year, section)][day].get(p) is None
+            )
+            needed = section_required.get(section, 0)
+            section_summary.append({
+                "section": section,
+                "requiredHours": needed,
+                "freeSlots": free,
+                "deficitHours": max(0, needed - free),
+                "lockedSlots": max(0, total_instructional_slots - free),
+            })
+
         feasible = len(issues) == 0
+        blocking_sections = [
+            section for section in section_summary if int(section.get("deficitHours", 0) or 0) > 0
+        ]
+        blocking_sections.sort(key=lambda item: (-int(item["deficitHours"]), item["section"]))
+        section_summary.sort(key=lambda item: item["section"])
         return {
+            "year": year,
             "feasible": feasible,
+            "blockingSections": blocking_sections,
+            "sectionSummary": section_summary,
             "issues": _group_issue_records(issues) if issues else [],
             "sections": all_sections,
             "requirementCount": len(requirements),
@@ -3545,6 +3824,7 @@ def generate_timetable(
         lab_room_names=lab_room_names,
         room_capacity_map=room_capacity_map,
         section_strength_map=section_strength_map,
+        fixed_classroom_blocks=fixed_classroom_blocks,
     )
     
     all_grids = _serialize_section_grids(year, all_sections, schedules, instructional_periods)

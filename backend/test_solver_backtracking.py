@@ -179,6 +179,198 @@ class TimetableSolverTests(unittest.TestCase):
         self.assertEqual("L201", schedules[(year, "A")]["Monday"][1].get("classroom"))
         self.assertEqual("L201", schedules[(year, "A")]["Monday"][2].get("classroom"))
 
+    def test_fixed_classroom_blocks_bypass_auto_allocation_and_reserve_named_room(self) -> None:
+        year = "2nd Year"
+        sections = ["A", "B"]
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+            (year, "B"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "A_FIXED",
+            "subjectId": "A_FIXED",
+            "facultyId": "FA",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "A_BLANK",
+            "subjectId": "A_BLANK",
+            "facultyId": "FA",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "B")]["Monday"][1] = {
+            "subject": "B_AUTO",
+            "subjectId": "B_AUTO",
+            "facultyId": "FB",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [1], "sections": ["B"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            sections,
+            schedules,
+            session_log,
+            ["Seminar Hall", "C101"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            fixed_classroom_blocks={
+                ("A", "Monday", 1): "Seminar Hall",
+                ("A", "Monday", 2): "",
+            },
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual("Seminar Hall", schedules[(year, "A")]["Monday"][1].get("classroom"))
+        self.assertEqual("", schedules[(year, "A")]["Monday"][2].get("classroom"))
+        self.assertEqual("C101", schedules[(year, "B")]["Monday"][1].get("classroom"))
+
+    def test_mixed_lab_session_uses_lab_for_entire_session_and_frees_classroom(self) -> None:
+        year = "2nd Year"
+        sections = ["A", "B"]
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+            (year, "B"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "A_THEORY",
+            "subjectId": "A_THEORY",
+            "facultyId": "FA",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "A_LAB",
+            "subjectId": "A_LAB",
+            "facultyId": "FA",
+            "isLab": True,
+            "venue": "L201",
+            "labRoom": "L201",
+            "sharedSections": [],
+        }
+        schedules[(year, "B")]["Monday"][1] = {
+            "subject": "B_THEORY",
+            "subjectId": "B_THEORY",
+            "facultyId": "FB",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A"], "isLab": True, "venue": "L201"},
+            {"day": "Monday", "periods": [1], "sections": ["B"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            sections,
+            schedules,
+            session_log,
+            ["C101", "L201"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            lab_room_names={"L201"},
+            section_strength_map={"A": 30, "B": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual("L201", schedules[(year, "A")]["Monday"][1].get("fallbackLab"))
+        self.assertEqual("", schedules[(year, "A")]["Monday"][1].get("classroom"))
+        self.assertEqual("C101", schedules[(year, "B")]["Monday"][1].get("classroom"))
+
+    def test_single_section_uses_available_free_classrooms_period_by_period(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "SUB1",
+            "subjectId": "SUB1",
+            "facultyId": "F1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "SUB2",
+            "subjectId": "SUB2",
+            "facultyId": "F2",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][3] = {
+            "subject": "SUB3",
+            "subjectId": "SUB3",
+            "facultyId": "F3",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["A"], "isLab": False},
+            {"day": "Monday", "periods": [3], "sections": ["A"], "isLab": False},
+        ]
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            ["A"],
+            schedules,
+            session_log,
+            ["C101", "C102"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2, 3), (4, 5), (6, 7)],
+            prior_room_busy={"C101": {("Monday", 2)}, "C102": {("Monday", 1)}},
+            section_strength_map={"A": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        assigned_rooms = [
+            schedules[(year, "A")]["Monday"][period].get("classroom")
+            for period in [1, 2, 3]
+        ]
+        self.assertEqual(["C101", "C102", "C102"], assigned_rooms)
+
+    def test_final_room_repair_assigns_free_room_when_session_log_misses_slot(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "SUB1",
+            "subjectId": "SUB1",
+            "facultyId": "F1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            ["A"],
+            schedules,
+            [],
+            ["C101"],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            section_strength_map={"A": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual("C101", schedules[(year, "A")]["Monday"][1].get("classroom"))
+
     def test_classroom_template_2c1_section_maps_strength_from_same_file(self) -> None:
         store = MemoryStore()
         store.save_scoped_mapping(
@@ -304,6 +496,155 @@ class TimetableSolverTests(unittest.TestCase):
             if v.get("constraint") == "classroom allocation constraint"
         ]
         self.assertGreater(len(classroom_violations), 0)
+
+    def test_post_allocation_reports_missing_classrooms_when_none_exist(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "SUB1",
+            "subjectId": "SUB1",
+            "facultyId": "F1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        schedules[(year, "A")]["Monday"][2] = {
+            "subject": "SUB2",
+            "subjectId": "SUB2",
+            "facultyId": "F2",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        constraint_violations: list[dict] = []
+
+        _allocate_classrooms_to_schedule(
+            year,
+            ["A"],
+            schedules,
+            [{"day": "Monday", "periods": [1, 2], "sections": ["A"], "isLab": False}],
+            [],
+            constraint_violations,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            section_strength_map={"A": 30},
+        )
+
+        self.assertTrue(
+            any(v.get("constraint") == "classroom allocation constraint" for v in constraint_violations),
+            constraint_violations,
+        )
+
+    def test_compulsory_continuous_hours_enforced_as_contiguous_blocks(self) -> None:
+        store = MemoryStore()
+        store.save_scoped_mapping(
+            "classrooms",
+            "global",
+            {"rows": [{"class_number": "C101"}, {"class_number": "C102"}]},
+            allow_overwrite=True,
+        )
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="A",
+            timetableMetadata=_metadata(),
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="PAIR",
+                    facultyId="FPAIR",
+                    noOfHours=4,
+                    continuousHours=2,
+                    compulsoryContinuousHours=2,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="FILL",
+                    facultyId="FFILL",
+                    noOfHours=38,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+        pair_slots = _collect_subject_slots(payload["allGrids"]["A"], "PAIR")
+
+        self.assertEqual(4, len(pair_slots))
+        grouped_by_day: dict[str, list[int]] = {}
+        for day, period in pair_slots:
+            grouped_by_day.setdefault(day, []).append(period)
+
+        self.assertEqual(2, len(grouped_by_day), grouped_by_day)
+        for periods in grouped_by_day.values():
+            periods.sort()
+            self.assertEqual(2, len(periods), periods)
+            self.assertEqual(1, periods[1] - periods[0], periods)
+
+    def test_compulsory_continuous_hours_allow_final_remainder_hour(self) -> None:
+        store = MemoryStore()
+        store.save_scoped_mapping(
+            "classrooms",
+            "global",
+            {"rows": [{"class_number": "C101"}, {"class_number": "C102"}]},
+            allow_overwrite=True,
+        )
+        request = GenerateTimetableRequest(
+            year="2nd Year",
+            section="A",
+            timetableMetadata=_metadata(),
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="FIVEBLOCK",
+                    facultyId="FFIVE",
+                    noOfHours=5,
+                    continuousHours=2,
+                    compulsoryContinuousHours=2,
+                ),
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="FILL",
+                    facultyId="FFILL",
+                    noOfHours=37,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                ),
+            ],
+        )
+
+        result = generate_timetable(request, store)
+        payload = store.get_timetable(result["timetableId"])
+        slots = _collect_subject_slots(payload["allGrids"]["A"], "FIVEBLOCK")
+
+        self.assertEqual(5, len(slots))
+        grouped_by_day: dict[str, list[int]] = {}
+        for day, period in slots:
+            grouped_by_day.setdefault(day, []).append(period)
+
+        two_hour_blocks = 0
+        single_hour_blocks = 0
+        for periods in grouped_by_day.values():
+            periods.sort()
+            run_lengths: list[int] = []
+            run = 1
+            for idx in range(1, len(periods)):
+                if periods[idx] == periods[idx - 1] + 1:
+                    run += 1
+                else:
+                    run_lengths.append(run)
+                    run = 1
+            run_lengths.append(run)
+            two_hour_blocks += sum(1 for length in run_lengths if length == 2)
+            single_hour_blocks += sum(1 for length in run_lengths if length == 1)
+
+        self.assertEqual(2, two_hour_blocks, grouped_by_day)
+        self.assertEqual(1, single_hour_blocks, grouped_by_day)
 
     def test_solver_does_not_auto_group_matching_subjects_across_sections(self) -> None:
         store = MemoryStore()

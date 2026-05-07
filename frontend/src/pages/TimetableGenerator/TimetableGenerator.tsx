@@ -43,6 +43,7 @@ import {
   uploadFacultyAvailability,
   uploadClassrooms,
   uploadPeriodConfig,
+  uploadFixedClassroomBlocks,
   ApiError,
   ManualEntryMode,
   ManualLabEntry,
@@ -83,6 +84,10 @@ type MappingStatus = {
   facultyAvailabilityFileName?: string | null;
   classroomsUploaded?: boolean;
   classroomsFileName?: string | null;
+  periodConfigUploaded?: boolean;
+  periodConfigFileName?: string | null;
+  fixedClassroomBlocksUploaded?: boolean;
+  fixedClassroomBlocksFileName?: string | null;
 };
 
 type MappingUploadType =
@@ -93,7 +98,9 @@ type MappingUploadType =
   | "subject-continuous-rules"
   | "shared-classes"
   | "faculty-availability"
-  | "classrooms";
+  | "classrooms"
+  | "period-config"
+  | "fixed-classroom-blocks";
 
 const EMPTY_MAPPING_STATUS: MappingStatus = {
   facultyIdMapUploaded: false,
@@ -104,6 +111,8 @@ const EMPTY_MAPPING_STATUS: MappingStatus = {
   sharedClassesUploaded: false,
   facultyAvailabilityUploaded: false,
   classroomsUploaded: false,
+  periodConfigUploaded: false,
+  fixedClassroomBlocksUploaded: false,
 };
 
 const TimetableGenerator = () => {
@@ -159,6 +168,7 @@ const TimetableGenerator = () => {
   const [facultyAvailabilityFile, setFacultyAvailabilityFile] = useState<File | null>(null);
   const [classroomsFile, setClassroomsFile] = useState<File | null>(null);
   const [periodConfigFile, setPeriodConfigFile] = useState<File | null>(null);
+  const [fixedClassroomBlocksFile, setFixedClassroomBlocksFile] = useState<File | null>(null);
 
   const [mappingFileIds, setMappingFileIds] = useState({
     facultyIdMap: "",
@@ -168,6 +178,7 @@ const TimetableGenerator = () => {
     subjectContinuousRules: "",
     classrooms: "",
     periodConfig: "",
+    fixedClassroomBlocks: "",
   });
 
   const [mappingStatus, setMappingStatus] = useState<MappingStatus>(EMPTY_MAPPING_STATUS);
@@ -185,6 +196,7 @@ const TimetableGenerator = () => {
     setFacultyAvailabilityFile(null);
     setClassroomsFile(null);
     setPeriodConfigFile(null);
+    setFixedClassroomBlocksFile(null);
     setMappingFileIds({
       facultyIdMap: "",
       mainTimetableConfig: "",
@@ -193,6 +205,7 @@ const TimetableGenerator = () => {
       subjectContinuousRules: "",
       classrooms: "",
       periodConfig: "",
+      fixedClassroomBlocks: "",
     });
   };
 
@@ -494,6 +507,18 @@ const TimetableGenerator = () => {
     }
   };
 
+  const handleUploadFixedClassroomBlocks = async (file: File) => {
+    setFixedClassroomBlocksFile(file);
+    try {
+      const response = await uploadFixedClassroomBlocks(file);
+      setMappingFileIds((prev) => ({ ...prev, fixedClassroomBlocks: response.fileId }));
+      toast.success("Fixed classroom blocks uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Fixed classroom blocks upload failed");
+    }
+  };
+
   const handleRemoveUploadedFile = async (
     mappingType: MappingUploadType,
     onLocalClear: () => void,
@@ -520,6 +545,7 @@ const TimetableGenerator = () => {
       "faculty-availability",
       "classrooms",
       "period-config",
+      "fixed-classroom-blocks",
     ];
 
     await Promise.all(
@@ -598,18 +624,38 @@ const TimetableGenerator = () => {
         subjectContinuousRules: mappingFileIds.subjectContinuousRules || undefined,
         classrooms: mappingFileIds.classrooms || undefined,
         periodConfig: mappingFileIds.periodConfig || undefined,
+        fixedClassroomBlocks: mappingFileIds.fixedClassroomBlocks || undefined,
       },
     };
   };
 
   const formatBlockingSections = (
-    sections: Array<{ section: string; requiredHours: number; freeSlots: number; deficitHours: number }>,
+    sections?: Array<{ section: string; requiredHours: number; freeSlots: number; deficitHours: number }>,
   ) => {
+    if (!Array.isArray(sections) || sections.length === 0) {
+      return "";
+    }
     const top = sections.slice(0, 5);
     const summary = top
       .map((item) => `${item.section}: needs ${item.requiredHours}, free ${item.freeSlots}, deficit ${item.deficitHours}`)
       .join(" | ");
     return sections.length > 5 ? `${summary} | ...` : summary;
+  };
+
+  const formatFeasibilityIssues = (issues?: Array<Record<string, unknown>>) => {
+    if (!Array.isArray(issues) || issues.length === 0) {
+      return "";
+    }
+    const summary = issues
+      .slice(0, 3)
+      .map((issue) => {
+        const constraint = String(issue.constraint ?? "").trim();
+        const detail = String(issue.detail ?? "").trim();
+        return detail || constraint;
+      })
+      .filter(Boolean)
+      .join(" | ");
+    return issues.length > 3 ? `${summary} | ...` : summary;
   };
 
   const handleGenerate = async () => {
@@ -643,8 +689,11 @@ const TimetableGenerator = () => {
       const payload = buildPayload();
       const feasibility = await checkTimetableFeasibility(payload);
       if (!feasibility.feasible) {
+        const sectionSummary = formatBlockingSections(feasibility.blockingSections);
+        const issueSummary = formatFeasibilityIssues(feasibility.issues);
+        const reason = sectionSummary || issueSummary || "The uploaded inputs contain unschedulable constraints.";
         toast.error(
-          `Generation blocked: infeasible section capacity for ${feasibility.year}. ${formatBlockingSections(feasibility.blockingSections)}`,
+          `Generation blocked for ${feasibility.year || payload.year}. ${reason}`,
           { duration: 12000 },
         );
         return;
@@ -731,7 +780,10 @@ const TimetableGenerator = () => {
         try {
           const feasibility = await checkTimetableFeasibility(payload);
           if (!feasibility.feasible) {
-            errors.push(`${year}: Infeasible section capacity (${formatBlockingSections(feasibility.blockingSections)})`);
+            const sectionSummary = formatBlockingSections(feasibility.blockingSections);
+            const issueSummary = formatFeasibilityIssues(feasibility.issues);
+            const reason = sectionSummary || issueSummary || "The uploaded inputs contain unschedulable constraints.";
+            errors.push(`${year}: ${reason}`);
             continue;
           }
           const response = await generateTimetable(payload);
@@ -1073,6 +1125,17 @@ const TimetableGenerator = () => {
                     <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
                       <span>Uploaded: <span className="font-medium">{mappingStatus.periodConfigFileName}</span></span>
                       <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("period-config", () => { setPeriodConfigFile(null); setMappingFileIds((prev) => ({ ...prev, periodConfig: "" })); }, "Period configuration removed.")}>Remove</Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
+                  <p className="text-xs font-semibold mb-2"><BookOpen className="h-4 w-4 text-primary inline-block mr-1" /> Fixed Classroom Blocks (Global)</p>
+                  <FileUpload file={fixedClassroomBlocksFile} onFileSelect={handleUploadFixedClassroomBlocks} onClear={() => setFixedClassroomBlocksFile(null)} label="Upload Fixed Classroom Blocks" templateLinks={buildTemplateLinks(templateBase, "fixed-classroom-blocks")} />
+                  {mappingStatus.fixedClassroomBlocksUploaded && (
+                    <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-3 text-xs">
+                      <span>Uploaded: <span className="font-medium">{mappingStatus.fixedClassroomBlocksFileName}</span></span>
+                      <Button variant="outline" size="sm" onClick={() => handleRemoveUploadedFile("fixed-classroom-blocks", () => { setFixedClassroomBlocksFile(null); setMappingFileIds((prev) => ({ ...prev, fixedClassroomBlocks: "" })); }, "Fixed classroom blocks removed.")}>Remove</Button>
                     </div>
                   )}
                 </div>

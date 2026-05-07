@@ -365,3 +365,17 @@ async def period_config_template(
         ],
         template_type,
     )
+
+
+@router.get("/templates/fixed-classroom-blocks")
+async def fixed_classroom_blocks_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
+    return _template_response(
+        "fixed-classroom-blocks-template.xlsx",
+        [
+            {"year": 3, "section": "A", "day": 2, "periods": "1,2,3", "classroom": "Seminar Hall"},
+            {"year": 2, "section": "B", "day": 5, "periods": "4,5", "classroom": ""},
+        ],
+        template_type,
+    )

@@ -74,6 +74,8 @@ export interface MappingStatusResponse {
   classroomsFileName?: string | null;
   periodConfigUploaded?: boolean;
   periodConfigFileName?: string | null;
+  fixedClassroomBlocksUploaded?: boolean;
+  fixedClassroomBlocksFileName?: string | null;
 }
 
 export interface FacultyIdStatusResponse {
@@ -139,6 +141,7 @@ export interface GenerateTimetableRequest {
     subjectContinuousRules?: string;
     classrooms?: string;
     periodConfig?: string;
+    fixedClassroomBlocks?: string;
   };
   subjectIdNameMapping?: SubjectIdNameMappingEntry[];
   subjectContinuousRules?: SubjectContinuousRuleEntry[];
@@ -159,10 +162,10 @@ export interface FeasibilitySectionSummary {
 }
 
 export interface TimetableFeasibilityResponse {
-  year: string;
+  year?: string;
   feasible: boolean;
-  blockingSections: FeasibilitySectionSummary[];
-  sectionSummary: FeasibilitySectionSummary[];
+  blockingSections?: FeasibilitySectionSummary[];
+  sectionSummary?: FeasibilitySectionSummary[];
   issues: Array<Record<string, unknown>>;
 }
 
@@ -564,6 +567,25 @@ export async function uploadPeriodConfig(file: File): Promise<UploadResponse> {
   formData.append("file", file);
 
   const path = "/uploads/period-config";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadFixedClassroomBlocks(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/fixed-classroom-blocks";
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     credentials: "include",

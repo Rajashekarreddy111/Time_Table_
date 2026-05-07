@@ -410,6 +410,79 @@ def _normalize_period_config_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+def _normalize_fixed_classroom_block_rows(rows: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    violations: list[dict] = []
+
+    for row_index, row in enumerate(rows, start=2):
+        raw_year = row.get("year")
+        raw_section = row.get("section")
+        raw_day = row.get("day") or row.get("day_number")
+        raw_periods = row.get("periods") or row.get("period_numbers") or row.get("period_numbers_list")
+        raw_classroom = row.get("classroom") or row.get("classroom_name") or row.get("room")
+
+        has_any_value = any(_to_text(value) for value in [raw_year, raw_section, raw_day, raw_periods, raw_classroom])
+        if not has_any_value:
+            continue
+
+        year = normalize_year(_to_text(raw_year))
+        section = _normalize_room_or_section_text(raw_section).upper()
+        classroom = _normalize_room_or_section_text(raw_classroom)
+        periods = _parse_period_tokens(raw_periods)
+
+        day_number = None
+        day_text = _to_text(raw_day)
+        if day_text:
+            try:
+                day_number = int(float(day_text))
+            except ValueError:
+                day_number = None
+
+        row_errors: list[str] = []
+        if not year:
+            row_errors.append("year is required")
+        if not section:
+            row_errors.append("section is required")
+        if day_number not in {1, 2, 3, 4, 5, 6}:
+            row_errors.append("day must be a number from 1 to 6")
+        if not periods:
+            row_errors.append("periods must contain at least one value from 1 to 7")
+        elif any(period not in {1, 2, 3, 4, 5, 6, 7} for period in periods):
+            row_errors.append("periods can only contain values from 1 to 7")
+
+        if row_errors:
+            violations.append(
+                {
+                    "row": row_index,
+                    "year": _to_text(raw_year),
+                    "section": _to_text(raw_section),
+                    "day": day_text,
+                    "periods": _to_text(raw_periods),
+                    "detail": "; ".join(row_errors),
+                }
+            )
+            continue
+
+        normalized.append(
+            {
+                "year": year,
+                "section": section,
+                "day": int(day_number),
+                "periods": periods,
+                "classroom": classroom,
+            }
+        )
+
+    if violations:
+        raise _validation_error("Invalid rows found in fixed classroom blocks file", violations)
+    if not normalized:
+        raise _validation_error(
+            "Required columns are missing in fixed classroom blocks file",
+            [{"expected": ["year", "section", "day", "periods", "classroom"]}],
+        )
+    return normalized
+
+
 def _normalize_faculty_availability_rows(rows: list[dict]) -> list[dict]:
 
     # --- Detect Faculty Workload Export Format ---
@@ -971,6 +1044,37 @@ async def upload_period_config(file: UploadFile = File(...)):
     )
 
 
+@router.post("/uploads/fixed-classroom-blocks", response_model=UploadResponse)
+async def upload_fixed_classroom_blocks(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls", ".csv"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls, .csv) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    dataframe = parse_tabular_upload(file.filename, file_bytes)
+    rows = _normalize_fixed_classroom_block_rows(dataframe_rows(dataframe))
+    cloudinary_file = upload_source_file(file.filename, file_bytes, folder="timetable/fixed-classroom-blocks")
+
+    file_id = store.next_file_id("fcb")
+    payload = {
+        "id": file_id,
+        "fileName": file.filename,
+        "rowsParsed": len(rows),
+        "rows": rows,
+        "sourceFile": cloudinary_file,
+    }
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("fixed_classroom_blocks", "global", payload, allow_overwrite=True)
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(rows),
+        message="Fixed classroom blocks uploaded successfully",
+    )
+
+
 @router.post("/uploads/faculty-availability-query", response_model=UploadResponse)
 async def upload_faculty_availability_query(file: UploadFile = File(...)):
     if not file.filename:
@@ -1021,6 +1125,7 @@ async def get_mapping_status(
     shared_classes = store.get_scoped_mapping("shared_classes", "global")
     classrooms = store.get_scoped_mapping("classrooms", "global")
     period_config = store.get_scoped_mapping("period_config", "global")
+    fixed_classroom_blocks = store.get_scoped_mapping("fixed_classroom_blocks", "global")
     
     return {
         "facultyIdMapUploaded": bool(faculty_map),
@@ -1033,6 +1138,7 @@ async def get_mapping_status(
         "sharedClassesUploaded": bool(shared_classes),
         "classroomsUploaded": bool(classrooms),
         "periodConfigUploaded": bool(period_config),
+        "fixedClassroomBlocksUploaded": bool(fixed_classroom_blocks),
         
         "facultyIdMapFileName": faculty_map.get("fileName") if faculty_map else None,
         "mainTimetableConfigFileName": main_cfg.get("fileName") if main_cfg else None,
@@ -1043,6 +1149,7 @@ async def get_mapping_status(
         "facultyAvailabilityFileName": faculty_availability.get("lastFileName") if faculty_availability else None,
         "classroomsFileName": classrooms.get("fileName") if classrooms else None,
         "periodConfigFileName": period_config.get("fileName") if period_config else None,
+        "fixedClassroomBlocksFileName": fixed_classroom_blocks.get("fileName") if fixed_classroom_blocks else None,
     }
 
 @router.post("/uploads/shared-classes", response_model=UploadResponse)
@@ -1095,6 +1202,7 @@ async def delete_uploaded_mapping(mapping_type: str):
         "faculty-availability": "faculty_availability",
         "classrooms": "classrooms",
         "period-config": "period_config",
+        "fixed-classroom-blocks": "fixed_classroom_blocks",
     }
     resolved_type = mapping_map.get(mapping_type)
     if not resolved_type:

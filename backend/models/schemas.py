@@ -155,6 +155,7 @@ class MappingFileIds(BaseModel):
     subjectContinuousRules: str | None = None
     classrooms: str | None = None
     periodConfiguration: str | None = None
+    fixedClassroomBlocks: str | None = None
 
 
 class FacultyWeeklyAvailabilityEntry(BaseModel):
