@@ -15,9 +15,12 @@ from models.schemas import (  # noqa: E402
 )
 from services.timetable_generator import (  # noqa: E402
     DAYS,
+    Requirement,
     _allocate_classrooms_to_schedule,
+    _build_session_adjacency,
     _build_room_inventory,
     _build_section_strength_map,
+    _choose_faculty_for_slot,
     generate_timetable,
 )
 from storage.memory_store import MemoryStore  # noqa: E402
@@ -45,6 +48,84 @@ def _metadata() -> dict[str, object]:
 
 
 class TimetableSolverTests(unittest.TestCase):
+    def test_faculty_cannot_take_consecutive_different_section_within_session(self) -> None:
+        requirement = Requirement(
+            subject_id="SUB2",
+            faculty_id="F1",
+            faculty_options=("F1",),
+            faculty_team=(),
+            sections=("B",),
+            hours=1,
+            min_consecutive_hours=1,
+            max_consecutive_hours=1,
+            shared=False,
+        )
+        selected = _choose_faculty_for_slot(
+            requirement,
+            "Monday",
+            2,
+            1,
+            {"F1": set()},
+            {"F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS}},
+            [1, 2, 3, 4, 5, 6, 7],
+            {"F1": {("Monday", 1): ("A",)}},
+            _build_session_adjacency([(1, 2), (3, 4), (5, 6, 7)]),
+        )
+
+        self.assertIsNone(selected)
+
+    def test_faculty_can_take_same_section_consecutively_and_after_break(self) -> None:
+        requirement_same = Requirement(
+            subject_id="SUB2",
+            faculty_id="F1",
+            faculty_options=("F1",),
+            faculty_team=(),
+            sections=("A",),
+            hours=1,
+            min_consecutive_hours=1,
+            max_consecutive_hours=1,
+            shared=False,
+        )
+        availability = {"F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS}}
+        faculty_slots = {"F1": {("Monday", 1): ("A",)}}
+        adjacency = _build_session_adjacency([(1, 2), (3, 4), (5, 6, 7)])
+
+        same_section_selected = _choose_faculty_for_slot(
+            requirement_same,
+            "Monday",
+            2,
+            1,
+            {"F1": set()},
+            availability,
+            [1, 2, 3, 4, 5, 6, 7],
+            faculty_slots,
+            adjacency,
+        )
+        after_break_selected = _choose_faculty_for_slot(
+            Requirement(
+                subject_id="SUB3",
+                faculty_id="F1",
+                faculty_options=("F1",),
+                faculty_team=(),
+                sections=("B",),
+                hours=1,
+                min_consecutive_hours=1,
+                max_consecutive_hours=1,
+                shared=False,
+            ),
+            "Monday",
+            3,
+            1,
+            {"F1": set()},
+            availability,
+            [1, 2, 3, 4, 5, 6, 7],
+            faculty_slots,
+            adjacency,
+        )
+
+        self.assertEqual("F1", same_section_selected)
+        self.assertEqual("F1", after_break_selected)
+
     def test_single_section_keeps_same_room_within_session(self) -> None:
         year = "2nd Year"
         schedules = {
