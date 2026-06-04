@@ -46,6 +46,8 @@ MEDIUM_BORDER = Border(
 CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT_ALIGNMENT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 BOLD_FONT = Font(bold=True)
+PREFERRED_SUBJECT_PERIODS_PER_DAY = 2
+HARD_SUBJECT_PERIODS_PER_DAY = 3
 
 
 def _academic_year_label() -> str:
@@ -123,6 +125,9 @@ class Requirement:
     min_consecutive_hours: int
     max_consecutive_hours: int
     shared: bool
+    preferred_daily_limit: int = PREFERRED_SUBJECT_PERIODS_PER_DAY
+    hard_daily_limit: int = HARD_SUBJECT_PERIODS_PER_DAY
+    daily_limit_exempt: bool = False
     common_faculty: bool = False
     phase: int = 4
 
@@ -636,6 +641,7 @@ def _choose_faculty_for_slot(
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]] | None = None,
     session_adjacency: dict[int, set[int]] | None = None,
     enforce_section_transition_rule: bool = True,
+    faculty_daily_loads: dict[str, dict[str, int]] | None = None,
 ) -> str | None:
     periods = range(start_period, start_period + block_size)
     faculty_section_slots = faculty_section_slots or {}
@@ -678,7 +684,9 @@ def _choose_faculty_for_slot(
         ):
             continue
         key = (
-            _faculty_daily_load(faculty_id, day, faculty_busy),
+            faculty_daily_loads.get(faculty_id, {}).get(day, 0)
+            if faculty_daily_loads is not None
+            else _faculty_daily_load(faculty_id, day, faculty_busy),
             _faculty_weekly_capacity(faculty_id, faculty_availability, instructional_periods),
             faculty_id,
         )
@@ -810,7 +818,7 @@ def _unmark_faculty_section_assignment(
                 slot_map.pop(key, None)
 
 
-def _sections_are_free(
+def _sections_can_host_block(
     sections: tuple[str, ...],
     requirement: Requirement,
     day: str,
@@ -837,6 +845,40 @@ def _sections_are_free(
     return True
 
 
+def _sections_are_free(
+    sections: tuple[str, ...],
+    requirement: Requirement,
+    day: str,
+    start_period: int,
+    block_size: int,
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]] | None = None,
+) -> bool:
+    if not _sections_can_host_block(
+        sections,
+        requirement,
+        day,
+        start_period,
+        block_size,
+        schedules,
+        year,
+        instructional_periods,
+        sessions,
+    ):
+        return False
+    if daily_subject_counts is not None and _exceeds_subject_daily_hard_limit(
+        requirement,
+        day,
+        block_size,
+        daily_subject_counts,
+    ):
+        return False
+    return True
+
+
 def _slot_is_free(
     sections: tuple[str, ...],
     requirement: Requirement,
@@ -849,10 +891,22 @@ def _slot_is_free(
     year: str,
     instructional_periods: list[int],
     sessions: list[tuple[int, ...]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]] | None = None,
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]] | None = None,
     session_adjacency: dict[int, set[int]] | None = None,
 ) -> bool:
-    if not _sections_are_free(sections, requirement, day, start_period, block_size, schedules, year, instructional_periods, sessions):
+    if not _sections_are_free(
+        sections,
+        requirement,
+        day,
+        start_period,
+        block_size,
+        schedules,
+        year,
+        instructional_periods,
+        sessions,
+        daily_subject_counts,
+    ):
         return False
     selected_faculty = _choose_faculty_for_slot(
         requirement,
@@ -966,27 +1020,58 @@ def _subject_daily_load_by_section(
     return result
 
 
+def _daily_subject_count(
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+    section: str,
+    day: str,
+    subject_id: str,
+) -> int:
+    return int(daily_subject_counts.get(section, {}).get(day, {}).get(subject_id, 0) or 0)
+
+
+def _daily_subject_counts_for_requirement(
+    requirement: Requirement,
+    day: str,
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+) -> dict[str, int]:
+    return {
+        section: _daily_subject_count(daily_subject_counts, section, day, requirement.subject_id)
+        for section in requirement.sections
+    }
+
+
+def _exceeds_subject_daily_hard_limit(
+    requirement: Requirement,
+    day: str,
+    block_size: int,
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+) -> bool:
+    if requirement.daily_limit_exempt:
+        return False
+    return any(
+        count + block_size > requirement.hard_daily_limit
+        for count in _daily_subject_counts_for_requirement(requirement, day, daily_subject_counts).values()
+    )
+
+
 def _subject_daily_limit_penalty(
     requirement: Requirement,
     day: str,
     block_size: int,
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    year: str,
-    instructional_periods: list[int],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
 ) -> int:
-    if requirement.min_consecutive_hours > 1:
+    if requirement.daily_limit_exempt:
         return 0
-    loads = _subject_daily_load_by_section(requirement, day, schedules, year, instructional_periods)
     overflow = 0
     impacted_sections = 0
-    for load in loads.values():
+    for load in _daily_subject_counts_for_requirement(requirement, day, daily_subject_counts).values():
         next_total = load + block_size
-        if next_total > 2:
-            overflow += next_total - 2
+        if next_total > requirement.preferred_daily_limit:
+            overflow += next_total - requirement.preferred_daily_limit
             impacted_sections += 1
     if overflow <= 0:
         return 0
-    return -(12 * overflow + 4 * impacted_sections)
+    return -(40 * overflow + 12 * impacted_sections)
 
 
 def _subject_has_edge_period_for_section(
@@ -1014,6 +1099,7 @@ def _subject_edge_distribution_adjustment(
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
     year: str,
     instructional_periods: list[int],
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]] | None = None,
 ) -> int:
     if not instructional_periods:
         return 0
@@ -1028,12 +1114,22 @@ def _subject_edge_distribution_adjustment(
     score = 0
     for section in requirement.sections:
         if touches_first:
-            if _subject_has_edge_period_for_section(section, requirement.subject_id, first_period, schedules, year):
+            has_first = (
+                bool(subject_edge_counts.get(section, {}).get(requirement.subject_id, {}).get(first_period, 0))
+                if subject_edge_counts is not None
+                else _subject_has_edge_period_for_section(section, requirement.subject_id, first_period, schedules, year)
+            )
+            if has_first:
                 score -= 2
             else:
                 score += 8
         if touches_last:
-            if _subject_has_edge_period_for_section(section, requirement.subject_id, last_period, schedules, year):
+            has_last = (
+                bool(subject_edge_counts.get(section, {}).get(requirement.subject_id, {}).get(last_period, 0))
+                if subject_edge_counts is not None
+                else _subject_has_edge_period_for_section(section, requirement.subject_id, last_period, schedules, year)
+            )
+            if has_last:
                 score -= 2
             else:
                 score += 8
@@ -1449,6 +1545,120 @@ def _remaining_empty_slots_for_sections(
     return sum(free_slots_tracker.get(section, 0) for section in sections)
 
 
+def _build_daily_subject_counts(
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    sections: list[str],
+    instructional_periods: list[int],
+) -> dict[str, dict[str, dict[str, int]]]:
+    counts: dict[str, dict[str, dict[str, int]]] = {
+        section: {day: {} for day in DAYS}
+        for section in sections
+    }
+    for section in sections:
+        for day in DAYS:
+            for period in instructional_periods:
+                entry = schedules[(year, section)][day].get(period)
+                if not isinstance(entry, dict):
+                    continue
+                subject_id = str(entry.get("subjectId", "")).strip() or str(entry.get("subject", "")).strip()
+                if not subject_id:
+                    continue
+                day_counts = counts[section][day]
+                day_counts[subject_id] = day_counts.get(subject_id, 0) + 1
+    return counts
+
+
+def _build_faculty_daily_loads(
+    faculty_busy: dict[str, set[tuple[str, int]]],
+) -> dict[str, dict[str, int]]:
+    loads: dict[str, dict[str, int]] = {}
+    for faculty_id, busy_slots in faculty_busy.items():
+        day_counts: dict[str, int] = {}
+        for day, _ in busy_slots:
+            day_counts[day] = day_counts.get(day, 0) + 1
+        loads[faculty_id] = day_counts
+    return loads
+
+
+def _build_subject_edge_counts(
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    sections: list[str],
+    instructional_periods: list[int],
+) -> dict[str, dict[str, dict[int, int]]]:
+    if not instructional_periods:
+        return {}
+    edge_periods = {instructional_periods[0], instructional_periods[-1]}
+    counts: dict[str, dict[str, dict[int, int]]] = {}
+    for section in sections:
+        section_counts: dict[str, dict[int, int]] = {}
+        for day in DAYS:
+            for period in edge_periods:
+                entry = schedules[(year, section)][day].get(period)
+                if not isinstance(entry, dict):
+                    continue
+                subject_id = str(entry.get("subjectId", "")).strip() or str(entry.get("subject", "")).strip()
+                if not subject_id:
+                    continue
+                period_counts = section_counts.setdefault(subject_id, {})
+                period_counts[period] = period_counts.get(period, 0) + 1
+        if section_counts:
+            counts[section] = section_counts
+    return counts
+
+
+def _adjust_daily_subject_counts(
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+    requirement: Requirement,
+    day: str,
+    block_size: int,
+) -> None:
+    for section in requirement.sections:
+        day_counts = daily_subject_counts.setdefault(section, {}).setdefault(day, {})
+        next_count = day_counts.get(requirement.subject_id, 0) + block_size
+        if next_count > 0:
+            day_counts[requirement.subject_id] = next_count
+        else:
+            day_counts.pop(requirement.subject_id, None)
+
+
+def _adjust_subject_edge_counts(
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]],
+    requirement: Requirement,
+    start_period: int,
+    block_size: int,
+    instructional_periods: list[int],
+    delta: int,
+) -> None:
+    if not instructional_periods:
+        return
+    end_period = start_period + block_size - 1
+    touched_edge_periods: list[int] = []
+    first_period = instructional_periods[0]
+    last_period = instructional_periods[-1]
+    if start_period == first_period:
+        touched_edge_periods.append(first_period)
+    if end_period == last_period and last_period not in touched_edge_periods:
+        touched_edge_periods.append(last_period)
+    if not touched_edge_periods:
+        return
+
+    for section in requirement.sections:
+        section_counts = subject_edge_counts.setdefault(section, {})
+        subject_counts = section_counts.setdefault(requirement.subject_id, {})
+        for period in touched_edge_periods:
+            next_count = subject_counts.get(period, 0) + delta
+            if next_count > 0:
+                subject_counts[period] = next_count
+            else:
+                subject_counts.pop(period, None)
+        if not subject_counts:
+            section_counts.pop(requirement.subject_id, None)
+        if not section_counts:
+            subject_edge_counts.pop(section, None)
+
+
 def _score_slot_candidate(
     requirement: Requirement,
     faculty_id: str,
@@ -1558,6 +1768,7 @@ def _enumerate_slot_candidates(
     requirement: Requirement,
     remaining_hours: int,
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
@@ -1569,6 +1780,8 @@ def _enumerate_slot_candidates(
     session_adjacency: dict[int, set[int]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
+    faculty_daily_loads: dict[str, dict[str, int]] | None = None,
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]] | None = None,
 ) -> list[SlotCandidate]:
     """
     Optimized candidate enumeration:
@@ -1612,7 +1825,7 @@ def _enumerate_slot_candidates(
                 if not _sections_are_free(
                     requirement.sections, requirement, day,
                     start_period, block_size, schedules,
-                    year, instructional_periods, sessions,
+                    year, instructional_periods, sessions, daily_subject_counts,
                 ):
                     continue
 
@@ -1621,6 +1834,7 @@ def _enumerate_slot_candidates(
                     requirement, day, start_period, block_size,
                     faculty_busy, faculty_availability, instructional_periods,
                     faculty_section_slots, session_adjacency,
+                    faculty_daily_loads=faculty_daily_loads,
                 )
                 if not faculty_id:
                     continue
@@ -1635,7 +1849,11 @@ def _enumerate_slot_candidates(
                     scoring_fid, _default_day_availability(instructional_periods)
                 ).get(day, set(instructional_periods))
                 faculty_flex = sum(1 for p in f_avail if (day, p) not in busy_set)
-                faculty_load = sum(1 for bd, _ in busy_set if bd == day)
+                faculty_load = (
+                    faculty_daily_loads.get(scoring_fid, {}).get(day, 0)
+                    if faculty_daily_loads is not None
+                    else sum(1 for bd, _ in busy_set if bd == day)
+                )
 
                 score = (
                     (5 if section_flex > 0 else -5)
@@ -1654,9 +1872,7 @@ def _enumerate_slot_candidates(
                         requirement,
                         day,
                         block_size,
-                        schedules,
-                        year,
-                        instructional_periods,
+                        daily_subject_counts,
                     )
                     + _subject_edge_distribution_adjustment(
                         requirement,
@@ -1665,6 +1881,7 @@ def _enumerate_slot_candidates(
                         schedules,
                         year,
                         instructional_periods,
+                        subject_edge_counts,
                     )
                 )
 
@@ -1691,6 +1908,7 @@ def _select_next_requirement(
     requirements: list[Requirement],
     remaining_hours: dict[int, int],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
@@ -1702,6 +1920,8 @@ def _select_next_requirement(
     session_adjacency: dict[int, set[int]],
     candidate_limit: int,
     free_slots_tracker: dict[str, int],
+    faculty_daily_loads: dict[str, dict[str, int]] | None = None,
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]] | None = None,
 ) -> tuple[int | None, list[SlotCandidate]]:
     """
     MRV (Minimum Remaining Values) heuristic:
@@ -1721,10 +1941,12 @@ def _select_next_requirement(
             continue
 
         candidates = _enumerate_slot_candidates(
-            requirement, remaining, schedules, faculty_busy,
+            requirement, remaining, schedules, daily_subject_counts, faculty_busy,
             faculty_availability, faculty_section_slots, year, days_order, periods_order,
             instructional_periods, sessions, session_adjacency, candidate_limit,
             free_slots_tracker,
+            faculty_daily_loads,
+            subject_edge_counts,
         )
 
         # FAIL FAST: 0 candidates means this branch is dead
@@ -1766,6 +1988,10 @@ def _place_block(
     session_log: list[dict],
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
     free_slots_tracker: dict[str, int],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+    faculty_daily_loads: dict[str, dict[str, int]],
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]],
+    instructional_periods: list[int],
     source: str = "solver",
 ) -> list[tuple[str, int]]:
     subject_id, subject_name = _resolve_subject_output(requirement.subject_id, subject_id_to_name)
@@ -1784,6 +2010,8 @@ def _place_block(
     for period in periods:
         for faculty_token in faculty_ids:
             faculty_busy.setdefault(faculty_token, set()).add((day, period))
+            faculty_daily_loads.setdefault(faculty_token, {})
+            faculty_daily_loads[faculty_token][day] = faculty_daily_loads[faculty_token].get(day, 0) + 1
         for section in requirement.sections:
             schedules[(year, section)][day][period] = {
                 "subject": subject_name,
@@ -1799,6 +2027,15 @@ def _place_block(
             }
             if section in free_slots_tracker:
                 free_slots_tracker[section] -= 1
+    _adjust_daily_subject_counts(daily_subject_counts, requirement, day, block_size)
+    _adjust_subject_edge_counts(
+        subject_edge_counts,
+        requirement,
+        start_period,
+        block_size,
+        instructional_periods,
+        1,
+    )
     # §21: tag source so only file-driven sessions appear in the shared class report
     session_log.append(
         {
@@ -1831,6 +2068,10 @@ def _undo_block(
     session_log: list[dict],
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
     free_slots_tracker: dict[str, int],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+    faculty_daily_loads: dict[str, dict[str, int]],
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]],
+    instructional_periods: list[int],
 ) -> None:
     _unmark_faculty_section_assignment(
         faculty_ids,
@@ -1842,17 +2083,156 @@ def _undo_block(
     for day, period in placements:
         for faculty_token in faculty_ids:
             faculty_busy.setdefault(faculty_token, set()).discard((day, period))
+            if faculty_token in faculty_daily_loads:
+                next_count = faculty_daily_loads[faculty_token].get(day, 0) - 1
+                if next_count > 0:
+                    faculty_daily_loads[faculty_token][day] = next_count
+                else:
+                    faculty_daily_loads[faculty_token].pop(day, None)
+                if not faculty_daily_loads[faculty_token]:
+                    faculty_daily_loads.pop(faculty_token, None)
         for section in requirement.sections:
             schedules[(year, section)][day][period] = None
             if section in free_slots_tracker:
                 free_slots_tracker[section] += 1
+    _adjust_daily_subject_counts(
+        daily_subject_counts,
+        requirement,
+        placements[0][0] if placements else "",
+        -len(placements),
+    )
+    if placements:
+        periods = [period for _, period in placements]
+        _adjust_subject_edge_counts(
+            subject_edge_counts,
+            requirement,
+            min(periods),
+            len(periods),
+            instructional_periods,
+            -1,
+        )
     if session_log:
         session_log.pop()
+
+
+def _can_greedily_finish_remaining_requirements(
+    requirements: list[Requirement],
+    remaining_hours: dict[int, int],
+) -> bool:
+    active_indices = [idx for idx, req in enumerate(requirements) if remaining_hours.get(idx, 0) > 0 and req.faculty_id]
+    if not active_indices:
+        return False
+    seen_sections: set[str] = set()
+    for idx in active_indices:
+        requirement = requirements[idx]
+        if requirement.shared or len(requirement.sections) != 1:
+            return False
+        if requirement.min_consecutive_hours != 1 or requirement.max_consecutive_hours != 1:
+            return False
+        section = requirement.sections[0]
+        if section in seen_sections:
+            return False
+        seen_sections.add(section)
+    return True
+
+
+def _finish_simple_section_requirements(
+    requirements: list[Requirement],
+    remaining_hours: dict[int, int],
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
+    faculty_busy: dict[str, set[tuple[str, int]]],
+    faculty_availability: dict[str, dict[str, set[int]]],
+    faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
+    year: str,
+    days_order: list[str],
+    periods_order: list[int],
+    instructional_periods: list[int],
+    sessions: list[tuple[int, ...]],
+    session_adjacency: dict[int, set[int]],
+    free_slots_tracker: dict[str, int],
+    faculty_daily_loads: dict[str, dict[str, int]],
+    subject_edge_counts: dict[str, dict[str, dict[int, int]]],
+    subject_id_to_name: dict[str, str],
+    faculty_id_to_name: dict[str, str],
+    session_log: list[dict],
+) -> bool:
+    placed_blocks: list[tuple[int, tuple[str, ...], list[tuple[str, int]]]] = []
+    active_indices = [idx for idx, req in enumerate(requirements) if remaining_hours.get(idx, 0) > 0 and req.faculty_id]
+    try:
+        for req_idx in active_indices:
+            requirement = requirements[req_idx]
+            while remaining_hours.get(req_idx, 0) > 0:
+                candidates = _enumerate_slot_candidates(
+                    requirement,
+                    remaining_hours[req_idx],
+                    schedules,
+                    daily_subject_counts,
+                    faculty_busy,
+                    faculty_availability,
+                    faculty_section_slots,
+                    year,
+                    days_order,
+                    periods_order,
+                    instructional_periods,
+                    sessions,
+                    session_adjacency,
+                    1,
+                    free_slots_tracker,
+                    faculty_daily_loads,
+                    subject_edge_counts,
+                )
+                if not candidates:
+                    return False
+                cand = candidates[0]
+                placements = _place_block(
+                    requirement,
+                    cand.faculty_ids,
+                    cand.day,
+                    cand.start_period,
+                    cand.block_size,
+                    schedules,
+                    faculty_busy,
+                    year,
+                    subject_id_to_name,
+                    faculty_id_to_name,
+                    session_log,
+                    faculty_section_slots,
+                    free_slots_tracker,
+                    daily_subject_counts,
+                    faculty_daily_loads,
+                    subject_edge_counts,
+                    instructional_periods,
+                    source="solver",
+                )
+                remaining_hours[req_idx] -= cand.block_size
+                placed_blocks.append((req_idx, cand.faculty_ids, placements))
+        return True
+    finally:
+        if any(remaining_hours.get(idx, 0) > 0 for idx in active_indices):
+            for req_idx, faculty_ids, placements in reversed(placed_blocks):
+                remaining_hours[req_idx] += len(placements)
+                _undo_block(
+                    requirements[req_idx],
+                    faculty_ids,
+                    placements,
+                    schedules,
+                    faculty_busy,
+                    year,
+                    session_log,
+                    faculty_section_slots,
+                    free_slots_tracker,
+                    daily_subject_counts,
+                    faculty_daily_loads,
+                    subject_edge_counts,
+                    instructional_periods,
+                )
 
 
 def _infer_failure_reason(
     requirement: Requirement,
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    daily_subject_counts: dict[str, dict[str, dict[str, int]]],
     faculty_busy: dict[str, set[tuple[str, int]]],
     faculty_availability: dict[str, dict[str, set[int]]],
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]],
@@ -1865,10 +2245,11 @@ def _infer_failure_reason(
     faculty_has_continuous_slot = False
     section_has_any_slot = False
     faculty_only_blocked_by_section_transition = False
+    blocked_only_by_daily_subject_limit = False
 
     for day in DAYS:
         for start in PERIODS:
-            base_section_free = _sections_are_free(
+            base_section_free = _sections_can_host_block(
                 requirement.sections,
                 requirement,
                 day,
@@ -1880,6 +2261,9 @@ def _infer_failure_reason(
                 sessions,
             )
             if not base_section_free:
+                continue
+            if _exceeds_subject_daily_hard_limit(requirement, day, 1, daily_subject_counts):
+                blocked_only_by_daily_subject_limit = True
                 continue
 
             if _choose_faculty_for_slot(
@@ -1920,6 +2304,7 @@ def _infer_failure_reason(
                 year,
                 instructional_periods,
                 sessions,
+                daily_subject_counts,
                 faculty_section_slots,
                 session_adjacency,
             ):
@@ -1939,6 +2324,7 @@ def _infer_failure_reason(
                     year,
                     instructional_periods,
                     sessions,
+                    daily_subject_counts,
                     faculty_section_slots,
                     session_adjacency,
                 ):
@@ -1947,6 +2333,8 @@ def _infer_failure_reason(
 
     if faculty_only_blocked_by_section_transition:
         return "faculty consecutive section constraint"
+    if blocked_only_by_daily_subject_limit and not faculty_has_any_slot:
+        return "subject daily allocation hard limit"
     if not faculty_has_any_slot:
         return "faculty availability conflict"
     if len(requirement.sections) > 1 and not section_has_any_slot:
@@ -2060,6 +2448,47 @@ def _serialize_section_grids(
     }
 
 
+def _collect_subject_daily_hard_limit_violations(
+    requirements: list[Requirement],
+    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
+    year: str,
+    instructional_periods: list[int],
+) -> list[dict]:
+    requirement_by_section_subject = {
+        (section, requirement.subject_id): requirement
+        for requirement in requirements
+        for section in requirement.sections
+    }
+    violations: list[dict] = []
+    for section in sorted({sec for requirement in requirements for sec in requirement.sections}):
+        for day in DAYS:
+            subject_counts: dict[str, int] = {}
+            for period in instructional_periods:
+                cell = schedules[(year, section)][day].get(period)
+                if not isinstance(cell, dict) or cell.get("isLab"):
+                    continue
+                subject_id = str(cell.get("subjectId", "")).strip() or str(cell.get("subject", "")).strip()
+                if not subject_id:
+                    continue
+                subject_counts[subject_id] = subject_counts.get(subject_id, 0) + 1
+            for subject_id, count in subject_counts.items():
+                requirement = requirement_by_section_subject.get((section, subject_id))
+                if requirement is None or requirement.daily_limit_exempt or count <= requirement.hard_daily_limit:
+                    continue
+                violations.append({
+                    "year": year,
+                    "sections": [section],
+                    "subject_id": subject_id,
+                    "faculty_id": requirement.faculty_id,
+                    "constraint": "subject daily allocation hard limit",
+                    "detail": (
+                        f"Section {section} assigns subject {subject_id} {count} times on {day}; "
+                        f"the hard daily limit is {requirement.hard_daily_limit}."
+                    ),
+                })
+    return violations
+
+
 def _build_timetable_quality_metrics(
     requirements: list[Requirement],
     schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
@@ -2097,7 +2526,10 @@ def _build_timetable_quality_metrics(
             overloaded_subjects: list[str] = []
             for subject_id, count in subject_counts.items():
                 requirement = requirement_by_section_subject.get((section, subject_id))
-                if count <= 2 or (requirement and requirement.min_consecutive_hours > 1):
+                if requirement and requirement.daily_limit_exempt:
+                    continue
+                preferred_limit = requirement.preferred_daily_limit if requirement else PREFERRED_SUBJECT_PERIODS_PER_DAY
+                if count <= preferred_limit:
                     continue
                 overloaded_subjects.append(f"{subject_id} ({count})")
                 subject_daily_overloads += 1
@@ -2108,7 +2540,10 @@ def _build_timetable_quality_metrics(
                     "subject_id": ", ".join(overloaded_subjects),
                     "faculty_id": "",
                     "constraint": "subject daily distribution preference",
-                    "detail": f"Section {section} exceeds the preferred 2-period daily subject limit on {day}: {', '.join(overloaded_subjects)}.",
+                    "detail": (
+                        f"Section {section} exceeds the preferred {PREFERRED_SUBJECT_PERIODS_PER_DAY}-period "
+                        f"daily subject limit on {day}: {', '.join(overloaded_subjects)}."
+                    ),
                 })
 
         for subject_id in sorted(seen_subjects):
@@ -3374,9 +3809,12 @@ def _build_faculty_workload_workbook_from_details(
     if period_config is None:
         period_config = DEFAULT_PERIOD_CONFIG
     workbook = Workbook()
-    workbook.remove(workbook.active)
     if not faculty_schedules:
+        worksheet = workbook.active
+        worksheet.title = "FacultyWorkload"
+        worksheet.append(["No faculty workload data available."])
         return workbook
+    workbook.remove(workbook.active)
     metadata = _resolve_timetable_metadata(timetable_metadata)
 
     header1 = [str(row.get("period", "")).strip() for row in period_config]
@@ -3481,9 +3919,12 @@ def _build_faculty_workload_workbook_from_saved_workloads(
     timetable_metadata: dict[str, Any] | None = None,
 ) -> Workbook:
     workbook = Workbook()
-    workbook.remove(workbook.active)
     if not faculty_workloads:
+        worksheet = workbook.active
+        worksheet.title = "FacultyWorkload"
+        worksheet.append(["No faculty workload data available."])
         return workbook
+    workbook.remove(workbook.active)
     metadata = _resolve_timetable_metadata(timetable_metadata)
 
     for faculty_name, schedule in sorted(faculty_workloads.items()):
@@ -3679,6 +4120,13 @@ def generate_timetable(
     request_data.year = normalize_year(request_data.year)
     year = request_data.year
     timetable_metadata = request_data.timetableMetadata.model_dump()
+    preferred_daily_limit = max(
+        1,
+        min(
+            PREFERRED_SUBJECT_PERIODS_PER_DAY,
+            int(request_data.dailySubjectLimit or PREFERRED_SUBJECT_PERIODS_PER_DAY),
+        ),
+    )
 
     subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
     room_inventory = _build_room_inventory(request_data, store)
@@ -3851,9 +4299,7 @@ def generate_timetable(
         for timetable_id in request_data.priorTimetableIds
         if str(timetable_id).strip()
     ]
-    if not prior_timetable_ids:
-        prior_timetable_ids = _latest_timetable_ids_by_year(store, exclude_year=year)
-        
+
     global_lab_busy = _build_global_lab_occupancy(
         all_main_rows,
         all_lab_rows,
@@ -4021,6 +4467,13 @@ def generate_timetable(
                 "source": "lab",
             })
 
+    daily_subject_counts = _build_daily_subject_counts(
+        schedules,
+        year,
+        all_sections,
+        instructional_periods,
+    )
+
     # Prepare Requirements
     requirements: list[Requirement] = []
     covered_shared_subjects: set[tuple[str, str]] = set()
@@ -4055,6 +4508,12 @@ def generate_timetable(
             min_consecutive_hours=min_consecutive,
             max_consecutive_hours=max_consecutive,
             shared=shared,
+            preferred_daily_limit=preferred_daily_limit,
+            hard_daily_limit=HARD_SUBJECT_PERIODS_PER_DAY,
+            daily_limit_exempt=(
+                min_consecutive > 1
+                or hours > HARD_SUBJECT_PERIODS_PER_DAY * len(DAYS)
+            ),
             phase=_determine_requirement_phase(shared, min_consecutive, hours, faculty_options, faculty_availability),
         )
 
@@ -4206,11 +4665,19 @@ def generate_timetable(
             )
             for section in all_sections
         }
+        precheck_faculty_daily_loads = _build_faculty_daily_loads(faculty_busy)
+        precheck_subject_edge_counts = _build_subject_edge_counts(
+            schedules,
+            year,
+            all_sections,
+            instructional_periods,
+        )
         for req in requirements:
             candidates = _enumerate_slot_candidates(
                 req,
                 req.hours,
                 schedules,
+                daily_subject_counts,
                 faculty_busy,
                 faculty_availability,
                 faculty_section_slots,
@@ -4222,6 +4689,8 @@ def generate_timetable(
                 session_adjacency,
                 1,
                 precheck_free_slots_tracker,
+                precheck_faculty_daily_loads,
+                precheck_subject_edge_counts,
             )
             if candidates:
                 continue
@@ -4233,6 +4702,7 @@ def generate_timetable(
                 "constraint": _infer_failure_reason(
                     req,
                     schedules,
+                    daily_subject_counts,
                     faculty_busy,
                     faculty_availability,
                     faculty_section_slots,
@@ -4309,12 +4779,41 @@ def generate_timetable(
                     if schedules[(year, section)][d].get(p) is None:
                         count += 1
             free_slots_tracker[section] = count
+        faculty_daily_loads = _build_faculty_daily_loads(faculty_busy)
+        subject_edge_counts = _build_subject_edge_counts(
+            schedules,
+            year,
+            all_sections,
+            instructional_periods,
+        )
 
         def backtrack() -> bool:
+            if _can_greedily_finish_remaining_requirements(requirements, remaining_by_req):
+                return _finish_simple_section_requirements(
+                    requirements,
+                    remaining_by_req,
+                    schedules,
+                    daily_subject_counts,
+                    faculty_busy,
+                    faculty_availability,
+                    faculty_section_slots,
+                    year,
+                    days_order,
+                    periods_order,
+                    instructional_periods,
+                    sessions,
+                    session_adjacency,
+                    free_slots_tracker,
+                    faculty_daily_loads,
+                    subject_edge_counts,
+                    subject_id_to_name,
+                    faculty_id_to_name,
+                    session_log,
+                )
             next_req_idx, candidates = _select_next_requirement(
-                requirements, remaining_by_req, schedules, faculty_busy, faculty_availability,
+                requirements, remaining_by_req, schedules, daily_subject_counts, faculty_busy, faculty_availability,
                 faculty_section_slots, year, days_order, periods_order, instructional_periods, sessions,
-                session_adjacency, 8, free_slots_tracker
+                session_adjacency, 8, free_slots_tracker, faculty_daily_loads, subject_edge_counts
             )
             if next_req_idx is None: return True
             if not candidates: return False
@@ -4324,10 +4823,18 @@ def generate_timetable(
                 placements = _place_block(
                     req, cand.faculty_ids, cand.day, cand.start_period, cand.block_size,
                     schedules, faculty_busy, year, subject_id_to_name, faculty_id_to_name,
-                    session_log, faculty_section_slots, free_slots_tracker, source="solver"
+                    session_log, faculty_section_slots, free_slots_tracker, daily_subject_counts,
+                    faculty_daily_loads, subject_edge_counts, instructional_periods, source="solver"
                 )
                 remaining_by_req[next_req_idx] -= cand.block_size
-                if backtrack(): return True
+                if _section_capacity_is_feasible(
+                    requirements,
+                    remaining_by_req,
+                    schedules,
+                    year,
+                    instructional_periods,
+                ) and backtrack():
+                    return True
                 remaining_by_req[next_req_idx] += cand.block_size
                 _undo_block(
                     req,
@@ -4339,6 +4846,10 @@ def generate_timetable(
                     session_log,
                     faculty_section_slots,
                     free_slots_tracker,
+                    daily_subject_counts,
+                    faculty_daily_loads,
+                    subject_edge_counts,
+                    instructional_periods,
                 )
             return False
 
@@ -4351,7 +4862,7 @@ def generate_timetable(
             rem = remaining_by_req.get(i, 0)
             if rem > 0:
                 reason = _infer_failure_reason(
-                    req, schedules, faculty_busy, faculty_availability,
+                    req, schedules, daily_subject_counts, faculty_busy, faculty_availability,
                     faculty_section_slots, year, instructional_periods, sessions, session_adjacency
                 )
                 subject_id, subject_name = _resolve_subject_output(req.subject_id, subject_id_to_name)
@@ -4378,6 +4889,16 @@ def generate_timetable(
         section_strength_map=section_strength_map,
         fixed_classroom_blocks=fixed_classroom_blocks,
     )
+
+    hard_limit_violations = _collect_subject_daily_hard_limit_violations(
+        requirements,
+        schedules,
+        year,
+        instructional_periods,
+    )
+    if hard_limit_violations:
+        solved = False
+        constraint_violations.extend(hard_limit_violations)
 
     quality_metrics, quality_warnings = _build_timetable_quality_metrics(
         requirements,

@@ -1,0 +1,2 @@
+❌ Manual Generation (Section A) API call FAILED: {"error":"ValidationError","message":"Authentication required","details":[]}
+❌ Manual Generation (Section A) API call FAILED: {"error":"ValidationError","message":"Authentication required","details":[]}

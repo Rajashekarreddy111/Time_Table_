@@ -17,10 +17,14 @@ from services.timetable_generator import (  # noqa: E402
     DAYS,
     Requirement,
     _allocate_classrooms_to_schedule,
+    _build_daily_subject_counts,
     _build_session_adjacency,
     _build_room_inventory,
     _build_section_strength_map,
     _choose_faculty_for_slot,
+    _enumerate_slot_candidates,
+    _sections_are_free,
+    _subject_daily_limit_penalty,
     generate_timetable,
 )
 from storage.memory_store import MemoryStore  # noqa: E402
@@ -726,6 +730,121 @@ class TimetableSolverTests(unittest.TestCase):
 
         self.assertEqual(2, two_hour_blocks, grouped_by_day)
         self.assertEqual(1, single_hour_blocks, grouped_by_day)
+
+    def test_subject_daily_preference_penalizes_a_third_period_when_another_day_is_available(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {"subject": "MATH", "subjectId": "MATH"}
+        schedules[(year, "A")]["Monday"][2] = {"subject": "MATH", "subjectId": "MATH"}
+        daily_subject_counts = _build_daily_subject_counts(schedules, year, ["A"], [1, 2, 3, 4, 5, 6, 7])
+        requirement = Requirement(
+            subject_id="MATH",
+            faculty_id="F1",
+            faculty_options=("F1",),
+            faculty_team=(),
+            sections=("A",),
+            hours=1,
+            min_consecutive_hours=1,
+            max_consecutive_hours=1,
+            shared=False,
+        )
+
+        monday_penalty = _subject_daily_limit_penalty(requirement, "Monday", 1, daily_subject_counts)
+        tuesday_penalty = _subject_daily_limit_penalty(requirement, "Tuesday", 1, daily_subject_counts)
+        candidates = _enumerate_slot_candidates(
+            requirement,
+            1,
+            schedules,
+            daily_subject_counts,
+            {"F1": set()},
+            {"F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS}},
+            {},
+            year,
+            ["Monday", "Tuesday"],
+            [3],
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            _build_session_adjacency([(1, 2), (3, 4), (5, 6, 7)]),
+            4,
+            {"A": 40},
+        )
+
+        self.assertLess(monday_penalty, tuesday_penalty)
+        self.assertGreater(len(candidates), 0)
+        self.assertEqual("Tuesday", candidates[0].day)
+
+    def test_subject_daily_hard_limit_blocks_fourth_period_for_non_continuous_subject(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        for period in (1, 2, 3):
+            schedules[(year, "A")]["Monday"][period] = {"subject": "MATH", "subjectId": "MATH"}
+        daily_subject_counts = _build_daily_subject_counts(schedules, year, ["A"], [1, 2, 3, 4, 5, 6, 7])
+        requirement = Requirement(
+            subject_id="MATH",
+            faculty_id="F1",
+            faculty_options=("F1",),
+            faculty_team=(),
+            sections=("A",),
+            hours=1,
+            min_consecutive_hours=1,
+            max_consecutive_hours=1,
+            shared=False,
+        )
+
+        allowed = _sections_are_free(
+            ("A",),
+            requirement,
+            "Monday",
+            4,
+            1,
+            schedules,
+            year,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            daily_subject_counts,
+        )
+
+        self.assertFalse(allowed)
+
+    def test_subject_daily_hard_limit_exempts_explicit_continuous_blocks(self) -> None:
+        year = "2nd Year"
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        for period in (3, 4):
+            schedules[(year, "A")]["Monday"][period] = {"subject": "LAB", "subjectId": "LAB"}
+        daily_subject_counts = _build_daily_subject_counts(schedules, year, ["A"], [1, 2, 3, 4, 5, 6, 7])
+        requirement = Requirement(
+            subject_id="LAB",
+            faculty_id="F1",
+            faculty_options=("F1",),
+            faculty_team=(),
+            sections=("A",),
+            hours=4,
+            min_consecutive_hours=2,
+            max_consecutive_hours=2,
+            shared=False,
+            daily_limit_exempt=True,
+        )
+
+        allowed = _sections_are_free(
+            ("A",),
+            requirement,
+            "Monday",
+            1,
+            2,
+            schedules,
+            year,
+            [1, 2, 3, 4, 5, 6, 7],
+            [(1, 2), (3, 4), (5, 6, 7)],
+            daily_subject_counts,
+        )
+
+        self.assertTrue(allowed)
 
     def test_solver_does_not_auto_group_matching_subjects_across_sections(self) -> None:
         store = MemoryStore()
