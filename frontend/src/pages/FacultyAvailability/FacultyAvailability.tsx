@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Download, FileSpreadsheet, Search, Sparkles, Upload, Users, XCircle } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, Clock3, Download, FileSpreadsheet, Search, Sparkles, Upload, Users, XCircle, ChevronDown, ChevronUp, Check, Info } from "lucide-react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { FileUpload } from "@/components/FileUpload";
 import { Button } from "@/components/ui/button";
@@ -339,7 +339,12 @@ const FacultyAvailability = () => {
   const [results, setResults] = useState<BulkFacultyAvailabilityItem[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [resultSearch, setResultSearch] = useState("");
+  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const templateBase = `${API_BASE_URL}/templates`;
+
+  const toggleRow = (rowKey: string) => {
+    setExpandedRows((prev) => ({ ...prev, [rowKey]: !prev[rowKey] }));
+  };
 
   const ignoredSections = useMemo(() => parseIgnoredSections(ignoredSectionsInput), [ignoredSectionsInput]);
 
@@ -443,177 +448,436 @@ const FacultyAvailability = () => {
   return (
     <DashboardLayout>
       <div className="w-full space-y-6">
+        {/* Clean Hero Header */}
         <div className="hero-shell">
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)] xl:items-end">
-            <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm"><Sparkles className="h-3.5 w-3.5" />Invisilation finder</div>
-              <div className="space-y-2">
-                <h1 className="text-3xl font-bold tracking-tight text-foreground">Invisilation Finder</h1>
-                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">Upload the faculty workload workbook and the bulk query file to find available faculty for each requested date and period with fair rotation and clear shortage reporting for invisilation planning.</p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><FileSpreadsheet className="h-4 w-4 text-primary" />Workload Upload</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the faculty workbook with all faculty sheets in the same format you already use.</p></div>
-                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><CalendarDays className="h-4 w-4 text-primary" />Query Upload</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Upload the request file containing date, faculty count, and periods to check.</p></div>
-                <div className="rounded-2xl border border-border/70 bg-card/80 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-foreground"><Users className="h-4 w-4 text-primary" />Fair Selection</div><p className="mt-2 text-xs leading-5 text-muted-foreground">Review balanced faculty picks, available counts, and shortages in one place.</p></div>
-              </div>
+          <div className="space-y-4">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-primary shadow-sm">
+              <Sparkles className="h-3.5 w-3.5" />
+              Invisilation finder
             </div>
-
-            <div className="panel-card">
-              <div className="flex items-center gap-3">
-                <div className="rounded-2xl bg-primary/10 p-3 text-primary"><Clock3 className="h-5 w-5" /></div>
-                <div><h2 className="text-sm font-semibold text-foreground">Report readiness</h2><p className="text-xs text-muted-foreground">The button enables after both uploads succeed.</p></div>
+            <div className="space-y-2">
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">Invisilation Finder</h1>
+              <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
+                Upload the faculty workload workbook and the bulk query file to find available faculty for each requested date and period with fair rotation and clear shortage reporting for invisilation planning.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3 max-w-4xl">
+              <div className="rounded-2xl border border-border/70 bg-card/80 p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <FileSpreadsheet className="h-4 w-4 text-primary" />
+                  Workload Upload
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  Upload the faculty workbook with all faculty workload sheets in single or stacked layouts.
+                </p>
               </div>
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-border/60 bg-muted/30 p-4"><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Workload file</p><p className="mt-2 text-sm font-semibold text-foreground">{availabilityFileId ? "Uploaded" : "Pending"}</p><p className="mt-1 text-xs text-muted-foreground">{availabilityFile?.name ?? "Upload the faculty workbook"}</p></div>
-                <div className="rounded-2xl border border-border/60 bg-muted/30 p-4"><p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Query file</p><p className="mt-2 text-sm font-semibold text-foreground">{queryFileId ? "Uploaded" : "Pending"}</p><p className="mt-1 text-xs text-muted-foreground">{queryFile?.name ?? "Upload the query workbook"}</p></div>
+              <div className="rounded-2xl border border-border/70 bg-card/80 p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <CalendarDays className="h-4 w-4 text-primary" />
+                  Query Upload
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  Upload the request query file containing dates, required counts, and periods.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border/70 bg-card/80 p-4">
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Users className="h-4 w-4 text-primary" />
+                  Fair Selection
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  Review balanced faculty picks, available counts, and shortages in one place.
+                </p>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.02fr)_minmax(0,0.98fr)]">
-          <div className="space-y-6">
-            <div className="panel-card">
-              <div className="mb-6 flex items-start justify-between gap-4">
-                <div><h2 className="text-lg font-semibold text-foreground">Upload Center</h2><p className="text-sm text-muted-foreground">Add both files here, then generate the invisilation report.</p></div>
-                <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary"><Upload className="h-3.5 w-3.5" />{availabilityFileId && queryFileId ? "Ready to generate" : "Waiting for uploads"}</div>
-              </div>
-              <div className="grid gap-5 xl:grid-cols-2">
-                <div className="rounded-[24px] border border-border/70 bg-muted/20 p-4">
-                  <div className="mb-4"><h3 className="text-base font-semibold text-foreground">Faculty workload upload</h3><p className="mt-1 text-sm text-muted-foreground">Upload the workbook in the same faculty workload format used by your department.</p></div>
-                  <FileUpload file={availabilityFile} onFileSelect={handleAvailabilityUpload} onClear={() => { setAvailabilityFile(null); setAvailabilityFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload faculty workload file" description="Supports the multi-sheet workload workbook format" icon={<FileSpreadsheet className="h-9 w-9 text-primary" />} />
-                  <p className="mt-3 text-xs text-muted-foreground">{availabilityFileId ? `Upload ID: ${availabilityFileId}` : "No faculty workload file uploaded yet."}</p>
-                </div>
-                <div className="rounded-[24px] border border-border/70 bg-muted/20 p-4">
-                  <div className="mb-4">
-                    <h3 className="text-base font-semibold text-foreground">Query file upload</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">Upload the file with date, required faculty, and period values.</p>
+        {/* Configuration Grid */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          {/* Upload Center */}
+          <div className="lg:col-span-7 space-y-6">
+            <div className="panel-card h-full flex flex-col justify-between">
+              <div>
+                <div className="mb-6 flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-foreground">Upload Center</h2>
+                    <p className="text-sm text-muted-foreground">Add both required files to configure the invisilation finder.</p>
                   </div>
-                  <FileUpload file={queryFile} onFileSelect={handleQueryUpload} onClear={() => { setQueryFile(null); setQueryFileId(""); }} accept=".xlsx,.xls,.csv" label="Upload query file" description="Contains Date, Number of Faculty Required, Start Time, and End Time" icon={<CalendarDays className="h-9 w-9 text-primary" />} templateLinks={buildTemplateLinks(templateBase, "faculty-availability-query")} />
-                  <p className="mt-3 text-xs text-muted-foreground">{queryFileId ? `Query ID: ${queryFileId}` : "No query file uploaded yet."}</p>
+                  <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${availabilityFileId && queryFileId ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                    <span className={`h-2 w-2 rounded-full ${availabilityFileId && queryFileId ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+                    {availabilityFileId && queryFileId ? "Ready to generate" : "Waiting for uploads"}
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="panel-card">
-              <div className="mb-6 flex items-start justify-between gap-4">
-                <div><h2 className="text-lg font-semibold text-foreground">Ignore Rules</h2><p className="text-sm text-muted-foreground">Optional filters to treat selected loads as available while checking results.</p></div>
-                <Button variant="outline" size="sm" onClick={clearFilters} disabled={ignoredYears.length === 0 && ignoredSections.length === 0}>Clear filters</Button>
-              </div>
-              <div className="space-y-5">
-                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore entire year</p>
-                  <div className="flex flex-wrap gap-2">
-                    {yearOptions.map((year) => (
-                      <label key={year} className="flex cursor-pointer items-center gap-2 rounded-full border border-border/70 bg-card px-3 py-2 text-sm text-foreground transition-colors hover:border-primary/40">
-                        <Checkbox checked={ignoredYears.includes(year)} onCheckedChange={() => toggleIgnoreYear(year)} />
-                        <span>{year}</span>
-                      </label>
-                    ))}
+                <div className="grid gap-5 sm:grid-cols-2">
+                  {/* Faculty Workload Card */}
+                  <div className="flex flex-col justify-between rounded-[24px] border border-border/70 bg-muted/20 p-4">
+                    <div>
+                      <div className="mb-4 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-foreground">Faculty Workload</h3>
+                        {availabilityFileId ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                            <Check className="h-3 w-3" /> Uploaded
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">Pending</span>
+                        )}
+                      </div>
+                      <FileUpload
+                        file={availabilityFile}
+                        onFileSelect={handleAvailabilityUpload}
+                        onClear={() => {
+                          setAvailabilityFile(null);
+                          setAvailabilityFileId("");
+                        }}
+                        accept=".xlsx,.xls,.csv"
+                        label="Upload workload file"
+                        description="Supports single or stacked workload workbook layouts"
+                        icon={<FileSpreadsheet className="h-7 w-7 text-primary" />}
+                      />
+                    </div>
+                    {availabilityFile && (
+                      <p className="mt-3 truncate text-xs text-muted-foreground font-mono bg-white/60 p-1.5 rounded border border-border/50">
+                        {availabilityFile.name}
+                      </p>
+                    )}
                   </div>
-                </div>
-                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
-                  <Label className="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore specific sections</Label>
-                  <Textarea value={ignoredSectionsInput} onChange={(event) => setIgnoredSectionsInput(event.target.value)} placeholder={"Enter sections to ignore, separated by commas or new lines.\nExamples: 2C3, 2G4, 3C2, 3C5, 3G1"} className="min-h-28 rounded-2xl bg-card" />
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">Type sections as year plus section, like `2C3`, `2G4`, `3C2`, `3C5`, or `3G1`. Spaces after commas are also handled.</p>
-                </div>
-                {ignoredSections.length > 0 && (
-                  <div className="rounded-[22px] border border-dashed border-border bg-muted/25 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignoring sections</p>
-                    <div className="mt-3 flex flex-wrap gap-2">{ignoredSections.map((section) => <span key={section} className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">{section}</span>)}</div>
-                  </div>
-                )}
-                <Button onClick={handleSearch} className="h-12 w-full gap-2 text-sm" disabled={searching || !availabilityFileId || !queryFileId}>
-                  <Search className="h-4 w-4" />
-                  {searching ? "Generating invisilation report..." : "Generate invisilation report"}
-                </Button>
-              </div>
-            </div>
 
-            <div className="panel-card">
-              <div className="mb-5 flex items-center gap-3"><div className="rounded-2xl bg-primary/10 p-3 text-primary"><CalendarDays className="h-5 w-5" /></div><div><h2 className="text-base font-semibold text-foreground">Supported periods</h2><p className="text-sm text-muted-foreground">Use these timetable period numbers in the query file.</p></div></div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {actualPeriods.map((period) => (
-                  <div key={period.period} className="rounded-2xl border border-border/70 bg-muted/20 px-4 py-3">
-                    <div className="text-sm font-semibold text-foreground">Period {period.period}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{period.time}</div>
+                  {/* Query File Card */}
+                  <div className="flex flex-col justify-between rounded-[24px] border border-border/70 bg-muted/20 p-4">
+                    <div>
+                      <div className="mb-4 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold text-foreground">Query File</h3>
+                        {queryFileId ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                            <Check className="h-3 w-3" /> Uploaded
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">Pending</span>
+                        )}
+                      </div>
+                      <FileUpload
+                        file={queryFile}
+                        onFileSelect={handleQueryUpload}
+                        onClear={() => {
+                          setQueryFile(null);
+                          setQueryFileId("");
+                        }}
+                        accept=".xlsx,.xls,.csv"
+                        label="Upload query file"
+                        description="Date, Faculty Required, Periods"
+                        icon={<CalendarDays className="h-7 w-7 text-primary" />}
+                        templateLinks={buildTemplateLinks(templateBase, "faculty-availability-query")}
+                      />
+                    </div>
+                    {queryFile && (
+                      <p className="mt-3 truncate text-xs text-muted-foreground font-mono bg-white/60 p-1.5 rounded border border-border/50">
+                        {queryFile.name}
+                      </p>
+                    )}
                   </div>
-                ))}
+                </div>
               </div>
             </div>
           </div>
 
+          {/* Ignore Rules & Action */}
+          <div className="lg:col-span-5 space-y-6">
+            <div className="panel-card flex flex-col justify-between h-full">
+              <div>
+                <div className="mb-6 flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-foreground">Ignore Rules & Filters</h2>
+                    <p className="text-sm text-muted-foreground">Exclude busy slots from availability checks.</p>
+                  </div>
+                  {(ignoredYears.length > 0 || ignoredSections.length > 0) && (
+                    <Button variant="ghost" size="sm" onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground">
+                      Reset
+                    </Button>
+                  )}
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <Label className="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore Entire Year</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {yearOptions.map((year) => (
+                        <label key={year} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-1.5 text-xs text-foreground transition-all ${ignoredYears.includes(year) ? "border-primary/50 bg-primary/5 font-medium text-primary shadow-sm" : "border-border/70 bg-card hover:border-border-hover"}`}>
+                          <Checkbox checked={ignoredYears.includes(year)} onCheckedChange={() => toggleIgnoreYear(year)} className="h-3.5 w-3.5" />
+                          <span>{year}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label className="mb-2 block text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Ignore Specific Sections</Label>
+                    <Input
+                      value={ignoredSectionsInput}
+                      onChange={(event) => setIgnoredSectionsInput(event.target.value)}
+                      placeholder="e.g. 2C3, 2G4, 3C2"
+                      className="rounded-xl h-10 text-xs"
+                    />
+                    <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                      Separate section names by commas or spaces.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-border/40">
+                <Button onClick={handleSearch} className="h-11 w-full gap-2 text-sm font-semibold shadow-sm" disabled={searching || !availabilityFileId || !queryFileId}>
+                  {searching ? (
+                    <>
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      Generating Report...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-4 w-4" />
+                      Generate Report
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Supported Periods Collapsible */}
+        <details className="group rounded-2xl border border-border/60 bg-muted/10 p-4 transition-all">
+          <summary className="flex cursor-pointer items-center justify-between text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground select-none">
+            <span className="flex items-center gap-2">
+              <Clock3 className="h-4 w-4 text-primary" />
+              View Department Period Reference Timings ({actualPeriods.length} Periods)
+            </span>
+            <span className="transition-transform duration-200 group-open:rotate-180">
+              <ChevronDown className="h-4 w-4" />
+            </span>
+          </summary>
+          <div className="mt-4 grid gap-3 grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+            {actualPeriods.map((period) => (
+              <div key={period.period} className="rounded-xl border border-border/50 bg-white p-2.5 text-center shadow-sm">
+                <div className="text-xs font-bold text-foreground">P{period.period}</div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-nowrap">{period.time}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+
+        {/* Results / Empty State */}
+        {results ? (
           <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
+            {/* Summary Statistics Panel */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {summaryStats.map((stat) => (
-                <div key={stat.label} className="stat-card">
-                  <div className={`inline-flex rounded-2xl px-3 py-1 text-xs font-semibold ${stat.tone}`}>{stat.label}</div>
-                  <p className="mt-4 text-3xl font-bold text-foreground">{stat.value}</p>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{stat.hint}</p>
+                <div key={stat.label} className="stat-card border border-border/60 shadow-sm rounded-2xl p-4 bg-white hover:shadow-md transition-all">
+                  <div className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${stat.tone}`}>{stat.label}</div>
+                  <p className="mt-3 text-3xl font-extrabold text-foreground">{stat.value}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{stat.hint}</p>
                 </div>
               ))}
             </div>
 
-            {results ? (
-              <div className="panel-card">
-                <div className="border-b border-border/70 pb-5">
-                  <div className="space-y-1">
-                    <h2 className="text-lg font-semibold text-foreground">Availability results</h2>
-                    <p className="max-w-lg text-sm leading-6 text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p>
+            {/* Results Table Panel */}
+            <div className="panel-card">
+              <div className="border-b border-border/70 pb-5">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-foreground">Availability Reports</h2>
+                    <p className="text-sm text-muted-foreground">Fair selection rotates available faculty as evenly as possible across the bulk report.</p>
                   </div>
-                  <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div className="w-full md:max-w-md lg:max-w-lg">
-                      <Input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Search by date, faculty, or status" className="rounded-2xl" />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative w-full sm:w-72">
+                      <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={resultSearch}
+                        onChange={(event) => setResultSearch(event.target.value)}
+                        placeholder="Search by date, faculty, or status..."
+                        className="pl-9 pr-4 rounded-xl h-10 text-sm"
+                      />
                     </div>
-                    <Button onClick={handleDownloadReport} variant="secondary" className="gap-2 self-start whitespace-nowrap md:self-auto"><Download className="h-4 w-4" />Download Report</Button>
+                    <Button onClick={handleDownloadReport} variant="secondary" className="gap-2 rounded-xl h-10 shadow-sm">
+                      <Download className="h-4 w-4" />
+                      Download Report
+                    </Button>
                   </div>
-                </div>
-                <div className="mt-5 space-y-4">
-                  {filteredResults.length > 0 ? filteredResults.map((item, index) => {
-                    const coverage = getFacultyCoverageTag(item);
-                    return (
-                      <div key={`${item.date}-${item.day}-${index}`} className="rounded-[24px] border border-border/70 bg-[linear-gradient(180deg,rgba(248,250,252,0.95),rgba(241,245,249,0.75))] p-5">
-                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-lg font-semibold text-foreground">{item.date}</span>
-                              <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">{item.day}</span>
-                              <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${coverage.className}`}>{coverage.label}</span>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              {item.periods.map((period) => <span key={`${item.date}-${period.period}`} className="rounded-full border border-border/60 bg-white px-3 py-1 text-xs font-medium text-foreground">P{period.period} - {period.time}</span>)}
-                            </div>
-                          </div>
-                          <div className="grid grid-cols-3 gap-2 lg:min-w-[330px]">
-                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Required</p><p className="mt-2 text-xl font-semibold text-foreground">{item.facultyRequired}</p></div>
-                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Available</p><p className="mt-2 text-xl font-semibold text-foreground">{item.availableFacultyCount}</p></div>
-                            <div className="rounded-2xl border border-border/60 bg-white px-3 py-3"><p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Shortage</p><p className="mt-2 text-xl font-semibold text-foreground">{item.shortageCount}</p></div>
-                          </div>
-                        </div>
-                        <div className={`mt-4 rounded-2xl border p-4 ${item.sufficientFaculty ? "border-emerald-200 bg-emerald-50/70" : "border-amber-200 bg-amber-50/70"}`}>
-                          <div className="flex items-start gap-2 text-sm">
-                            {item.sufficientFaculty ? <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-700" /> : <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-700" />}
-                            <p className={item.sufficientFaculty ? "text-emerald-800" : "text-amber-800"}>{item.message}</p>
-                          </div>
-                        </div>
-                        <div className="mt-4 rounded-2xl border border-border/60 bg-white p-4">
-                          {item.faculty.length > 0 ? (
-                            <div className="space-y-3">
-                              <div className="flex items-center gap-2 text-sm font-medium text-foreground"><Users className="h-4 w-4 text-primary" />Selected faculty</div>
-                              <div className="flex flex-wrap gap-2">{item.faculty.map((facultyName) => <span key={`${item.date}-${facultyName}`} className="rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary">{facultyName}</span>)}</div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2 text-sm text-muted-foreground"><XCircle className="h-4 w-4 text-destructive" />No faculty available for this request.</div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  }) : <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">No results matched your search term.</div>}
                 </div>
               </div>
-            ) : <EmptyState />}
+
+              {filteredResults.length > 0 ? (
+                <div className="mt-6 overflow-x-auto rounded-xl border border-border/60">
+                  <table className="w-full border-collapse text-left text-sm">
+                    <thead className="bg-muted/40 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      <tr>
+                        <th className="px-5 py-4 border-b border-border/60">Date & Day</th>
+                        <th className="px-5 py-4 border-b border-border/60">Periods Checked</th>
+                        <th className="px-5 py-4 border-b border-border/60 text-center">Required</th>
+                        <th className="px-5 py-4 border-b border-border/60 text-center">Available</th>
+                        <th className="px-5 py-4 border-b border-border/60 text-center">Shortage</th>
+                        <th className="px-5 py-4 border-b border-border/60">Coverage Status</th>
+                        <th className="px-5 py-4 border-b border-border/60 text-right">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {filteredResults.map((item, index) => {
+                        const rowKey = `${item.date}-${item.day}-${index}`;
+                        const isExpanded = !!expandedRows[rowKey];
+                        const coverage = getFacultyCoverageTag(item);
+                        const hasShortage = item.shortageCount > 0;
+                        return (
+                          <>
+                            <tr
+                              key={rowKey}
+                              onClick={() => toggleRow(rowKey)}
+                              className={`cursor-pointer hover:bg-muted/10 transition-colors ${isExpanded ? "bg-muted/5" : ""}`}
+                            >
+                              <td className="px-5 py-4 font-semibold text-foreground whitespace-nowrap">
+                                <div>{item.date}</div>
+                                <div className="text-xs font-normal text-muted-foreground">{item.day}</div>
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <span className="inline-flex flex-wrap gap-1 max-w-[200px]">
+                                  {item.periods.map((p) => (
+                                    <span key={p.period} className="rounded bg-secondary/60 px-1.5 py-0.5 text-xs text-secondary-foreground font-medium">
+                                      P{p.period}
+                                    </span>
+                                  ))}
+                                </span>
+                              </td>
+                              <td className="px-5 py-4 text-center font-medium text-foreground">{item.facultyRequired}</td>
+                              <td className="px-5 py-4 text-center font-medium text-foreground">{item.availableFacultyCount}</td>
+                              <td className={`px-5 py-4 text-center font-bold ${hasShortage ? "text-destructive" : "text-emerald-600"}`}>
+                                {item.shortageCount}
+                              </td>
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <span className={`inline-flex rounded-full border px-2.5 py-0.5 text-xs font-medium ${coverage.className}`}>
+                                  {coverage.label}
+                                </span>
+                              </td>
+                              <td className="px-5 py-4 text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 rounded-lg"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleRow(rowKey);
+                                  }}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  )}
+                                </Button>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-muted/10">
+                                <td colSpan={7} className="px-6 py-5 border-t border-border/40">
+                                  <div className="grid gap-6 md:grid-cols-12">
+                                    <div className="md:col-span-4 space-y-4">
+                                      <div>
+                                        <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Periods Details</h4>
+                                        <div className="mt-2 space-y-1.5">
+                                          {item.periods.map((p) => (
+                                            <div key={p.period} className="flex items-center gap-2 text-xs text-foreground bg-white/60 p-1.5 rounded-lg border border-border/50">
+                                              <span className="font-bold text-primary">P{p.period}</span>
+                                              <span className="text-muted-foreground">|</span>
+                                              <span>{p.time}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+
+                                      <div className={`rounded-xl border p-3.5 text-xs ${item.sufficientFaculty ? "border-emerald-200 bg-emerald-50/50 text-emerald-800" : "border-amber-200 bg-amber-50/50 text-amber-800"}`}>
+                                        <div className="flex items-start gap-2">
+                                          {item.sufficientFaculty ? (
+                                            <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600 flex-shrink-0" />
+                                          ) : (
+                                            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-600 flex-shrink-0" />
+                                          )}
+                                          <p className="leading-relaxed">{item.message}</p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="md:col-span-8 space-y-4">
+                                      <div>
+                                        <div className="flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                          <Users className="h-3.5 w-3.5 text-primary" />
+                                          Selected Faculty for Rotation ({item.faculty.length})
+                                        </div>
+                                        {item.faculty.length > 0 ? (
+                                          <div className="flex flex-wrap gap-2 p-3 bg-white/60 rounded-xl border border-border/50">
+                                            {item.faculty.map((facultyName) => (
+                                              <span key={facultyName} className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary border border-primary/20">
+                                                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                                                {facultyName}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <div className="flex items-center gap-2 text-xs text-muted-foreground p-3 bg-white/60 rounded-xl border border-border/50">
+                                            <XCircle className="h-4 w-4 text-destructive" />
+                                            No faculty members could be selected.
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      <div>
+                                        <div className="flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                          <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                                          Other Free Faculty (Backups/Alternatives: {item.availableFaculty.length})
+                                        </div>
+                                        {item.availableFaculty.length > 0 ? (
+                                          <div className="flex flex-wrap gap-2 p-3 bg-white/40 rounded-xl border border-border/40">
+                                            {item.availableFaculty.map((facultyName) => {
+                                              const isSelected = item.faculty.includes(facultyName);
+                                              return (
+                                                <span
+                                                  key={facultyName}
+                                                  className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs ${
+                                                    isSelected
+                                                      ? "bg-muted/80 text-muted-foreground/60 line-through decoration-muted-foreground/30"
+                                                      : "bg-muted/60 text-foreground border border-border/50 hover:bg-muted transition-colors"
+                                                  }`}
+                                                  title={isSelected ? "Selected in the current schedule" : "Available backup"}
+                                                >
+                                                  {facultyName}
+                                                </span>
+                                              );
+                                            })}
+                                          </div>
+                                        ) : (
+                                          <div className="text-xs text-muted-foreground p-3 bg-white/40 rounded-xl border border-border/40">
+                                            No alternative faculty members are available during this slot.
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground mt-6">
+                  No results matched your search term.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <EmptyState />
+        )}
       </div>
     </DashboardLayout>
   );

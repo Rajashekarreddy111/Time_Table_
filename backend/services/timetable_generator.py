@@ -3818,7 +3818,7 @@ def _write_single_workload_sheet(
     worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
     
     # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=f"ACADEMIC YEAR : {metadata['academicYear']}")
+    worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
     worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
     
     # 5. Faculty Workload Title Row
@@ -4046,26 +4046,26 @@ def _write_printable_workload_block(
     worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
     worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
     
-    # 5. Name and Date row
-    if faculty_id and faculty_name and faculty_id != faculty_name:
-        name_val = f"Name : {faculty_name}({faculty_id})"
-    else:
-        name_val = f"Name : {faculty_name}"
-    worksheet.cell(row=start_row+4, column=1, value=name_val)
-    worksheet.cell(row=start_row+4, column=max_col // 2 + 1, value=f"With effect from :   {metadata['withEffectFromDisplay']}")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+4, start_column=max_col // 2 + 1, end_row=start_row+4, end_column=max_col)
+    # 5. Faculty Workload Title Row
+    worksheet.cell(row=start_row+4, column=1, value="Faculty Workload")
+    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col)
     
-    # 6. Headers
-    worksheet.cell(row=start_row+5, column=1, value="DAY")
+    # 6. Faculty ID and Name Placement
+    worksheet.cell(row=start_row+5, column=1, value=f"Faculty ID : {faculty_id}")
+    worksheet.cell(row=start_row+5, column=max_col // 2 + 1, value=f"Faculty Name : {faculty_name}")
+    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+5, end_column=max_col // 2)
+    worksheet.merge_cells(start_row=start_row+5, start_column=max_col // 2 + 1, end_row=start_row+5, end_column=max_col)
+    
+    # 7. Headers
+    worksheet.cell(row=start_row+6, column=1, value="DAY")
     for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+5, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
         worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+6, end_column=1)
+    for c_idx, h in enumerate(header2, start=2):
+        worksheet.cell(row=start_row+7, column=c_idx, value=h)
+    worksheet.merge_cells(start_row=start_row+6, start_column=1, end_row=start_row+7, end_column=1)
     
-    # 7. Grid Data
-    day_start_row = start_row + 7
+    # 8. Grid Data
+    day_start_row = start_row + 8
     break_overlap_rows = []
     lunch_overlap_rows = []
     
@@ -4177,15 +4177,15 @@ def _write_printable_workload_block(
     for lc in lunch_cols:
         merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
     
-    # 8. Signatures
+    # 9. Signatures
     sig_row = start_row + 15
     worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
     worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
     worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
     worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
     
-    grid_s = start_row + 5
-    grid_e = start_row + 12
+    grid_s = start_row + 6
+    grid_e = start_row + 13
     thin_side = Side(style="thin", color="000000")
     
     for column_idx in range(1, max_col + 1):
@@ -4195,7 +4195,7 @@ def _write_printable_workload_block(
     for r_idx in range(start_row, sig_row + 1):
         if day_start_row <= r_idx < day_start_row + len(DAYS):
             worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 4:
+        elif r_idx <= start_row + 5:
             worksheet.row_dimensions[r_idx].height = 22
         elif r_idx == sig_row:
             worksheet.row_dimensions[r_idx].height = 22
@@ -4203,8 +4203,8 @@ def _write_printable_workload_block(
             worksheet.row_dimensions[r_idx].height = 20
     
     _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 4, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 5, start_row + 6, 1, max_col, font=BOLD_FONT)
+    _style_range(worksheet, start_row, start_row + 5, 1, max_col, font=BOLD_FONT)
+    _style_range(worksheet, start_row + 6, start_row + 7, 1, max_col, font=BOLD_FONT)
     _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
     _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
     
@@ -4355,7 +4355,7 @@ def _write_single_saved_workload_sheet(
     worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
     
     # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=f"ACADEMIC YEAR : {metadata['academicYear']}")
+    worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
     worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
     
     # 5. Faculty Workload Title Row
@@ -4557,26 +4557,26 @@ def _write_printable_saved_workload_block(
     worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
     worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
     
-    # 5. Name and Date row
-    if faculty_id and faculty_name and faculty_id != faculty_name:
-        name_val = f"Name : {faculty_name}({faculty_id})"
-    else:
-        name_val = f"Name : {faculty_name}"
-    worksheet.cell(row=start_row+4, column=1, value=name_val)
-    worksheet.cell(row=start_row+4, column=max_col // 2 + 1, value=f"With effect from :   {metadata['withEffectFromDisplay']}")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+4, start_column=max_col // 2 + 1, end_row=start_row+4, end_column=max_col)
+    # 5. Faculty Workload Title Row
+    worksheet.cell(row=start_row+4, column=1, value="Faculty Workload")
+    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col)
     
-    # 6. Headers
-    worksheet.cell(row=start_row+5, column=1, value="DAY")
+    # 6. Faculty ID and Name Placement
+    worksheet.cell(row=start_row+5, column=1, value=f"Faculty ID : {faculty_id}")
+    worksheet.cell(row=start_row+5, column=max_col // 2 + 1, value=f"Faculty Name : {faculty_name}")
+    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+5, end_column=max_col // 2)
+    worksheet.merge_cells(start_row=start_row+5, start_column=max_col // 2 + 1, end_row=start_row+5, end_column=max_col)
+    
+    # 7. Headers
+    worksheet.cell(row=start_row+6, column=1, value="DAY")
     for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+5, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
         worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+6, end_column=1)
+    for c_idx, h in enumerate(header2, start=2):
+        worksheet.cell(row=start_row+7, column=c_idx, value=h)
+    worksheet.merge_cells(start_row=start_row+6, start_column=1, end_row=start_row+7, end_column=1)
     
-    # 7. Grid Data
-    day_start_row = start_row + 7
+    # 8. Grid Data
+    day_start_row = start_row + 8
     break_overlap_rows = []
     lunch_overlap_rows = []
     
@@ -4669,8 +4669,8 @@ def _write_printable_saved_workload_block(
     worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
     worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
     
-    grid_s = start_row + 5
-    grid_e = start_row + 12
+    grid_s = start_row + 6
+    grid_e = start_row + 13
     thin_side = Side(style="thin", color="000000")
     
     for column_idx in range(1, max_col + 1):
@@ -4680,7 +4680,7 @@ def _write_printable_saved_workload_block(
     for r_idx in range(start_row, sig_row + 1):
         if day_start_row <= r_idx < day_start_row + len(DAYS):
             worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 4:
+        elif r_idx <= start_row + 5:
             worksheet.row_dimensions[r_idx].height = 22
         elif r_idx == sig_row:
             worksheet.row_dimensions[r_idx].height = 22
@@ -4688,8 +4688,8 @@ def _write_printable_saved_workload_block(
             worksheet.row_dimensions[r_idx].height = 20
     
     _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 4, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 5, start_row + 6, 1, max_col, font=BOLD_FONT)
+    _style_range(worksheet, start_row, start_row + 5, 1, max_col, font=BOLD_FONT)
+    _style_range(worksheet, start_row + 6, start_row + 7, 1, max_col, font=BOLD_FONT)
     _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
     _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
     

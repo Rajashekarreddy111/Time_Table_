@@ -130,7 +130,6 @@ function buildWorkloadWorksheet(
 ) {
   const resolvedAcademicYear = metadata?.academicYear ?? toAcademicYear(new Date());
   const resolvedSemester = formatSemesterLabel(metadata?.semester ?? 2);
-  const resolvedWithEffectFrom = formatWithEffectFrom(metadata?.withEffectFrom);
   const legend = getWorkloadLegend(workload.schedule);
   const data: string[][] = [];
   const merges: XLSX.Range[] = [];
@@ -138,9 +137,16 @@ function buildWorkloadWorksheet(
   data.push(padRow([ACADEMIC_METADATA.COLLEGE_NAME]));
   data.push(padRow(["(AUTONOMOUS)"]));
   data.push(padRow([ACADEMIC_METADATA.DEPARTMENT_NAME]));
-  data.push(padRow([`ACADEMIC YEAR : ${resolvedAcademicYear} ${resolvedSemester}`]));
-  data.push(padRow([`FACULTY WORKLOAD : ${workload.name}`]));
-  data.push(padRow(["Room No :", "", "", "", "", `With effect from : ${resolvedWithEffectFrom}`]));
+
+  const parts = resolvedAcademicYear.split("-");
+  const compactYear = parts.length === 2 && parts[0].length === 4 && parts[1].length === 4
+    ? `${parts[0]} - ${parts[1].substring(2)}`
+    : resolvedAcademicYear;
+  const semUpper = resolvedSemester.trim().toUpperCase();
+  data.push(padRow([`ACADEMIC YEAR : ${compactYear} (${semUpper})  Time Table`]));
+
+  data.push(padRow(["Faculty Workload"]));
+  data.push(padRow([`Faculty ID :`, "", "", "", "", `Faculty Name : ${workload.name}`]));
 
   const tableHeaderRow = data.length;
   data.push(padRow(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"]));

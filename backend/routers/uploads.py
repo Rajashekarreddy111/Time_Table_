@@ -676,59 +676,128 @@ def _parse_workload_sheet_rows(file_bytes: bytes) -> list[dict]:
         if not sheet_rows:
             continue
 
-        faculty_name = ""
-        for row in sheet_rows[:12]:
-            for value in row:
-                text = _to_text(value)
-                if "FACULTY WORKLOAD" in text.upper():
-                    faculty_name = text.split(":", 1)[1].strip() if ":" in text else text
-                    break
-            if faculty_name:
-                break
-
-        periods_row_index = -1
-        day_column_index = -1
-        column_to_period: dict[int, int] = {}
-        for row_index, row in enumerate(sheet_rows):
-            values = [_to_text(value).upper() for value in row]
-            if "DAY" not in values or "1" not in values or "2" not in values:
-                continue
-            periods_row_index = row_index
-            for column_index, value in enumerate(values):
-                if value == "DAY":
-                    day_column_index = column_index
-                elif value in {"1", "2", "3", "4", "5", "6", "7"}:
-                    column_to_period[column_index] = int(value)
-            break
-
-        if periods_row_index == -1 or day_column_index == -1 or not column_to_period:
-            continue
-
-        for row in sheet_rows[periods_row_index + 1:]:
-            if day_column_index >= len(row):
-                continue
-
-            day_value = _normalize_workload_day(row[day_column_index])
-            if day_value not in valid_days:
-                continue
-
-            for column_index, period in column_to_period.items():
-                cell_value = row[column_index] if column_index < len(row) else None
-                if not _to_text(cell_value):
+        # Find all header indicators
+        blocks = []
+        for r_idx, row in enumerate(sheet_rows):
+            for c_idx, cell_value in enumerate(row):
+                text = _to_text(cell_value).strip()
+                if not text:
                     continue
-                details = _parse_workload_class_details(cell_value)
-                normalized_rows.append(
-                    {
-                        "faculty_id": faculty_name or worksheet.title.strip(),
-                        "faculty_name": faculty_name or worksheet.title.strip(),
+                text_upper = text.upper()
+                
+                is_fac_header = False
+                fname, fid = "", ""
+                
+                if any(kw in text_upper for kw in ["FACULTY WORKLOAD", "FACULTY NAME", "NAME:", "NAME :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                elif any(kw in text_upper for kw in ["FACULTY ID", "ID:", "ID :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                    
+                if is_fac_header:
+                    if fname and not _is_valid_workload_faculty_name(fname):
+                        fname = ""
+                    if fname or fid:
+                        blocks.append({
+                            "row_index": r_idx,
+                            "col_index": c_idx,
+                            "name": fname,
+                            "id": fid
+                        })
+
+        # Group blocks
+        grouped_blocks = []
+        for b in blocks:
+            if not grouped_blocks or b["row_index"] - grouped_blocks[-1]["last_row"] > 10:
+                grouped_blocks.append({
+                    "first_row": b["row_index"],
+                    "last_row": b["row_index"],
+                    "name": b["name"],
+                    "id": b["id"]
+                })
+            else:
+                grouped_blocks[-1]["last_row"] = b["row_index"]
+                if b["name"] and not grouped_blocks[-1]["name"]:
+                    grouped_blocks[-1]["name"] = b["name"]
+                if b["id"] and not grouped_blocks[-1]["id"]:
+                    grouped_blocks[-1]["id"] = b["id"]
+
+        if not grouped_blocks:
+            # Fallback if no explicit headers found (older format or single sheet without title)
+            grouped_blocks = [{
+                "first_row": -1,
+                "last_row": -1,
+                "name": worksheet.title.strip(),
+                "id": ""
+            }]
+
+        for i, block in enumerate(grouped_blocks):
+            start_search = max(0, block["first_row"] + 1)
+            end_search = grouped_blocks[i+1]["first_row"] if i + 1 < len(grouped_blocks) else len(sheet_rows)
+            
+            periods_row_index = -1
+            day_column_index = -1
+            column_to_period: dict[int, int] = {}
+            
+            for row_index in range(start_search, end_search):
+                row = sheet_rows[row_index]
+                values = []
+                for v in row:
+                    if v is None:
+                        values.append("")
+                    else:
+                        val_str = str(v).strip().upper()
+                        if val_str.endswith(".0"):
+                            val_str = val_str[:-2]
+                        values.append(val_str)
+                        
+                has_day = any("DAY" in val for val in values)
+                has_p1 = any(val == "1" for val in values)
+                has_p2 = any(val == "2" for val in values)
+                
+                if has_day and has_p1 and has_p2:
+                    periods_row_index = row_index
+                    for col_idx, val in enumerate(values):
+                        if "DAY" in val:
+                            day_column_index = col_idx
+                        elif val in {"1", "2", "3", "4", "5", "6", "7"}:
+                            column_to_period[col_idx] = int(val)
+                    break
+                    
+            if periods_row_index == -1 or day_column_index == -1 or not column_to_period:
+                continue
+                
+            for row_index in range(periods_row_index + 1, end_search):
+                row = sheet_rows[row_index]
+                if day_column_index >= len(row):
+                    continue
+                    
+                day_raw = row[day_column_index]
+                day_value = _normalize_workload_day(day_raw)
+                if day_value not in valid_days:
+                    continue
+                    
+                for col_idx, period in column_to_period.items():
+                    cell_val = row[col_idx] if col_idx < len(row) else None
+                    if not _to_text(cell_val):
+                        continue
+                        
+                    details = _parse_workload_class_details(cell_val)
+                    
+                    fac_name = block["name"] or worksheet.title.strip()
+                    fac_id = block["id"] or fac_name
+                    
+                    normalized_rows.append({
+                        "faculty_id": fac_id,
+                        "faculty_name": fac_name,
                         "day": day_value,
                         "period": period,
                         "year": details["year"],
                         "section": details["section"],
                         "subject": details["subject"],
                         "is_available": False,
-                    }
-                )
+                    })
 
     return normalized_rows
 
@@ -738,19 +807,65 @@ def _extract_workload_faculty_names(file_bytes: bytes) -> list[str]:
     faculty_names: list[str] = []
 
     for worksheet in workbook.worksheets:
-        faculty_name = ""
-        for row in worksheet.iter_rows(min_row=1, max_row=12, values_only=True):
-            for value in row:
-                text = _to_text(value)
-                if "FACULTY WORKLOAD" in text.upper():
-                    faculty_name = text.split(":", 1)[1].strip() if ":" in text else text
-                    break
-            if faculty_name:
-                break
+        sheet_rows = list(worksheet.iter_rows(values_only=True))
+        if not sheet_rows:
+            continue
 
-        fallback_name = faculty_name or worksheet.title.strip()
-        if fallback_name and fallback_name not in faculty_names:
-            faculty_names.append(fallback_name)
+        blocks = []
+        for r_idx, row in enumerate(sheet_rows):
+            for c_idx, cell_value in enumerate(row):
+                text = _to_text(cell_value).strip()
+                if not text:
+                    continue
+                text_upper = text.upper()
+                
+                is_fac_header = False
+                fname, fid = "", ""
+                
+                if any(kw in text_upper for kw in ["FACULTY WORKLOAD", "FACULTY NAME", "NAME:", "NAME :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                elif any(kw in text_upper for kw in ["FACULTY ID", "ID:", "ID :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                    
+                if is_fac_header:
+                    if fname and not _is_valid_workload_faculty_name(fname):
+                        fname = ""
+                    if fname or fid:
+                        blocks.append({
+                            "row_index": r_idx,
+                            "col_index": c_idx,
+                            "name": fname,
+                            "id": fid
+                        })
+
+        # Group blocks
+        grouped_blocks = []
+        for b in blocks:
+            if not grouped_blocks or b["row_index"] - grouped_blocks[-1]["last_row"] > 10:
+                grouped_blocks.append({
+                    "first_row": b["row_index"],
+                    "last_row": b["row_index"],
+                    "name": b["name"],
+                    "id": b["id"]
+                })
+            else:
+                grouped_blocks[-1]["last_row"] = b["row_index"]
+                if b["name"] and not grouped_blocks[-1]["name"]:
+                    grouped_blocks[-1]["name"] = b["name"]
+                if b["id"] and not grouped_blocks[-1]["id"]:
+                    grouped_blocks[-1]["id"] = b["id"]
+
+        if not grouped_blocks:
+            fallback_name = worksheet.title.strip()
+            if fallback_name and fallback_name not in faculty_names:
+                faculty_names.append(fallback_name)
+        else:
+            for block in grouped_blocks:
+                name = block["name"] or worksheet.title.strip()
+                if name and name not in faculty_names:
+                    faculty_names.append(name)
 
     return faculty_names
 
