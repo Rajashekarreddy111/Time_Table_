@@ -470,17 +470,19 @@ const TimetableViewer = () => {
 
   const handleExportAllTimetables = async () => {
     try {
-      const workbook = await getAllSectionsWorkbook();
-      downloadGeneratedWorkbook(workbook);
+      const response = await getAllSectionsWorkbook();
+      downloadGeneratedWorkbook(response.printableWorkbook);
       toast.success("All class timetables exported.");
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
-          : "Failed to download all timetables",
+          : "Failed to download class timetables",
       );
     }
   };
+
+
 
   const handlePrint = () => window.print();
 
@@ -623,8 +625,9 @@ const TimetableViewer = () => {
               onClick={handleExportAllTimetables}
               className="gap-1.5"
             >
-              <Download className="h-3.5 w-3.5" /> Download All Timetables
+              <Download className="h-3.5 w-3.5" /> Download Class Timetables
             </Button>
+
             <Button
               variant="outline"
               size="sm"

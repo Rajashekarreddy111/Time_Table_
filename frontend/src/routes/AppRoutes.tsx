@@ -4,6 +4,7 @@ import TimetableGenerator from "@/pages/TimetableGenerator/TimetableGenerator";
 import TimetableViewer from "@/pages/TimetableViewer/TimetableViewer";
 import RoomTimetableViewer from "@/pages/RoomTimetableViewer/RoomTimetableViewer";
 import FacultyWorkload from "@/pages/FacultyWorkload/FacultyWorkload";
+import FacultyWorkloadMerger from "@/pages/FacultyWorkload/FacultyWorkloadMerger";
 import FacultyAvailability from "@/pages/FacultyAvailability/FacultyAvailability";
 import GeneratedOutputs from "@/pages/GeneratedOutputs/GeneratedOutputs";
 import NotFound from "@/pages/NotFound/NotFound";
@@ -46,6 +47,7 @@ export function AppRoutes() {
         <Route path="/timetables" element={<TimetableViewer />} />
         <Route path="/rooms" element={<RoomTimetableViewer />} />
         <Route path="/workload" element={<FacultyWorkload />} />
+        <Route path="/workload-merger" element={<FacultyWorkloadMerger />} />
         <Route path="/outputs" element={<GeneratedOutputs />} />
         <Route path="/availability" element={<FacultyAvailability />} />
         <Route element={<RequireAdmin />}>

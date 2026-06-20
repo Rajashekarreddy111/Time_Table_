@@ -7,6 +7,7 @@ import {
   Users,
   BookOpen,
   Clock3,
+  FileSpreadsheet,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
@@ -113,6 +114,8 @@ const EMPTY_MAPPING_STATUS: MappingStatus = {
   classroomsUploaded: false,
   periodConfigUploaded: false,
   fixedClassroomBlocksUploaded: false,
+  existingFacultyWorkloadsUploaded: false,
+  existingClassroomTimetablesUploaded: false,
 };
 
 const TimetableGenerator = () => {
@@ -169,6 +172,9 @@ const TimetableGenerator = () => {
   const [classroomsFile, setClassroomsFile] = useState<File | null>(null);
   const [periodConfigFile, setPeriodConfigFile] = useState<File | null>(null);
   const [fixedClassroomBlocksFile, setFixedClassroomBlocksFile] = useState<File | null>(null);
+  const [masterWorkbookFile, setMasterWorkbookFile] = useState<File | null>(null);
+  const [existingFacultyWorkloadsFile, setExistingFacultyWorkloadsFile] = useState<File | null>(null);
+  const [existingClassroomTimetablesFile, setExistingClassroomTimetablesFile] = useState<File | null>(null);
 
   const [mappingFileIds, setMappingFileIds] = useState({
     facultyIdMap: "",
@@ -179,6 +185,9 @@ const TimetableGenerator = () => {
     classrooms: "",
     periodConfig: "",
     fixedClassroomBlocks: "",
+    masterWorkbook: "",
+    existingFacultyWorkloads: "",
+    existingClassroomTimetables: "",
   });
 
   const [mappingStatus, setMappingStatus] = useState<MappingStatus>(EMPTY_MAPPING_STATUS);
@@ -197,6 +206,9 @@ const TimetableGenerator = () => {
     setClassroomsFile(null);
     setPeriodConfigFile(null);
     setFixedClassroomBlocksFile(null);
+    setMasterWorkbookFile(null);
+    setExistingFacultyWorkloadsFile(null);
+    setExistingClassroomTimetablesFile(null);
     setMappingFileIds({
       facultyIdMap: "",
       mainTimetableConfig: "",
@@ -206,6 +218,9 @@ const TimetableGenerator = () => {
       classrooms: "",
       periodConfig: "",
       fixedClassroomBlocks: "",
+      masterWorkbook: "",
+      existingFacultyWorkloads: "",
+      existingClassroomTimetables: "",
     });
   };
 
@@ -516,6 +531,42 @@ const TimetableGenerator = () => {
       loadMappingStatus(selectedYear);
     } catch (error) {
       showDetailedError(error, "Fixed classroom blocks upload failed");
+    }
+  };
+
+  const handleUploadMasterWorkbook = async (file: File) => {
+    setMasterWorkbookFile(file);
+    try {
+      const response = await uploadMasterWorkbook(file);
+      setMappingFileIds((prev) => ({ ...prev, masterWorkbook: response.fileId }));
+      toast.success(response.message || "Master workbook uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Master workbook upload failed");
+    }
+  };
+
+  const handleUploadExistingFacultyWorkloads = async (file: File) => {
+    setExistingFacultyWorkloadsFile(file);
+    try {
+      const response = await uploadExistingFacultyWorkloads(file);
+      setMappingFileIds((prev) => ({ ...prev, existingFacultyWorkloads: response.fileId }));
+      toast.success("Existing faculty workloads uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Existing faculty workloads upload failed");
+    }
+  };
+
+  const handleUploadExistingClassroomTimetables = async (file: File) => {
+    setExistingClassroomTimetablesFile(file);
+    try {
+      const response = await uploadExistingClassroomTimetables(file);
+      setMappingFileIds((prev) => ({ ...prev, existingClassroomTimetables: response.fileId }));
+      toast.success("Existing classroom timetables uploaded.");
+      loadMappingStatus(selectedYear);
+    } catch (error) {
+      showDetailedError(error, "Existing classroom timetables upload failed");
     }
   };
 
@@ -1024,11 +1075,108 @@ const TimetableGenerator = () => {
           </div>
 
           {inputMode === "file" && (
-            <div className="panel-card space-y-5">
+            <div className="panel-card space-y-6">
               <p className="text-xs text-muted-foreground">
-                Follow the Excel-driven process exactly. All uploaded files in this section are stored globally and reused across timetable generation, including Main Config, Lab Timetable, Shared Classes, and Faculty Availability.
+                Follow the Excel-driven process exactly. You can upload all constraints at once using a Master Input Workbook, or upload individual files. You can also specify existing workloads and classroom timetables to respect.
               </p>
-              
+
+              {/* Master Input Workbook Section */}
+              <div className="rounded-2xl border border-primary/20 p-5 bg-gradient-to-r from-primary/5 via-primary/0 to-primary/5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                      <FileSpreadsheet className="h-4 w-4 text-primary" /> Master Input Workbook (Single Upload)
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Upload a single Excel workbook (.xlsx). The system will automatically detect sheets like Subjects, Faculty Mapping, Constraints, Labs, Shared Classes, Sessions, etc.
+                    </p>
+                  </div>
+                  {mappingStatus.facultyIdMapUploaded && (
+                    <span className="text-[10px] bg-green-500/10 text-green-500 font-medium px-2 py-0.5 rounded-full">
+                      Sheets Loaded
+                    </span>
+                  )}
+                </div>
+                <FileUpload
+                  file={masterWorkbookFile}
+                  onFileSelect={handleUploadMasterWorkbook}
+                  onClear={() => setMasterWorkbookFile(null)}
+                  label="Upload Master Workbook (.xlsx)"
+                  templateLinks={buildTemplateLinks(templateBase, "master-workbook")}
+                />
+              </div>
+
+              {/* Existing Timetables & Workloads (Requirement 10) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="rounded-xl border border-secondary/20 p-4 bg-muted/10 space-y-2">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <Users className="h-4 w-4 text-primary" /> Faculty Workloads Workbook (Existing schedules)
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Define current busy slots for faculty to prevent double booking.
+                  </p>
+                  <FileUpload
+                    file={existingFacultyWorkloadsFile}
+                    onFileSelect={handleUploadExistingFacultyWorkloads}
+                    onClear={() => setExistingFacultyWorkloadsFile(null)}
+                    label="Upload Faculty Workloads (.xlsx)"
+                    templateLinks={buildTemplateLinks(templateBase, "faculty-workload")}
+                  />
+                  {mappingStatus.existingFacultyWorkloadsUploaded && (
+                    <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-2.5 text-xs">
+                      <span>Uploaded: <span className="font-medium text-primary">{mappingStatus.existingFacultyWorkloadsFileName}</span></span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRemoveUploadedFile("existing-faculty-workloads" as any, () => {
+                          setExistingFacultyWorkloadsFile(null);
+                          setMappingFileIds((prev) => ({ ...prev, existingFacultyWorkloads: "" }));
+                        }, "Existing workloads removed.")}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-secondary/20 p-4 bg-muted/10 space-y-2">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <BookOpen className="h-4 w-4 text-primary" /> Classroom Timetable Workbook (Existing Room Schedules)
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Define current classroom occupancies to prevent room scheduling conflicts.
+                  </p>
+                  <FileUpload
+                    file={existingClassroomTimetablesFile}
+                    onFileSelect={handleUploadExistingClassroomTimetables}
+                    onClear={() => setExistingClassroomTimetablesFile(null)}
+                    label="Upload Classroom Timetables (.xlsx)"
+                    templateLinks={buildTemplateLinks(templateBase, "classrooms")}
+                  />
+                  {mappingStatus.existingClassroomTimetablesUploaded && (
+                    <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background p-2.5 text-xs">
+                      <span>Uploaded: <span className="font-medium text-primary">{mappingStatus.existingClassroomTimetablesFileName}</span></span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRemoveUploadedFile("existing-classroom-timetables" as any, () => {
+                          setExistingClassroomTimetablesFile(null);
+                          setMappingFileIds((prev) => ({ ...prev, existingClassroomTimetables: "" }));
+                        }, "Existing classroom timetables removed.")}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 my-4">
+                <div className="h-px bg-border flex-1" />
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Or upload files individually below</span>
+                <div className="h-px bg-border flex-1" />
+              </div>
+
               <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-4">
                 <div className="rounded-xl border border-border/70 p-3 bg-muted/20">
                   <p className="text-xs font-semibold mb-2"><Users className="h-4 w-4 text-primary inline-block mr-1" /> Faculty Name/ID Mapping (Global)</p>

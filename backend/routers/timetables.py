@@ -172,11 +172,16 @@ def _refresh_generated_workbooks(record: dict[str, Any]) -> None:
             }
             for record_year, record_section in schedules
         }
-        faculty_schedules = _build_faculty_schedule_details_from_section_grids(section_grids)
+        faculty_schedules, local_fac_map = _build_faculty_schedule_details_from_section_grids(section_grids)
         if faculty_schedules:
             generated_files["facultyWorkload"] = _encode_workbook(
                 "faculty_workload.xlsx",
-                _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata, _get_global_period_config()),
+                _build_faculty_workload_workbook_from_details(
+                    faculty_schedules,
+                    timetable_metadata,
+                    _get_global_period_config(),
+                    faculty_id_to_name=local_fac_map
+                ),
             )
 
     if generated_files:
@@ -317,9 +322,94 @@ def _room_schedules_from_grids(
     }
 
 
+def format_human_readable_violation(violation: dict, store: Any, request_data: Any) -> str:
+    constraint = str(violation.get("constraint", "")).lower()
+    detail = str(violation.get("detail", ""))
+    
+    # 1. Faculty availability / occupancy conflict
+    if "faculty availability" in constraint or "faculty" in constraint or "faculty" in detail.lower():
+        fac_id = violation.get("faculty_id", "")
+        tokens = [t.strip() for t in fac_id.split(",") if t.strip()]
+        primary_fid = tokens[0] if tokens else fac_id
+        
+        import re
+        m = re.search(r"period\s+(\d+)", detail, re.IGNORECASE)
+        p_num = m.group(1) if m else None
+        
+        if not p_num:
+            inst_periods = [1, 2, 3, 4, 5, 6, 7]
+            p_config = request_data.periodConfiguration if hasattr(request_data, "periodConfiguration") else []
+            if p_config:
+                inst_periods = []
+                for entry in p_config:
+                    try:
+                        p_num_val = int(entry.period)
+                        inst_periods.append(p_num_val)
+                    except ValueError:
+                        pass
+            if not inst_periods:
+                inst_periods = [1, 2, 3, 4, 5, 6, 7]
+                
+            uploaded_payload = store.get_scoped_mapping("faculty_availability", "global")
+            if uploaded_payload:
+                fid_rows = [r for r in uploaded_payload.get("rows", []) if str(r.get("faculty_id", "")).strip() == primary_fid]
+                if fid_rows:
+                    available_periods = {int(r.get("period", 0)) for r in fid_rows if r.get("period")}
+                    unavailable = [p for p in inst_periods if p not in available_periods]
+                    if unavailable:
+                        p_num = unavailable[0]
+                        
+        if p_num:
+            return f"Faculty {primary_fid} is already occupied during Period {p_num}."
+        else:
+            return f"Faculty {primary_fid} is already occupied."
+        
+    # 2. Lab room conflict
+    if "lab room" in constraint or "lab room" in detail.lower() or "lab room conflict" in constraint:
+        room = violation.get("room", "") or violation.get("venue", "")
+        if not room:
+            import re
+            m = re.search(r"lab room\s+(\S+)", detail, re.IGNORECASE)
+            room = m.group(1) if m else "L203"
+        return f"Lab room {room} is already occupied."
+        
+    # 3. Classroom capacity or accommodation or booked
+    if "classroom" in constraint or "room" in constraint or "room" in detail.lower() or "classroom allocation" in constraint:
+        import re
+        m = re.search(r"room\s+(\S+)", detail, re.IGNORECASE)
+        room = m.group(1) if m else None
+        
+        if room:
+            room = room.strip(".,()\"'")
+            return f"Room {room} is already booked."
+            
+        if "no classroom can accommodate" in detail.lower() or "unable to allocate stable classroom" in detail.lower() or "insufficient" in detail.lower():
+            sections = violation.get("sections", [])
+            sec = sections[0] if sections else None
+            if sec:
+                return f"Unable to allocate Section {sec} due to room conflicts."
+            return "No free classroom found."
+            
+        return "No free classroom found."
+        
+    # 4. General fallback
+    return "Faculty and room constraints prevent timetable generation."
+
+
 @router.post("/timetables/generate", response_model=GenerateTimetableResponse)
 async def create_timetable(payload: GenerateTimetableRequest):
     result = generate_timetable(payload, store)
+    timetable_id = result.get("timetableId")
+    if timetable_id:
+        record = store.get_timetable(timetable_id)
+        if record and (record.get("hasValidTimetable") is False or record.get("hasConstraintViolations") is True):
+            violations = record.get("constraintViolations", [])
+            if violations:
+                msg = format_human_readable_violation(violations[0], store, payload)
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "ValidationError", "message": msg, "details": []}
+                )
     return GenerateTimetableResponse(**result)
 
 
@@ -340,18 +430,51 @@ async def get_all_sections_workbook():
     metadata = _resolve_download_metadata(records)
     section_grids = _latest_section_grids(records)
 
+    # 1. Printable Workbook (Class Timetables)
     if not section_grids:
-        workbook = Workbook()
-        ws = workbook.active
+        printable_wb = Workbook()
+        ws = printable_wb.active
         ws.title = "No Timetables"
         ws.append(["No Timetables Found"])
         ws.append([f"Total records in database: {len(records)}"])
         ws.append(["Please generate timetables first before downloading."])
     else:
         schedules = _section_schedules_from_grids(section_grids)
-        workbook = _build_section_timetables_workbook_from_schedule_map(schedules, metadata, _get_global_period_config())
+        printable_wb = _build_section_timetables_workbook_from_schedule_map(schedules, metadata, _get_global_period_config())
 
-    return _encode_workbook("All_Class_Timetables_Format.xlsx", workbook)
+    # 2. Faculty Workload Workbook (Faculty Workload)
+    if not section_grids:
+        workload_wb = Workbook()
+        ws = workload_wb.active
+        ws.title = "No Workloads"
+        ws.append(["No Faculty Workloads Found"])
+
+        printable_workload_wb = Workbook()
+        ws2 = printable_workload_wb.active
+        ws2.title = "No Workloads"
+        ws2.append(["No Faculty Workloads Found"])
+    else:
+        faculty_schedules, local_fac_map = _build_faculty_schedule_details_from_section_grids(section_grids)
+        workload_wb = _build_faculty_workload_workbook_from_details(
+            faculty_schedules,
+            metadata,
+            period_config=_get_global_period_config(),
+            faculty_id_to_name=local_fac_map,
+            printable=False
+        )
+        printable_workload_wb = _build_faculty_workload_workbook_from_details(
+            faculty_schedules,
+            metadata,
+            period_config=_get_global_period_config(),
+            faculty_id_to_name=local_fac_map,
+            printable=True
+        )
+
+    return {
+        "printableWorkbook": _encode_workbook("All_Class_Timetables_Format.xlsx", printable_wb),
+        "facultyWorkloadWorkbook": _encode_workbook("All_Faculty_Workloads_Format.xlsx", workload_wb),
+        "printableWorkloadWorkbook": _encode_workbook("All_Faculty_Workloads_Printable.xlsx", printable_workload_wb)
+    }
 
 
 @router.get("/timetables/all-rooms-workbook")
@@ -455,16 +578,29 @@ async def get_faculty_workload_workbook(facultyName: str | None = None):
             status_code=404,
             detail={"error": "NotFound", "message": "No faculty workloads available", "details": []},
         )
-    faculty_schedules = _build_faculty_schedule_details_from_section_grids(section_grids)
+    faculty_schedules, local_fac_map = _build_faculty_schedule_details_from_section_grids(section_grids)
     selected_name = str(facultyName or "").strip()
     if selected_name:
-        schedule = faculty_schedules.get(selected_name)
+        # Resolve ID from name by checking local and global maps
+        full_map = {**_load_global_faculty_map(), **local_fac_map}
+        matched_fid = None
+        for fid, name in full_map.items():
+            if name.strip().lower() == selected_name.lower() or fid.strip().lower() == selected_name.lower():
+                matched_fid = fid
+                break
+        
+        schedule = None
+        if matched_fid:
+            schedule = faculty_schedules.get(matched_fid)
+        if not schedule:
+            schedule = faculty_schedules.get(selected_name)
+            
         if not schedule:
             raise HTTPException(
                 status_code=404,
                 detail={"error": "NotFound", "message": "Faculty workload not found", "details": []},
             )
-        faculty_schedules = {selected_name: schedule}
+        faculty_schedules = {matched_fid or selected_name: schedule}
         file_name = f"Workload_{selected_name.replace(' ', '_')}_Format.xlsx"
     else:
         file_name = "All_Faculty_Workloads_Format.xlsx"
@@ -474,7 +610,8 @@ async def get_faculty_workload_workbook(facultyName: str | None = None):
         _build_faculty_workload_workbook_from_details(
             faculty_schedules,
             metadata,
-            period_config=_get_global_period_config()
+            period_config=_get_global_period_config(),
+            faculty_id_to_name=local_fac_map
         ),
     )
 

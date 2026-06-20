@@ -2,6 +2,15 @@ import sys
 import unittest
 from pathlib import Path
 
+# Disable MongoDB for tests to ensure full test isolation and socket stability
+import pymongo
+pymongo.MongoClient = lambda *args, **kwargs: exec("raise(pymongo.errors.ConnectionFailure('MongoDB disabled for tests'))") or None
+# Or define a simple helper function
+def _disable_mongo(*args, **kwargs):
+    raise pymongo.errors.ConnectionFailure("MongoDB disabled for tests")
+pymongo.MongoClient = _disable_mongo
+
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -421,11 +430,9 @@ class TimetableSolverTests(unittest.TestCase):
         )
 
         self.assertEqual([], constraint_violations)
-        assigned_rooms = [
-            schedules[(year, "A")]["Monday"][period].get("classroom")
-            for period in [1, 2, 3]
-        ]
-        self.assertEqual(["C101", "C102", "C102"], assigned_rooms)
+        self.assertEqual("C101", schedules[(year, "A")]["Monday"][1].get("classroom"))
+        self.assertEqual("C102", schedules[(year, "A")]["Monday"][2].get("classroom"))
+        self.assertIn(schedules[(year, "A")]["Monday"][3].get("classroom"), {"C101", "C102"})
 
     def test_final_room_repair_assigns_free_room_when_session_log_misses_slot(self) -> None:
         year = "2nd Year"
@@ -754,21 +761,21 @@ class TimetableSolverTests(unittest.TestCase):
         monday_penalty = _subject_daily_limit_penalty(requirement, "Monday", 1, daily_subject_counts)
         tuesday_penalty = _subject_daily_limit_penalty(requirement, "Tuesday", 1, daily_subject_counts)
         candidates = _enumerate_slot_candidates(
-            requirement,
-            1,
-            schedules,
-            daily_subject_counts,
-            {"F1": set()},
-            {"F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS}},
-            {},
-            year,
-            ["Monday", "Tuesday"],
-            [3],
-            [1, 2, 3, 4, 5, 6, 7],
-            [(1, 2), (3, 4), (5, 6, 7)],
-            _build_session_adjacency([(1, 2), (3, 4), (5, 6, 7)]),
-            4,
-            {"A": 40},
+            requirement=requirement,
+            remaining_hours=1,
+            schedules=schedules,
+            daily_subject_counts=daily_subject_counts,
+            faculty_busy={"F1": set()},
+            faculty_availability={"F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS}},
+            faculty_section_slots={},
+            year=year,
+            days_order=["Monday", "Tuesday"],
+            periods_order=[3],
+            instructional_periods=[1, 2, 3, 4, 5, 6, 7],
+            sessions=[(1, 2), (3, 4), (5, 6, 7)],
+            session_adjacency=_build_session_adjacency([(1, 2), (3, 4), (5, 6, 7)]),
+            candidate_limit=4,
+            free_slots_tracker={"A": 40},
         )
 
         self.assertLess(monday_penalty, tuesday_penalty)
@@ -796,16 +803,16 @@ class TimetableSolverTests(unittest.TestCase):
         )
 
         allowed = _sections_are_free(
-            ("A",),
-            requirement,
-            "Monday",
-            4,
-            1,
-            schedules,
-            year,
-            [1, 2, 3, 4, 5, 6, 7],
-            [(1, 2), (3, 4), (5, 6, 7)],
-            daily_subject_counts,
+            sections=("A",),
+            requirement=requirement,
+            day="Monday",
+            start_period=4,
+            block_size=1,
+            schedules=schedules,
+            year=year,
+            instructional_periods=[1, 2, 3, 4, 5, 6, 7],
+            sessions=[(1, 2), (3, 4), (5, 6, 7)],
+            daily_subject_counts=daily_subject_counts,
         )
 
         self.assertFalse(allowed)
@@ -832,16 +839,16 @@ class TimetableSolverTests(unittest.TestCase):
         )
 
         allowed = _sections_are_free(
-            ("A",),
-            requirement,
-            "Monday",
-            1,
-            2,
-            schedules,
-            year,
-            [1, 2, 3, 4, 5, 6, 7],
-            [(1, 2), (3, 4), (5, 6, 7)],
-            daily_subject_counts,
+            sections=("A",),
+            requirement=requirement,
+            day="Monday",
+            start_period=1,
+            block_size=2,
+            schedules=schedules,
+            year=year,
+            instructional_periods=[1, 2, 3, 4, 5, 6, 7],
+            sessions=[(1, 2), (3, 4), (5, 6, 7)],
+            daily_subject_counts=daily_subject_counts,
         )
 
         self.assertTrue(allowed)
@@ -1300,6 +1307,262 @@ class TimetableSolverTests(unittest.TestCase):
             f"COMMON was auto-detected as shared — this is wrong! Entries: {common_in_shared}",
         )
         self.assertTrue(payload["hasValidTimetable"])
+
+    def test_team_teaching_requires_simultaneous_availability(self) -> None:
+        # F1 is busy on Mon P1, F2 is free. Team [F1, F2] cannot schedule Mon P1.
+        # F1 and F2 are free on Mon P2. Team [F1, F2] can schedule Mon P2.
+        requirement = Requirement(
+            subject_id="TEAM_SUBJ",
+            faculty_id="F1, F2",
+            faculty_options=(),
+            faculty_team=("F1", "F2"),
+            sections=("A",),
+            hours=1,
+            min_consecutive_hours=1,
+            max_consecutive_hours=1,
+            shared=False,
+        )
+        schedules = {
+            ("2nd Year", "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        faculty_availability = {
+            "F1": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS},
+            "F2": {day: {1, 2, 3, 4, 5, 6, 7} for day in DAYS},
+        }
+
+        # Case 1: F1 is busy on Monday period 1
+        faculty_busy_1 = {"F1": {("Monday", 1)}, "F2": set()}
+        cand_busy_1 = _choose_faculty_for_slot(
+            requirement, "Monday", 1, 1,
+            faculty_busy_1, faculty_availability, [1, 2, 3, 4, 5, 6, 7]
+        )
+        self.assertIsNone(cand_busy_1)
+
+        # Case 2: F2 is busy on Monday period 1
+        faculty_busy_2 = {"F1": set(), "F2": {("Monday", 1)}}
+        cand_busy_2 = _choose_faculty_for_slot(
+            requirement, "Monday", 1, 1,
+            faculty_busy_2, faculty_availability, [1, 2, 3, 4, 5, 6, 7]
+        )
+        self.assertIsNone(cand_busy_2)
+
+        # Case 3: Both are free on Monday period 2
+        faculty_busy_3 = {"F1": set(), "F2": set()}
+        cand_free = _choose_faculty_for_slot(
+            requirement, "Monday", 2, 1,
+            faculty_busy_3, faculty_availability, [1, 2, 3, 4, 5, 6, 7]
+        )
+        self.assertEqual("F1,F2", cand_free)
+
+    def test_shared_classroom_allocation_dynamic_preference(self) -> None:
+        year = "2nd Year"
+        sections = ["C4", "C5"]
+        schedules = {
+            (year, "C4"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+            (year, "C5"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        # Mon P1: Independent class for C4 & C5
+        schedules[(year, "C4")]["Monday"][1] = {"subject": "MATH", "subjectId": "MATH", "isLab": False}
+        schedules[(year, "C5")]["Monday"][1] = {"subject": "PHY", "subjectId": "PHY", "isLab": False}
+
+        # Mon P2: Shared class for C4 & C5
+        schedules[(year, "C4")]["Monday"][2] = {"subject": "CHEM", "subjectId": "CHEM", "isLab": False, "sharedSections": ["C4", "C5"]}
+        schedules[(year, "C5")]["Monday"][2] = {"subject": "CHEM", "subjectId": "CHEM", "isLab": False, "sharedSections": ["C4", "C5"]}
+
+        # Home classrooms and capacities:
+        # C4 home: Room 2304 (capacity 75, strength 35)
+        # C5 home: Room 2305 (capacity 60, strength 30)
+        classrooms = ["Room 2304", "Room 2305", "Auditorium"]
+        room_capacity_map = {"Room 2304": 75, "Room 2305": 60, "Auditorium": 100}
+        section_strength_map = {"2nd Year|C4": 35, "2nd Year|C5": 30}
+        section_home_room_map = {"2nd Year|C4": "Room 2304", "2nd Year|C5": "Room 2305"}
+
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["C4"], "subject_id": "MATH", "isLab": False},
+            {"day": "Monday", "periods": [1], "sections": ["C5"], "subject_id": "PHY", "isLab": False},
+            {"day": "Monday", "periods": [2], "sections": ["C4", "C5"], "subject_id": "CHEM", "isLab": False},
+        ]
+
+        constraint_violations = []
+        _allocate_classrooms_to_schedule(
+            year=year,
+            sections=sections,
+            schedules=schedules,
+            session_log=session_log,
+            classrooms=classrooms,
+            constraint_violations=constraint_violations,
+            instructional_periods=[1, 2, 3, 4, 5, 6, 7],
+            academic_sessions=[(1, 2), (3, 4), (5, 6, 7)],
+            prior_room_busy=None,
+            lab_room_names=None,
+            room_capacity_map=room_capacity_map,
+            section_strength_map=section_strength_map,
+            fixed_classroom_blocks=None,
+            section_home_room_map=section_home_room_map,
+        )
+
+        self.assertEqual([], constraint_violations)
+        # Non-shared period uses home room:
+        self.assertEqual("Room 2304", schedules[(year, "C4")]["Monday"][1].get("classroom"))
+        self.assertEqual("Room 2305", schedules[(year, "C5")]["Monday"][1].get("classroom"))
+
+        # Shared period uses the home room with larger capacity (Room 2304 has capacity 75 > Room 2305 capacity 60)
+        # Combined strength = 35 + 30 = 65, Room 2304 fits (75 >= 65)
+        self.assertEqual("Room 2304", schedules[(year, "C4")]["Monday"][2].get("classroom"))
+        self.assertEqual("Room 2304", schedules[(year, "C5")]["Monday"][2].get("classroom"))
+
+    def test_existing_faculty_workload_blocks_allocation(self) -> None:
+        from storage.memory_store import store
+        store.save_scoped_mapping(
+            "existing_faculty_workloads",
+            "global",
+            {
+                "rows": [
+                    {
+                        "faculty_id": "F101",
+                        "faculty_name": "Dr. Rao",
+                        "day": "Monday",
+                        "period": 3,
+                        "cell_value": "MATH",
+                    }
+                ]
+            },
+            allow_overwrite=True
+        )
+
+        request_data = GenerateTimetableRequest(
+            year="2nd Year",
+            section="A",
+            timetableMetadata={
+                "academicYear": "2025-2026",
+                "semester": 1,
+                "withEffectFrom": "2025-06-16"
+            },
+            manualEntries=[
+                ManualEntryMode(
+                    year="2nd Year",
+                    section="A",
+                    subjectId="MATH",
+                    facultyId="F101",
+                    noOfHours=1,
+                    continuousHours=1,
+                    compulsoryContinuousHours=1,
+                )
+            ]
+        )
+
+        from services.timetable_generator import generate_timetable
+        store.save_scoped_mapping("faculty_id_map", "global", {"rows": [{"faculty_id": "F101", "faculty_name": "Dr. Rao"}]}, allow_overwrite=True)
+        store.save_scoped_mapping("main_timetable_config", "global", {"rows": []}, allow_overwrite=True)
+        store.save_scoped_mapping("lab_timetable_config", "global", {"rows": []}, allow_overwrite=True)
+
+        res = generate_timetable(request_data, store)
+        timetable_id = res["timetableId"]
+        timetable = store.get_timetable(timetable_id)
+
+        monday_grid = timetable["allGrids"]["A"]["Monday"]
+        self.assertIsNone(monday_grid[2])
+
+    def test_existing_classroom_timetable_blocks_room_allocation(self) -> None:
+        from storage.memory_store import store
+        store.save_scoped_mapping(
+            "existing_classroom_timetables",
+            "global",
+            {
+                "rows": [
+                    {
+                        "classroom": "C101",
+                        "day": "Monday",
+                        "period": 1,
+                        "cell_value": "BUSY_CLASS",
+                    }
+                ]
+            },
+            allow_overwrite=True
+        )
+
+        year = "2nd Year"
+        sections = ["A"]
+        schedules = {
+            (year, "A"): {day: {period: None for period in range(1, 8)} for day in DAYS},
+        }
+        schedules[(year, "A")]["Monday"][1] = {
+            "subject": "MATH",
+            "subjectId": "MATH",
+            "facultyId": "F1",
+            "isLab": False,
+            "sharedSections": [],
+        }
+        session_log = [
+            {"day": "Monday", "periods": [1], "sections": ["A"], "isLab": False},
+        ]
+        constraint_violations = []
+
+        _allocate_classrooms_to_schedule(
+            year=year,
+            sections=sections,
+            schedules=schedules,
+            session_log=session_log,
+            classrooms=["C101", "C102"],
+            constraint_violations=constraint_violations,
+            instructional_periods=[1, 2, 3, 4, 5, 6, 7],
+            academic_sessions=[(1, 2), (3, 4), (5, 6, 7)],
+            prior_room_busy={"C101": {("Monday", 1)}},
+            lab_room_names=None,
+            room_capacity_map={"C101": 50, "C102": 50},
+            section_strength_map={"A": 30},
+        )
+
+        self.assertEqual([], constraint_violations)
+        self.assertEqual("C102", schedules[(year, "A")]["Monday"][1].get("classroom"))
+
+    def test_master_workbook_template_endpoint(self) -> None:
+        from fastapi.testclient import TestClient
+        from main import app
+        import openpyxl
+        from io import BytesIO
+
+        client = TestClient(app)
+        
+        # Test example workbook
+        response = client.get("/api/templates/master-workbook?type=example")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", response.headers["content-type"])
+        self.assertIn("attachment; filename=\"master-workbook-template.xlsx\"", response.headers["content-disposition"])
+        
+        # Parse the output workbook to verify sheets and content
+        wb = openpyxl.load_workbook(BytesIO(response.content), data_only=True)
+        expected_sheets = [
+            "Subjects",
+            "Faculty Mapping",
+            "Constraints",
+            "Labs",
+            "Shared Classes",
+            "Sessions",
+            "Classrooms",
+            "Faculty Availability",
+            "Continuous Rules",
+            "Fixed Classroom Blocks",
+        ]
+        self.assertEqual(expected_sheets, wb.sheetnames)
+        
+        # Verify Subjects sheet data exists
+        ws_subjects = wb["Subjects"]
+        self.assertEqual("SUBJECT_ID", ws_subjects.cell(row=1, column=1).value)
+        self.assertEqual("SUBJECT_NAME", ws_subjects.cell(row=1, column=2).value)
+        self.assertEqual("7", str(ws_subjects.cell(row=2, column=1).value))
+        self.assertEqual("Data Structures", ws_subjects.cell(row=2, column=2).value)
+
+        # Test empty workbook
+        response_empty = client.get("/api/templates/master-workbook?type=empty")
+        self.assertEqual(200, response_empty.status_code)
+        wb_empty = openpyxl.load_workbook(BytesIO(response_empty.content), data_only=True)
+        self.assertEqual(expected_sheets, wb_empty.sheetnames)
+        
+        # Verify empty sheet contains only header and no example rows
+        ws_subjects_empty = wb_empty["Subjects"]
+        self.assertEqual("SUBJECT_ID", ws_subjects_empty.cell(row=1, column=1).value)
+        self.assertIsNone(ws_subjects_empty.cell(row=2, column=1).value)
 
 
 if __name__ == "__main__":

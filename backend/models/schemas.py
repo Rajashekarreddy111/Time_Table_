@@ -1,6 +1,17 @@
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+def _default_academic_year() -> str:
+    today = date.today()
+    start_year = today.year if today.month >= 6 else today.year - 1
+    return f"{start_year}-{start_year + 1}"
+
+
+def _default_effective_from() -> str:
+    return date.today().isoformat()
 
 
 class UploadResponse(BaseModel):
@@ -14,6 +25,11 @@ class GeneratedWorkbookFile(BaseModel):
     fileName: str
     contentType: str
     contentBase64: str
+
+
+class MergedWorkloadsResponse(BaseModel):
+    facultyWorkloadWorkbook: GeneratedWorkbookFile
+    printableWorkloadWorkbook: GeneratedWorkbookFile
 
 
 class AuthUserResponse(BaseModel):
@@ -204,15 +220,15 @@ class ManualLabEntry(BaseModel):
 
 
 class TimetableMetadata(BaseModel):
-    academicYear: str = Field(pattern=r"^\d{4}-\d{4}$")
-    semester: Literal[1, 2]
-    withEffectFrom: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    academicYear: str = Field(default_factory=_default_academic_year, pattern=r"^\d{4}-\d{4}$")
+    semester: Literal[1, 2] = 2
+    withEffectFrom: str = Field(default_factory=_default_effective_from, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 class GenerateTimetableRequest(BaseModel):
     year: str
     section: str
-    timetableMetadata: TimetableMetadata
+    timetableMetadata: TimetableMetadata = Field(default_factory=TimetableMetadata)
     dailySubjectLimit: int = 2
     labsOnly: bool = False
     priorTimetableIds: list[str] = Field(default_factory=list)

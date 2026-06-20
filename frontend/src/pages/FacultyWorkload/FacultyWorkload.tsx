@@ -13,6 +13,7 @@ import {
   type TimetableMetadata,
   type TimetableRecord,
   getFacultyWorkloadWorkbook,
+  getAllSectionsWorkbook,
 } from "@/services/apiClient";
 import {
   ACADEMIC_METADATA,
@@ -57,7 +58,7 @@ function formatWorkloadEntry(entry: FacultyScheduleEntry): string {
     ? entry.labRoom ?? ""
     : entry.fallbackLab && entry.classroom
       ? `${entry.fallbackLab}/${entry.classroom}`
-      : entry.fallbackLab ?? entry.classroom ?? "";
+      : entry.fallbackLab || entry.classroom || "";
   const roomLine = entry.isLab
     ? roomLabel ? `\n(${roomLabel})` : ""
     : roomLabel ? `\n(${roomLabel})` : "";
@@ -255,23 +256,27 @@ function parseFacultyWorkloads(records: TimetableRecord[]): FacultyWorkloadType[
           isLab: cell.isLab,
         };
 
-        const facultySchedule = ensureFacultySchedule(facultyName);
-        if (!facultySchedule[day.full][idx]) {
-          facultySchedule[day.full][idx] = [entry];
-          return;
-        }
+        // Split by comma to duplicate entries for co-teachers
+        const facultyNames = facultyName.split(",").map((name) => name.trim()).filter(Boolean);
+        facultyNames.forEach((fName) => {
+          const facultySchedule = ensureFacultySchedule(fName);
+          if (!facultySchedule[day.full][idx]) {
+            facultySchedule[day.full][idx] = [entry];
+            return;
+          }
 
-        const existingArray = facultySchedule[day.full][idx];
-        if (!existingArray) return;
-        const isDuplicate = existingArray.some(
-          (existing) =>
-            existing.subject === entry.subject &&
-            existing.section === entry.section &&
-            existing.year === entry.year,
-        );
-        if (!isDuplicate) {
-          existingArray.push(entry);
-        }
+          const existingArray = facultySchedule[day.full][idx];
+          if (!existingArray) return;
+          const isDuplicate = existingArray.some(
+            (existing) =>
+              existing.subject === entry.subject &&
+              existing.section === entry.section &&
+              existing.year === entry.year,
+          );
+          if (!isDuplicate) {
+            existingArray.push(entry);
+          }
+        });
       });
     }
   });
@@ -340,28 +345,32 @@ const FacultyWorkload = () => {
     toast.success("Workload exported in timetable format.");
   };
 
-  const handleExportAll = async () => {
+  const handleExportAllWorkloads = async () => {
     try {
-      const workbook = await getFacultyWorkloadWorkbook();
-      downloadGeneratedWorkbook(workbook);
+      const response = await getAllSectionsWorkbook();
+      downloadGeneratedWorkbook(response.facultyWorkloadWorkbook);
       toast.success("All faculty workloads exported.");
-      return;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to download all faculty workloads");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to download workload workbook",
+      );
     }
-    if (workloads.length === 0) {
-      toast.error("No faculty workloads available.");
-      return;
+  };
+
+  const handleExportPrintableWorkloads = async () => {
+    try {
+      const response = await getAllSectionsWorkbook();
+      downloadGeneratedWorkbook(response.printableWorkloadWorkbook);
+      toast.success("Printable workloads exported.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to download printable workloads workbook",
+      );
     }
-    const wb = XLSX.utils.book_new();
-    workloads.forEach((item, idx) => {
-      const ws = buildWorkloadWorksheet(item, workloadMetadata);
-      const base = item.name.replace(/[^A-Za-z0-9]/g, "_").slice(0, 25) || `Faculty_${idx + 1}`;
-      const sheetName = `${idx + 1}_${base}`.slice(0, 31);
-      XLSX.utils.book_append_sheet(wb, ws, sheetName);
-    });
-    XLSX.writeFile(wb, "All_Faculty_Workloads_Format.xlsx");
-    toast.success("All faculty workloads exported.");
   };
 
   const renderCell = (entries: FacultyScheduleEntry[] | null | undefined) => {
@@ -381,7 +390,7 @@ const FacultyWorkload = () => {
                   ? (entry.labRoom ?? "")
                   : entry.fallbackLab && entry.classroom
                     ? `${entry.fallbackLab}/${entry.classroom}`
-                    : entry.fallbackLab ?? entry.classroom ?? ""})
+                    : entry.fallbackLab || entry.classroom || ""})
               </div>
             )}
           </div>
@@ -395,36 +404,159 @@ const FacultyWorkload = () => {
     );
   };
 
-  const renderMergedEntryCells = (
-    daySchedule: (FacultyScheduleEntry[] | null)[],
-    startIndex: number,
-    endIndex: number,
-  ) => {
-    const cells: JSX.Element[] = [];
-    let idx = startIndex;
+  // Helper functions to check if a day has break/lunch overlaps
+  const dayHasBreakOverlap = (day: string) => {
+    if (!workload) return false;
+    const dayCells = workload.schedule[day] ?? [];
+    const p2 = dayCells[1];
+    const p3 = dayCells[2];
+    const hasLab = (p2 && p2.some((e) => e.isLab)) || (p3 && p3.some((e) => e.isLab));
+    return Boolean(hasLab && p2 && p3 && areEntryGroupsEquivalent(p2, p3));
+  };
 
-    while (idx <= endIndex) {
-      const current = daySchedule[idx];
-      let end = idx;
-      while (end + 1 <= endIndex && areEntryGroupsEquivalent(current, daySchedule[end + 1])) {
-        end += 1;
+  const dayHasLunchOverlap = (day: string) => {
+    if (!workload) return false;
+    const dayCells = workload.schedule[day] ?? [];
+    const p4 = dayCells[3];
+    const p5 = dayCells[4];
+    const hasLab = (p4 && p4.some((e) => e.isLab)) || (p5 && p5.some((e) => e.isLab));
+    return Boolean(hasLab && p4 && p5 && areEntryGroupsEquivalent(p4, p5));
+  };
+
+  // Compute vertical spans for break and lunch columns
+  const breakRowSpans = Array(DISPLAY_DAYS.length).fill(0);
+  let breakStartIdx = -1;
+  for (let i = 0; i < DISPLAY_DAYS.length; i++) {
+    const day = DISPLAY_DAYS[i].full;
+    if (dayHasBreakOverlap(day)) {
+      breakStartIdx = -1;
+    } else {
+      if (breakStartIdx === -1) {
+        breakStartIdx = i;
+        breakRowSpans[i] = 1;
+      } else {
+        breakRowSpans[breakStartIdx]++;
       }
+    }
+  }
 
-      const colSpan = end - idx + 1;
-      const hasConflict = Boolean(current && current.length > 1);
-      cells.push(
-        <td
-          key={`faculty-slot-${startIndex}-${idx}`}
-          colSpan={colSpan}
-          className={hasConflict ? "bg-destructive/5" : ""}
-        >
-          {renderCell(current)}
-        </td>,
-      );
-      idx = end + 1;
+  const lunchRowSpans = Array(DISPLAY_DAYS.length).fill(0);
+  let lunchStartIdx = -1;
+  for (let i = 0; i < DISPLAY_DAYS.length; i++) {
+    const day = DISPLAY_DAYS[i].full;
+    if (dayHasLunchOverlap(day)) {
+      lunchStartIdx = -1;
+    } else {
+      if (lunchStartIdx === -1) {
+        lunchStartIdx = i;
+        lunchRowSpans[i] = 1;
+      } else {
+        lunchRowSpans[lunchStartIdx]++;
+      }
+    }
+  }
+
+  const isBreakCovered = (d_idx: number) => {
+    for (let i = 0; i < d_idx; i++) {
+      if (breakRowSpans[i] > 0 && i + breakRowSpans[i] > d_idx) return true;
+    }
+    return false;
+  };
+
+  const isLunchCovered = (d_idx: number) => {
+    for (let i = 0; i < d_idx; i++) {
+      if (lunchRowSpans[i] > 0 && i + lunchRowSpans[i] > d_idx) return true;
+    }
+    return false;
+  };
+
+  type GridSlot =
+    | { type: "period"; periodIdx: number; cell: FacultyScheduleEntry[] | null }
+    | { type: "interval"; label: "BREAK" | "LUNCH"; rowSpan: number };
+
+  const renderDayRow = (day: string, d_idx: number) => {
+    if (!workload) return null;
+    const dayCells = workload.schedule[day] ?? [];
+    const slots: GridSlot[] = [
+      { type: "period", periodIdx: 0, cell: dayCells[0] },
+      { type: "period", periodIdx: 1, cell: dayCells[1] },
+      { type: "interval", label: "BREAK", rowSpan: breakRowSpans[d_idx] },
+      { type: "period", periodIdx: 2, cell: dayCells[2] },
+      { type: "period", periodIdx: 3, cell: dayCells[3] },
+      { type: "interval", label: "LUNCH", rowSpan: lunchRowSpans[d_idx] },
+      { type: "period", periodIdx: 4, cell: dayCells[4] },
+      { type: "period", periodIdx: 5, cell: dayCells[5] },
+      { type: "period", periodIdx: 6, cell: dayCells[6] },
+    ];
+
+    const renderedCols: JSX.Element[] = [];
+    let i = 0;
+    while (i < slots.length) {
+      const slot = slots[i];
+      if (slot.type === "interval") {
+        const covered = slot.label === "BREAK" ? isBreakCovered(d_idx) : isLunchCovered(d_idx);
+        const overlaps = slot.label === "BREAK" ? dayHasBreakOverlap(day) : dayHasLunchOverlap(day);
+        if (covered || overlaps) {
+          i++;
+          continue;
+        }
+        renderedCols.push(
+          <td
+            key={`interval-${slot.label}-${d_idx}`}
+            rowSpan={slot.rowSpan}
+            className={`${slot.label.toLowerCase()}-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7`}
+          >
+            {slot.label === "BREAK" ? "B\nR\nE\nA\nK" : "L\nU\nN\nC\nH"}
+          </td>
+        );
+        i++;
+      } else {
+        let colSpan = 1;
+        let nextIdx = i + 1;
+        while (nextIdx < slots.length) {
+          const nextSlot = slots[nextIdx];
+          if (nextSlot.type === "interval") {
+            const overlaps = nextSlot.label === "BREAK" ? dayHasBreakOverlap(day) : dayHasLunchOverlap(day);
+            const currIsLab = slot.cell && slot.cell.some((e) => e.isLab);
+            if (currIsLab && overlaps) {
+              colSpan++;
+              nextIdx++;
+            } else {
+              break;
+            }
+          } else {
+            if (areEntryGroupsEquivalent(slot.cell, nextSlot.cell)) {
+              colSpan++;
+              nextIdx++;
+            } else {
+              break;
+            }
+          }
+        }
+
+        const hasConflict = Boolean(slot.cell && slot.cell.length > 1);
+
+        renderedCols.push(
+          <td
+            key={`period-${d_idx}-${slot.periodIdx}`}
+            colSpan={colSpan}
+            className={`${slot.cell && slot.cell.some((e) => e.isLab) ? "lab-cell" : ""} ${hasConflict ? "bg-destructive/5" : ""}`}
+          >
+            {renderCell(slot.cell)}
+          </td>
+        );
+        i = nextIdx;
+      }
     }
 
-    return cells;
+    return (
+      <tr key={day}>
+        <td className="font-semibold text-[10px] whitespace-pre leading-[1.05]">
+          {DISPLAY_DAYS.find((d) => d.full === day)?.shortVertical}
+        </td>
+        {renderedCols}
+      </tr>
+    );
   };
 
   const legend = workload ? getWorkloadLegend(workload.schedule) : [];
@@ -452,8 +584,11 @@ const FacultyWorkload = () => {
             <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5 sm:ml-auto">
               <Download className="h-3.5 w-3.5" /> Export Workload
             </Button>
-            <Button variant="outline" size="sm" onClick={handleExportAll} className="gap-1.5">
-              <Download className="h-3.5 w-3.5" /> Export All Workloads
+            <Button variant="outline" size="sm" onClick={handleExportAllWorkloads} className="gap-1.5">
+              <Download className="h-3.5 w-3.5" /> Download All Workloads
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportPrintableWorkloads} className="gap-1.5">
+              <Download className="h-3.5 w-3.5" /> Printable Download
             </Button>
           </div>
         </div>
@@ -500,46 +635,45 @@ const FacultyWorkload = () => {
                 </tr>
               </thead>
               <tbody>
-                {DISPLAY_DAYS.map((day, idx) => {
-                  const daySchedule = workload.schedule[day.full] ?? [];
-                  return (
-                    <tr key={day.full}>
-                      <td className="font-semibold text-[10px] whitespace-pre leading-[1.05]">{day.shortVertical}</td>
-                      {renderMergedEntryCells(daySchedule, 0, 1)}
-                      {idx === 0 && (
-                        <td rowSpan={DISPLAY_DAYS.length} className="break-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7">
-                          {"B\nR\nE\nA\nK"}
-                        </td>
-                      )}
-                      {renderMergedEntryCells(daySchedule, 2, 3)}
-                      {idx === 0 && (
-                        <td rowSpan={DISPLAY_DAYS.length} className="lunch-cell font-semibold text-[18px] tracking-widest whitespace-pre leading-7">
-                          {"L\nU\nN\nC\nH"}
-                        </td>
-                      )}
-                      {renderMergedEntryCells(daySchedule, 4, 6)}
-                    </tr>
-                  );
-                })}
+                {DISPLAY_DAYS.map((day, idx) => renderDayRow(day.full, idx))}
 
                 <tr>
-                  <td colSpan={10} className="bg-white p-0.5 border-b"></td>
+                  <td
+                    colSpan={10}
+                    className="bg-white p-0.5 border-b border-border"
+                  ></td>
                 </tr>
 
-                {Array.from({ length: Math.ceil(legend.length / 2) }).map((_, rowIdx) => {
-                  const left = legend[rowIdx * 2];
-                  const right = legend[rowIdx * 2 + 1];
-                  return (
-                    <tr key={`legend-${rowIdx}`}>
-                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{left ?? ""}</td>
-                      <td colSpan={5} className="text-left text-[11px] px-2 py-1">{right ?? ""}</td>
-                    </tr>
-                  );
-                })}
+                {Array.from({ length: Math.ceil(legend.length / 2) }).map(
+                  (_, rowIdx) => {
+                    const left = legend[rowIdx * 2];
+                    const right = legend[rowIdx * 2 + 1];
+                    return (
+                      <tr key={`legend-${rowIdx}`}>
+                        <td
+                          colSpan={5}
+                          className="text-left text-[11px] px-2 py-1 border-none bg-card"
+                        >
+                          {left ?? ""}
+                        </td>
+                        <td
+                          colSpan={5}
+                          className="text-left text-[11px] px-2 py-1 border-none bg-card"
+                        >
+                          {right ?? ""}
+                        </td>
+                      </tr>
+                    );
+                  },
+                )}
 
                 <tr>
-                  <td colSpan={5} className="text-center font-semibold py-2">HEAD OF THE DEPARTMENT</td>
-                  <td colSpan={5} className="text-center font-semibold py-2">PRINCIPAL</td>
+                  <td colSpan={5} className="text-center font-semibold py-2 border-none bg-card">
+                    HEAD OF THE DEPARTMENT
+                  </td>
+                  <td colSpan={5} className="text-center font-semibold py-2 border-none bg-card">
+                    PRINCIPAL
+                  </td>
                 </tr>
               </tbody>
             </table>

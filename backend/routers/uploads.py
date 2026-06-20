@@ -4,11 +4,20 @@ from pathlib import Path
 import openpyxl
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
-from models.schemas import MessageResponse, UploadResponse
+from models.schemas import (
+    MessageResponse,
+    UploadResponse,
+    MergedWorkloadsResponse,
+    GeneratedWorkbookFile,
+)
 from services.cloudinary_storage import upload_source_file
 from services.file_parser import dataframe_rows, parse_tabular_upload, read_upload_bytes
 from services.utils import normalize_year
 from storage.memory_store import store
+from services.timetable_generator import (
+    _encode_workbook,
+    _build_faculty_workload_workbook_from_saved_workloads,
+)
 
 router = APIRouter(tags=["uploads"])
 
@@ -1203,6 +1212,8 @@ async def delete_uploaded_mapping(mapping_type: str):
         "classrooms": "classrooms",
         "period-config": "period_config",
         "fixed-classroom-blocks": "fixed_classroom_blocks",
+        "existing-faculty-workloads": "existing_faculty_workloads",
+        "existing-classroom-timetables": "existing_classroom_timetables",
     }
     resolved_type = mapping_map.get(mapping_type)
     if not resolved_type:
@@ -1213,3 +1224,549 @@ async def delete_uploaded_mapping(mapping_type: str):
         raise _validation_error("No uploaded file found for the selected mapping type", [{"mappingType": mapping_type}])
 
     return MessageResponse(message="Uploaded file removed successfully")
+
+
+def _detect_mapping_type_from_sheet_name(sheet_name: str) -> str | None:
+    name = str(sheet_name).strip().lower()
+    name = "".join(c for c in name if c.isalnum() or c.isspace())
+    name = " ".join(name.split())
+    
+    if "subject id mapping" in name or "subject mapping" in name or name == "subjects" or name == "subject":
+        return "subject_id_mapping"
+    if "faculty id map" in name or "faculty mapping" in name or name == "faculty map" or name == "faculty":
+        return "faculty_id_map"
+    if "constraint" in name or "main timetable config" in name or "main config" in name:
+        return "main_timetable_config"
+    if "lab timetable" in name or name == "labs" or name == "lab":
+        return "lab_timetable_config"
+    if "shared class" in name or name == "shared" or name == "shared classes":
+        return "shared_classes"
+    if "session" in name or "period" in name or "time slot" in name:
+        return "period_config"
+    if "classroom" in name or "section strength" in name or name == "strength" or name == "section":
+        return "classrooms"
+    if "availability" in name or "faculty avail" in name:
+        return "faculty_availability"
+    if "continuous rule" in name or "continuous" in name:
+        return "subject_continuous_rules"
+    if "fixed classroom" in name or "fixed block" in name:
+        return "fixed_classroom_blocks"
+    return None
+
+
+def _extract_workload_faculty_name_id(text: str) -> tuple[str, str]:
+    text_upper = text.upper()
+    val = ""
+    is_id_only = False
+    
+    if "FACULTY WORKLOAD" in text_upper:
+        val = text.split(":", 1)[1].strip() if ":" in text else ""
+    elif "FACULTY NAME" in text_upper:
+        val = text.split(":", 1)[1].strip() if ":" in text else ""
+    elif "FACULTY ID" in text_upper:
+        val = text.split(":", 1)[1].strip() if ":" in text else ""
+        is_id_only = True
+    elif "NAME" in text_upper:
+        val = text.split(":", 1)[1].strip() if ":" in text else ""
+    elif "ID" in text_upper:
+        val = text.split(":", 1)[1].strip() if ":" in text else ""
+        is_id_only = True
+        
+    if not val:
+        return "", ""
+        
+    if is_id_only:
+        fid = val.strip()
+        if fid.endswith(".0"):
+            fid = fid[:-2]
+        return "", fid
+        
+    import re
+    match = re.search(r"([^(]+)\(([^)]+)\)", val)
+    if match:
+        fid = match.group(2).strip()
+        if fid.endswith(".0"):
+            fid = fid[:-2]
+        return match.group(1).strip(), fid
+        
+    if "|" in val:
+        parts = val.split("|")
+        fname = parts[0].strip()
+        fid = ""
+        for p in parts[1:]:
+            if "ID" in p.upper():
+                fid = p.split(":", 1)[1].strip() if ":" in p else p.strip()
+        if fid.endswith(".0"):
+            fid = fid[:-2]
+        return fname, fid
+        
+    fname = val.strip()
+    return fname, ""
+
+
+def _is_valid_workload_faculty_name(name: str) -> bool:
+    n = name.strip().upper()
+    if not n:
+        return False
+    if n in {"FACULTY WORKLOAD", "FACULTY NAME", "NAME", "FACULTY ID", "ID", "DAY", "MON", "TUE", "WED", "THU", "FRI", "SAT"}:
+        return False
+    return True
+
+
+def _parse_workload_workbook(file_bytes: bytes) -> list[dict]:
+    workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    valid_days = {"MON", "TUE", "WED", "THU", "FRI", "SAT"}
+    parsed_entries = []
+
+    for worksheet in workbook.worksheets:
+        sheet_rows = list(worksheet.iter_rows(values_only=True))
+        if not sheet_rows:
+            continue
+
+        blocks = []
+        for r_idx, row in enumerate(sheet_rows):
+            for c_idx, cell_value in enumerate(row):
+                text = _to_text(cell_value).strip()
+                if not text:
+                    continue
+                text_upper = text.upper()
+                
+                is_fac_header = False
+                fname, fid = "", ""
+                
+                if any(kw in text_upper for kw in ["FACULTY WORKLOAD", "FACULTY NAME", "NAME:", "NAME :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                elif any(kw in text_upper for kw in ["FACULTY ID", "ID:", "ID :"]):
+                    is_fac_header = True
+                    fname, fid = _extract_workload_faculty_name_id(text)
+                    
+                if is_fac_header:
+                    if fname and not _is_valid_workload_faculty_name(fname):
+                        fname = ""
+                    if fname or fid:
+                        blocks.append({
+                            "row_index": r_idx,
+                            "col_index": c_idx,
+                            "name": fname,
+                            "id": fid
+                        })
+
+        # Group blocks
+        grouped_blocks = []
+        for b in blocks:
+            if not grouped_blocks or b["row_index"] - grouped_blocks[-1]["last_row"] > 10:
+                grouped_blocks.append({
+                    "first_row": b["row_index"],
+                    "last_row": b["row_index"],
+                    "name": b["name"],
+                    "id": b["id"]
+                })
+            else:
+                grouped_blocks[-1]["last_row"] = b["row_index"]
+                if b["name"] and not grouped_blocks[-1]["name"]:
+                    grouped_blocks[-1]["name"] = b["name"]
+                if b["id"] and not grouped_blocks[-1]["id"]:
+                    grouped_blocks[-1]["id"] = b["id"]
+
+        if not grouped_blocks:
+            grouped_blocks = [{
+                "first_row": -1,
+                "last_row": -1,
+                "name": worksheet.title.strip(),
+                "id": ""
+            }]
+
+        for i, block in enumerate(grouped_blocks):
+            start_search = max(0, block["first_row"] + 1)
+            end_search = grouped_blocks[i+1]["first_row"] if i + 1 < len(grouped_blocks) else len(sheet_rows)
+            
+            periods_row_index = -1
+            day_column_index = -1
+            column_to_period = {}
+            
+            for row_index in range(start_search, end_search):
+                row = sheet_rows[row_index]
+                values = []
+                for v in row:
+                    if v is None:
+                        values.append("")
+                    else:
+                        val_str = str(v).strip().upper()
+                        if val_str.endswith(".0"):
+                            val_str = val_str[:-2]
+                        values.append(val_str)
+                        
+                has_day = any("DAY" in val for val in values)
+                has_p1 = any(val == "1" for val in values)
+                has_p2 = any(val == "2" for val in values)
+                
+                if has_day and has_p1 and has_p2:
+                    periods_row_index = row_index
+                    for col_idx, val in enumerate(values):
+                        if "DAY" in val:
+                            day_column_index = col_idx
+                        elif val in {"1", "2", "3", "4", "5", "6", "7"}:
+                            column_to_period[col_idx] = int(val)
+                    break
+                    
+            if periods_row_index == -1 or day_column_index == -1 or not column_to_period:
+                continue
+                
+            for row_index in range(periods_row_index + 1, end_search):
+                row = sheet_rows[row_index]
+                if day_column_index >= len(row):
+                    continue
+                    
+                day_raw = row[day_column_index]
+                day_value = _normalize_workload_day(day_raw)
+                if day_value not in valid_days:
+                    continue
+                    
+                for col_idx, period in column_to_period.items():
+                    cell_val = row[col_idx] if col_idx < len(row) else None
+                    if not _to_text(cell_val):
+                        continue
+                        
+                    fac_name = block["name"] or worksheet.title.strip()
+                    fac_id = block["id"]
+                    
+                    parsed_entries.append({
+                        "faculty_name": fac_name,
+                        "faculty_id": fac_id,
+                        "day": day_value,
+                        "period": period,
+                        "cell_value": _to_text(cell_val).strip(),
+                    })
+                        
+    return parsed_entries
+
+
+def _parse_classroom_timetable_workbook(file_bytes: bytes) -> list[dict]:
+    workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    valid_days = {"MON", "TUE", "WED", "THU", "FRI", "SAT"}
+    parsed_entries = []
+
+    for worksheet in workbook.worksheets:
+        sheet_rows = list(worksheet.iter_rows(values_only=True))
+        if not sheet_rows:
+            continue
+
+        classroom_name = ""
+        for row in sheet_rows[:12]:
+            for value in row:
+                text = _to_text(value).strip()
+                if "CLASSROOM" in text.upper() or "ROOM" in text.upper():
+                    val = text.split(":", 1)[1].strip() if ":" in text else text
+                    classroom_name = val.strip()
+                    break
+            if classroom_name:
+                break
+
+        if not classroom_name:
+            classroom_name = worksheet.title.strip()
+
+        periods_row_index = -1
+        day_column_index = -1
+        column_to_period = {}
+        for row_index, row in enumerate(sheet_rows):
+            values = [_to_text(value).upper() for value in row]
+            if "DAY" not in values or "1" not in values or "2" not in values:
+                continue
+            periods_row_index = row_index
+            for column_index, value in enumerate(values):
+                if value == "DAY":
+                    day_column_index = column_index
+                elif value in {"1", "2", "3", "4", "5", "6", "7"}:
+                    column_to_period[column_index] = int(value)
+            break
+
+        if periods_row_index == -1 or day_column_index == -1 or not column_to_period:
+            continue
+
+        for row in sheet_rows[periods_row_index + 1:]:
+            if day_column_index >= len(row):
+                continue
+
+            day_value = _normalize_workload_day(row[day_column_index])
+            if day_value not in valid_days:
+                continue
+
+            for column_index, period in column_to_period.items():
+                cell_value = row[column_index] if column_index < len(row) else None
+                if not _to_text(cell_value):
+                    continue
+                
+                parsed_entries.append({
+                    "classroom": classroom_name,
+                    "day": day_value,
+                    "period": period,
+                    "cell_value": _to_text(cell_value).strip(),
+                })
+    return parsed_entries
+
+
+@router.post("/uploads/master-workbook", response_model=UploadResponse)
+async def upload_master_workbook(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    
+    import pandas as pd
+    from io import BytesIO
+    try:
+        xls = pd.ExcelFile(BytesIO(file_bytes))
+    except Exception as e:
+        raise _validation_error(f"Failed to parse master workbook: {str(e)}", [])
+        
+    detected_sheets = {}
+    for sheet_name in xls.sheet_names:
+        mapping_type = _detect_mapping_type_from_sheet_name(sheet_name)
+        if mapping_type:
+            detected_sheets[mapping_type] = sheet_name
+
+    if not detected_sheets:
+        raise _validation_error("No valid sheets found in the master workbook.", [])
+
+    parsed_counts = {}
+    for mapping_type, sheet_name in detected_sheets.items():
+        try:
+            df = xls.parse(sheet_name)
+            from services.file_parser import _normalize_dataframe, dataframe_rows
+            df_clean = _normalize_dataframe(df)
+            rows_raw = dataframe_rows(df_clean)
+            
+            if mapping_type == "subject_id_mapping":
+                rows = _normalize_subject_id_mapping(rows_raw)
+            elif mapping_type == "faculty_id_map":
+                rows = _normalize_faculty_id_rows(rows_raw)
+            elif mapping_type == "main_timetable_config":
+                rows = _normalize_main_timetable_config(rows_raw)
+            elif mapping_type == "lab_timetable_config":
+                rows = _normalize_lab_timetable(rows_raw)
+            elif mapping_type == "shared_classes":
+                rows = _normalize_shared_class_rows(rows_raw)
+            elif mapping_type == "period_config":
+                rows = _normalize_period_config_rows(rows_raw)
+            elif mapping_type == "classrooms":
+                rows = _normalize_classroom_rows(rows_raw)
+            elif mapping_type == "faculty_availability":
+                rows = _normalize_faculty_availability_rows(rows_raw)
+            elif mapping_type == "subject_continuous_rules":
+                rows = _normalize_continuous_rules(rows_raw)
+            elif mapping_type == "fixed_classroom_blocks":
+                rows = _normalize_fixed_classroom_block_rows(rows_raw)
+            else:
+                continue
+                
+            file_id = store.next_file_id(mapping_type[:6])
+            payload = {
+                "id": file_id,
+                "fileName": f"{file.filename}#{sheet_name}",
+                "rowsParsed": len(rows),
+                "rows": rows,
+            }
+            store.save_file_map(file_id, payload)
+            store.save_scoped_mapping(mapping_type, "global", payload, allow_overwrite=True)
+            if mapping_type == "period_config":
+                store.save_scoped_mapping("period_configuration", "global", payload, allow_overwrite=True)
+                
+            parsed_counts[sheet_name] = len(rows)
+        except Exception as ex:
+            raise _validation_error(f"Error parsing sheet '{sheet_name}': {str(ex)}", [])
+
+    return UploadResponse(
+        fileId="master_workbook",
+        fileName=file.filename,
+        rowsParsed=sum(parsed_counts.values()),
+        message=f"Master workbook processed successfully. Sheets parsed: {', '.join(f'{k} ({v} rows)' for k, v in parsed_counts.items())}",
+    )
+
+
+@router.post("/uploads/existing-faculty-workloads", response_model=UploadResponse)
+async def upload_existing_faculty_workloads(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    try:
+        entries = _parse_workload_workbook(file_bytes)
+    except Exception as e:
+        raise _validation_error(f"Failed to parse faculty workloads workbook: {str(e)}", [])
+
+    file_id = store.next_file_id("exfacwk")
+    payload = {
+        "id": file_id,
+        "fileName": file.filename,
+        "rowsParsed": len(entries),
+        "rows": entries,
+    }
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("existing_faculty_workloads", "global", payload, allow_overwrite=True)
+
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(entries),
+        message="Existing faculty workloads uploaded successfully",
+    )
+
+
+@router.post("/uploads/existing-classroom-timetables", response_model=UploadResponse)
+async def upload_existing_classroom_timetables(file: UploadFile = File(...)):
+    if not file.filename:
+        raise _validation_error("File name is required", [])
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise _validation_error("Only spreadsheet files (.xlsx, .xls) are allowed for this upload", [])
+
+    file_bytes = read_upload_bytes(file)
+    try:
+        entries = _parse_classroom_timetable_workbook(file_bytes)
+    except Exception as e:
+        raise _validation_error(f"Failed to parse classroom timetable workbook: {str(e)}", [])
+
+    file_id = store.next_file_id("exclstt")
+    payload = {
+        "id": file_id,
+        "fileName": file.filename,
+        "rowsParsed": len(entries),
+        "rows": entries,
+    }
+    store.save_file_map(file_id, payload)
+    store.save_scoped_mapping("existing_classroom_timetables", "global", payload, allow_overwrite=True)
+
+    return UploadResponse(
+        fileId=file_id,
+        fileName=file.filename,
+        rowsParsed=len(entries),
+        message="Existing classroom timetables uploaded successfully",
+    )
+
+
+@router.post("/uploads/merge-workloads", response_model=MergedWorkloadsResponse)
+async def merge_workloads_endpoint(files: list[UploadFile] = File(...)):
+    all_entries = []
+    for f in files:
+        if not f.filename:
+            continue
+        file_bytes = read_upload_bytes(f)
+        try:
+            entries = _parse_workload_workbook(file_bytes)
+            all_entries.extend(entries)
+        except Exception as e:
+            raise _validation_error(f"Failed to parse workload file '{f.filename}': {str(e)}", [])
+
+    if not all_entries:
+        raise _validation_error("No workloads found in any of the uploaded files.", [])
+
+    grouped = {}
+    conflict_list = []
+
+    DAYS_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    DAY_COMPACT_TO_FULL = {
+        "MON": "Monday",
+        "TUE": "Tuesday",
+        "WED": "Wednesday",
+        "THU": "Thursday",
+        "FRI": "Friday",
+        "SAT": "Saturday"
+    }
+
+    for entry in all_entries:
+        fname = entry["faculty_name"].strip()
+        if not fname:
+            continue
+        norm_name = fname.lower()
+        fid = entry["faculty_id"].strip()
+        day_compact = entry["day"]
+        day_full = DAY_COMPACT_TO_FULL.get(day_compact)
+        if not day_full:
+            continue
+        period = entry["period"]
+        cell_val = entry["cell_value"]
+
+        if norm_name not in grouped:
+            grouped[norm_name] = {
+                "name": fname,
+                "id": fid,
+                "schedule": {day: [None] * 7 for day in DAYS_FULL}
+            }
+        
+        if len(fname) > len(grouped[norm_name]["name"]):
+            grouped[norm_name]["name"] = fname
+            
+        if fid and not grouped[norm_name]["id"]:
+            grouped[norm_name]["id"] = fid
+
+        p_idx = period - 1
+        if 0 <= p_idx < 7:
+            curr_val = grouped[norm_name]["schedule"][day_full][p_idx]
+            if curr_val is not None:
+                if str(curr_val).strip() != str(cell_val).strip():
+                    conflict_list.append({
+                        "name": grouped[norm_name]["name"],
+                        "id": grouped[norm_name]["id"] or fid,
+                        "day": day_compact,
+                        "period": period,
+                        "existing": curr_val,
+                        "new": cell_val
+                    })
+            else:
+                grouped[norm_name]["schedule"][day_full][p_idx] = cell_val
+
+    # Convert grouped to format expected by workbook builder
+    faculty_schedules = {}
+    faculty_id_to_name = {}
+    for norm_name, info in grouped.items():
+        fid = info["id"] or info["name"]
+        faculty_schedules[fid] = info["schedule"]
+        faculty_id_to_name[fid] = info["name"]
+
+    workload_wb = _build_faculty_workload_workbook_from_saved_workloads(
+        faculty_schedules,
+        timetable_metadata=None,
+        faculty_id_to_name=faculty_id_to_name,
+        period_config=None,
+        printable=False
+    )
+    printable_workload_wb = _build_faculty_workload_workbook_from_saved_workloads(
+        faculty_schedules,
+        timetable_metadata=None,
+        faculty_id_to_name=faculty_id_to_name,
+        period_config=None,
+        printable=True
+    )
+
+    def write_validation_report(wb, conflicts):
+        ws = wb.create_sheet(title="Validation Report")
+        ws.cell(row=1, column=1, value="Workload Merging Validation Report")
+        ws.cell(row=2, column=1, value="The following duplicate slots were detected during merging:")
+        
+        headers = ["Faculty Name", "Faculty ID", "Day", "Period", "Conflict Details"]
+        for col_idx, h in enumerate(headers, 1):
+            ws.cell(row=3, column=col_idx, value=h)
+            
+        for row_idx, conf in enumerate(conflicts, 4):
+            ws.cell(row=row_idx, column=1, value=conf["name"])
+            ws.cell(row=row_idx, column=2, value=conf["id"])
+            ws.cell(row=row_idx, column=3, value=conf["day"])
+            ws.cell(row=row_idx, column=4, value=conf["period"])
+            ws.cell(row=row_idx, column=5, value=f"'{conf['existing']}' vs '{conf['new']}'")
+
+    if conflict_list:
+        write_validation_report(workload_wb, conflict_list)
+        write_validation_report(printable_workload_wb, conflict_list)
+
+    return MergedWorkloadsResponse(
+        facultyWorkloadWorkbook=_encode_workbook("All_Faculty_Workloads_Format.xlsx", workload_wb),
+        printableWorkloadWorkbook=_encode_workbook("All_Faculty_Workloads_Printable.xlsx", printable_workload_wb),
+    )
+

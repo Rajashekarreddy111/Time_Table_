@@ -76,6 +76,10 @@ export interface MappingStatusResponse {
   periodConfigFileName?: string | null;
   fixedClassroomBlocksUploaded?: boolean;
   fixedClassroomBlocksFileName?: string | null;
+  existingFacultyWorkloadsUploaded?: boolean;
+  existingFacultyWorkloadsFileName?: string | null;
+  existingClassroomTimetablesUploaded?: boolean;
+  existingClassroomTimetablesFileName?: string | null;
 }
 
 export interface FacultyIdStatusResponse {
@@ -173,6 +177,17 @@ export interface GeneratedWorkbookFile {
   fileName: string;
   contentType: string;
   contentBase64: string;
+}
+
+export interface AllSectionsWorkbooksResponse {
+  printableWorkbook: GeneratedWorkbookFile;
+  facultyWorkloadWorkbook: GeneratedWorkbookFile;
+  printableWorkloadWorkbook: GeneratedWorkbookFile;
+}
+
+export interface MergedWorkloadsResponse {
+  facultyWorkloadWorkbook: GeneratedWorkbookFile;
+  printableWorkloadWorkbook: GeneratedWorkbookFile;
 }
 
 export interface TimetableRecord {
@@ -639,6 +654,63 @@ export async function uploadFacultyAvailabilityQuery(
   return response.json() as Promise<UploadResponse>;
 }
 
+export async function uploadMasterWorkbook(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/master-workbook";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadExistingFacultyWorkloads(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/existing-faculty-workloads";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
+export async function uploadExistingClassroomTimetables(file: File): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const path = "/uploads/existing-classroom-timetables";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<UploadResponse>;
+}
+
 export function generateTimetable(payload: GenerateTimetableRequest) {
   return apiRequest<GenerateTimetableResponse>(
     "/timetables/generate",
@@ -684,7 +756,7 @@ export function exportBulkFacultyAvailabilityReport(
 }
 
 export function getAllSectionsWorkbook() {
-  return apiRequest<GeneratedWorkbookFile>(
+  return apiRequest<AllSectionsWorkbooksResponse>(
     "/timetables/all-sections-workbook",
     "GET",
   );
@@ -776,3 +848,24 @@ export const resetAllTimetables = async (): Promise<{
   }
   return response.json();
 };
+
+export async function mergeWorkloads(files: File[]): Promise<MergedWorkloadsResponse> {
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append("files", file);
+  });
+
+  const path = "/uploads/merge-workloads";
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: buildAuthHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseResponseError(response, "POST", path);
+  }
+
+  return response.json() as Promise<MergedWorkloadsResponse>;
+}

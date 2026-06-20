@@ -21,7 +21,10 @@ def test_parse():
     for _, row in df.iterrows():
         record = {}
         for lower_col, orig_col in column_map.items():
-            record[lower_col] = row[orig_col]
+            val = row[orig_col]
+            if isinstance(val, pd.Series):
+                val = val.iloc[0]
+            record[lower_col] = val
             record[f"__orig_{lower_col}"] = orig_col
         records.append(record)
         

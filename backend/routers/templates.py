@@ -4,7 +4,11 @@ from typing import Literal
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from services.file_parser import create_excel_template, create_grouped_main_timetable_template
+from services.file_parser import (
+    create_excel_template,
+    create_grouped_main_timetable_template,
+    create_master_workbook_template,
+)
 
 router = APIRouter(tags=["templates"])
 
@@ -217,6 +221,250 @@ async def main_timetable_template(
             },
         ],
         template_type,
+    )
+
+
+@router.get("/templates/master-workbook")
+async def master_workbook_template(
+    template_type: Literal["example", "empty"] = Query("example", alias="type"),
+):
+    subjects_records = [
+        {"SUBJECT_ID": "7", "SUBJECT_NAME": "Data Structures"},
+        {"SUBJECT_ID": "10", "SUBJECT_NAME": "DBMS"},
+    ]
+    faculty_records = [
+        {"faculty name": "faculty-1", "id assigned": "F001"},
+        {"faculty name": "faculty-2", "id assigned": "F002"},
+        {"faculty name": "faculty-3", "id assigned": "F003"},
+    ]
+    constraints_records = [
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "2",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "5",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "5",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "6",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "3",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "40",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "40",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "19",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "4",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "10",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "3",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "12",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "5",
+            "C1_HOURS": 3,
+            "C1_FACULTY_ID": "28",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 3,
+            "C2_FACULTY_ID": "38",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 3,
+            "C3_FACULTY_ID": "1",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "6",
+            "C1_HOURS": 1,
+            "C1_FACULTY_ID": "11",
+            "C1_CONTINUOUS_HOURS": 1,
+            "C2_HOURS": 1,
+            "C2_FACULTY_ID": "38,11",
+            "C2_CONTINUOUS_HOURS": 1,
+            "C3_HOURS": 1,
+            "C3_FACULTY_ID": "11,31",
+            "C3_CONTINUOUS_HOURS": 1,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "7",
+            "C1_HOURS": 2,
+            "C1_FACULTY_ID": "3",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 2,
+            "C2_FACULTY_ID": "2",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 2,
+            "C3_FACULTY_ID": "2",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "8",
+            "C1_HOURS": 2,
+            "C1_FACULTY_ID": "10",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 2,
+            "C2_FACULTY_ID": "3",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 2,
+            "C3_FACULTY_ID": "12",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "9",
+            "C1_HOURS": 3,
+            "C1_FACULTY_ID": "34",
+            "C1_CONTINUOUS_HOURS": 3,
+            "C2_HOURS": 3,
+            "C2_FACULTY_ID": "34",
+            "C2_CONTINUOUS_HOURS": 3,
+            "C3_HOURS": 3,
+            "C3_FACULTY_ID": "10",
+            "C3_CONTINUOUS_HOURS": 3,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "10",
+            "C1_HOURS": 2,
+            "C1_FACULTY_ID": "40",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 2,
+            "C2_FACULTY_ID": "40",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 2,
+            "C3_FACULTY_ID": "19",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "11",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "53",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "53",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "54",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "12",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "50",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "50",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "51",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "21",
+            "C1_HOURS": 4,
+            "C1_FACULTY_ID": "48",
+            "C1_CONTINUOUS_HOURS": 4,
+            "C2_HOURS": 4,
+            "C2_FACULTY_ID": "48",
+            "C2_CONTINUOUS_HOURS": 4,
+            "C3_HOURS": 4,
+            "C3_FACULTY_ID": "49",
+            "C3_CONTINUOUS_HOURS": 4,
+        },
+        {
+            "YEAR": "2",
+            "SUBJECT_ID": "1",
+            "C1_HOURS": 3,
+            "C1_FACULTY_ID": "32",
+            "C1_CONTINUOUS_HOURS": 2,
+            "C2_HOURS": 3,
+            "C2_FACULTY_ID": "15",
+            "C2_CONTINUOUS_HOURS": 2,
+            "C3_HOURS": 3,
+            "C3_FACULTY_ID": "32",
+            "C3_CONTINUOUS_HOURS": 2,
+        },
+    ]
+    labs_records = [
+        {"YEAR": "2", "SECTION": "C1", "SUBJECT_ID": "7", "DAY": "1", "HOURS": "1,2", "VENUE": "2201"},
+        {"YEAR": "2", "SECTION": "C2", "SUBJECT_ID": "10", "DAY": "1", "HOURS": "3,4", "VENUE": "2202"},
+    ]
+    shared_classes_records = [
+        {"year": "1st Year", "sections": "B, C", "subject": "subject-3"},
+        {"year": "2nd Year", "sections": "A, D", "subject": "Data Structures"},
+    ]
+    sessions_records = [
+        {"period": "1", "time": "09:10 - 10:00"},
+        {"period": "2", "time": "10:00 - 10:50"},
+        {"period": "Break", "time": "10:50 - 11:05"},
+        {"period": "3", "time": "11:05 - 11:55"},
+        {"period": "4", "time": "11:55 - 12:45"},
+        {"period": "Lunch", "time": "12:45 - 01:40"},
+        {"period": "5", "time": "01:40 - 02:30"},
+        {"period": "6", "time": "02:30 - 03:20"},
+        {"period": "7", "time": "03:20 - 04:10"},
+    ]
+    classrooms_records = [
+        {"class_number": "C101", "room_type": "classroom", "capacity": 72, "section": "3rd-G1", "strength": 68},
+        {"class_number": "C102", "room_type": "classroom", "capacity": 66, "section": "3rd-G2", "strength": 64},
+        {"class_number": "L2202", "room_type": "lab", "capacity": "", "section": "3rd-C1", "strength": 60},
+    ]
+    faculty_availability_records = [
+        {"Faculty ID": "F001", "Monday": "1, 2, 3", "Tuesday": "4, 5", "Wednesday": "", "Thursday": "", "Friday": "1, 2", "Saturday": ""},
+        {"Faculty ID": "F002", "Monday": "", "Tuesday": "1, 2, 3, 4", "Wednesday": "5, 6, 7", "Thursday": "", "Friday": "", "Saturday": "1"},
+    ]
+    continuous_rules_records = [
+        {"SUBJECT_ID": "7", "COMPULSORY_CONTINUOUS_HOURS": 2},
+        {"SUBJECT_ID": "10", "COMPULSORY_CONTINUOUS_HOURS": 3},
+    ]
+    fixed_classroom_blocks_records = [
+        {"year": 3, "section": "A", "day": 2, "periods": "1,2,3", "classroom": "Seminar Hall"},
+        {"year": 2, "section": "B", "day": 5, "periods": "4,5", "classroom": ""},
+    ]
+
+    content = create_master_workbook_template(
+        template_type=template_type,
+        subjects_records=subjects_records,
+        faculty_records=faculty_records,
+        constraints_records=constraints_records,
+        labs_records=labs_records,
+        shared_classes_records=shared_classes_records,
+        sessions_records=sessions_records,
+        classrooms_records=classrooms_records,
+        faculty_availability_records=faculty_availability_records,
+        continuous_rules_records=continuous_rules_records,
+        fixed_classroom_blocks_records=fixed_classroom_blocks_records,
+    )
+    stream = BytesIO(content)
+    file_name = "master-workbook-template.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{file_name}"'}
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
     )
 
 

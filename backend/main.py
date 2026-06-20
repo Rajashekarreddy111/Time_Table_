@@ -30,9 +30,14 @@ async def lifespan(_: FastAPI):
     bootstrap_admin()
     try:
         store.ping()
-    except Exception:
+        print("INFO: Connected to MongoDB successfully.")
+    except Exception as e:
+        print(f"WARNING: MongoDB connection failed: {str(e)}.")
         if is_mongo_required():
+            print("ERROR: MongoDB is required by configuration (REQUIRE_MONGODB=true). Exiting.")
             raise
+        else:
+            print("INFO: Falling back to in-memory storage mode.")
     yield
 
 

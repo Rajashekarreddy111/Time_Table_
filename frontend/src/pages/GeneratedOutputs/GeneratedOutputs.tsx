@@ -183,9 +183,18 @@ const GeneratedOutputs = () => {
     [records, selectedRecordId],
   );
 
+  const workloadConflicts = useMemo(() => {
+    return activeRecord?.constraintViolations?.filter(item => item.constraint === "faculty workload conflict") ?? [];
+  }, [activeRecord]);
+
+  const generalViolations = useMemo(() => {
+    return activeRecord?.constraintViolations?.filter(item => item.constraint !== "faculty workload conflict") ?? [];
+  }, [activeRecord]);
+
   const sharedCount = activeRecord?.sharedClasses?.length ?? 0;
-  const violationCount = activeRecord?.constraintViolations?.length ?? 0;
+  const violationCount = generalViolations.length;
   const unscheduledCount = activeRecord?.unscheduledSubjects?.length ?? 0;
+  const workloadConflictCount = workloadConflicts.length;
 
   const statCards = [
     {
@@ -208,6 +217,13 @@ const GeneratedOutputs = () => {
       hint: "Subjects that could not be placed",
       icon: Layers3,
       tone: "text-rose-700 bg-rose-100",
+    },
+    {
+      label: "Workload Conflicts",
+      value: workloadConflictCount,
+      hint: "Faculty double-bookings or clashes",
+      icon: AlertTriangle,
+      tone: "text-red-700 bg-red-100",
     },
   ];
 
@@ -272,7 +288,7 @@ const GeneratedOutputs = () => {
 
         {activeRecord ? (
           <>
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               {statCards.map((card) => (
                 <div key={card.label} className="stat-card flex items-start gap-4">
                   <div className={`rounded-2xl p-3 ${card.tone}`}>
@@ -420,7 +436,7 @@ const GeneratedOutputs = () => {
                         </div>
                         <DataTable
                           headers={["Year", "Sections", "Subject", "Faculty", "Constraint", "Detail"]}
-                          rows={activeRecord.constraintViolations!.map((item) => [
+                          rows={generalViolations.map((item) => [
                             <span className="font-medium">{item.year}</span>,
                             <div className="flex flex-wrap gap-1.5">
                               {item.sections.map((section) => (
@@ -478,6 +494,44 @@ const GeneratedOutputs = () => {
                   />
                 )}
               </div>
+
+              {workloadConflictCount > 0 && (
+                <div className="rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
+                  <div className="mb-5 flex items-center gap-3">
+                    <div className="rounded-2xl bg-red-100 p-3 text-red-700">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-semibold text-foreground">
+                        Faculty Workload Conflicts
+                      </h2>
+                      <p className="text-sm text-muted-foreground">
+                        Double-bookings and collisions with previously scheduled workloads.
+                      </p>
+                    </div>
+                  </div>
+                  <DataTable
+                    headers={["Year", "Faculty Name", "Faculty ID", "Sections", "Subject", "Conflict Details"]}
+                    rows={workloadConflicts.map((item, idx) => [
+                      <span className="font-medium">{item.year}</span>,
+                      item.faculty_name || "-",
+                      <span className="font-mono text-xs">{item.faculty_id || "-"}</span>,
+                      <div className="flex flex-wrap gap-1.5">
+                        {item.sections.map((section) => (
+                          <span
+                            key={`${item.faculty_id}-${section}-${idx}`}
+                            className="rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-100"
+                          >
+                            {section}
+                          </span>
+                        ))}
+                      </div>,
+                      item.subject_name || "-",
+                      <span className="text-red-700 font-medium">{item.detail}</span>,
+                    ])}
+                  />
+                </div>
+              )}
             </div>
           </>
         ) : (

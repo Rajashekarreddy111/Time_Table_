@@ -469,42 +469,6 @@ def _build_section_strength_map(
     return strengths
 
 
-def _build_section_home_room_map(
-    request_data: GenerateTimetableRequest,
-    store: MemoryStore,
-) -> dict[str, str]:
-    payload = store.get_scoped_mapping("classrooms", "global")
-    if (not payload or not payload.get("rows")) and request_data.mappingFileIds and request_data.mappingFileIds.classrooms:
-        payload = store.get_file_map(request_data.mappingFileIds.classrooms)
-
-    home_rooms: dict[str, str] = {}
-    for row in (payload or {}).get("rows", []):
-        section_name = str(
-            _normalize_id_token(
-                row.get("section_name", "")
-                or row.get("section", "")
-                or row.get("section_names", "")
-            )
-        ).strip()
-        room_name = _normalize_id_token(
-            row.get("class_number", "")
-            or row.get("classroom", "")
-            or row.get("room", "")
-        )
-        if not section_name or not room_name:
-            continue
-        candidate_keys = {section_name, section_name.upper()}
-        parsed_year, parsed_section = _parse_year_and_section_token(section_name)
-        if parsed_section:
-            candidate_keys.add(parsed_section)
-        if parsed_year and parsed_section:
-            candidate_keys.add(f"{parsed_year}|{parsed_section}")
-        for key in candidate_keys:
-            if key and key not in home_rooms:
-                home_rooms[key] = room_name
-    return home_rooms
-
-
 def _build_fixed_classroom_blocks(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
@@ -638,32 +602,10 @@ def _pick_best_faculty_option_for_locked_session(
     sections: tuple[str, ...] = (),
     faculty_section_slots: dict[str, dict[tuple[str, int], tuple[str, ...]]] | None = None,
     session_adjacency: dict[int, set[int]] | None = None,
-    is_team: bool = False,
 ) -> str | None:
     if not faculty_options:
         return None
 
-    if is_team or len(faculty_options) > 1:
-        # Check that ALL co-teachers in the team are simultaneously free
-        for faculty_id in faculty_options:
-            allowed = faculty_availability.get(faculty_id, _default_day_availability(instructional_periods)).get(day, set(instructional_periods))
-            if any(period not in allowed for period in periods):
-                return None
-            if any((day, period) in faculty_busy.setdefault(faculty_id, set()) for period in periods):
-                return None
-            if sections and faculty_section_slots is not None and session_adjacency is not None:
-                if _faculty_has_consecutive_different_section_conflict(
-                    faculty_id,
-                    day,
-                    periods,
-                    _section_signature(sections),
-                    faculty_section_slots,
-                    session_adjacency,
-                ):
-                    return None
-        return ",".join(faculty_options)
-
-    # Existing single-faculty selection
     best: tuple[int, int, int, str] | None = None
     selected: str | None = None
     for faculty_id in faculty_options:
@@ -1245,6 +1187,39 @@ def _compute_timeout_seconds(section_count: int, requirement_count: int) -> int:
     if requirement_count >= 70:
         base += 30
     return min(300, base)
+
+
+def _summarize_generation_blockers(
+    year: str,
+    issues: list[dict],
+) -> tuple[str, list[dict]]:
+    if not issues:
+        return (
+            f"Generation blocked for {year}. The uploaded inputs contain unschedulable constraints.",
+            [],
+        )
+
+    grouped_issues = _group_issue_records(issues)
+    first_issue = grouped_issues[0] if grouped_issues else issues[0]
+    sections = [
+        str(section).strip()
+        for section in first_issue.get("sections", [])
+        if str(section).strip()
+    ]
+    detail = str(first_issue.get("detail", "")).strip()
+    constraint = str(first_issue.get("constraint", "")).strip()
+    if detail:
+        message = f"Generation blocked for {year}. {detail}"
+    elif sections:
+        message = (
+            f"Generation blocked for {year}. "
+            f"Unschedulable constraints detected for section(s): {', '.join(sections)}."
+        )
+    elif constraint:
+        message = f"Generation blocked for {year}. {constraint}."
+    else:
+        message = f"Generation blocked for {year}. The uploaded inputs contain unschedulable constraints."
+    return message, grouped_issues
 
 
 def _requirement_priority(
@@ -2697,21 +2672,14 @@ def _build_faculty_workloads_from_sessions(
                 if period not in instructional_periods: continue
                 room_line = ""
                 if session.get("isLab"):
-                    lab_room = str(session.get("lab_room") or session.get("venue") or "").strip().strip("()")
+                    lab_room = str(session.get("lab_room") or session.get("venue") or "").strip()
                     if lab_room:
                         room_line = f"\n({lab_room})"
                 else:
-                    room_label = _format_non_lab_room_label(session).strip().strip("()")
+                    room_label = _format_non_lab_room_label(session)
                     if room_label:
                         room_line = f"\n({room_label})"
-                
-                yr = str(session.get('year', '')).strip()
-                sec_text = _format_sections_ordinal(yr, session.get("sections", []))
-                
-                cell_text = f"{session['subject_name']}\n{sec_text}"
-                if room_line:
-                    cell_text += room_line
-                faculty_workload[day][period] = cell_text
+                faculty_workload[day][period] = f"{session['subject_name']} ({','.join(session['sections'])}){room_line}"
     
     final_workloads: dict[str, dict[str, list[str | None]]] = {}
     for fid, days_data in workloads.items():
@@ -2887,15 +2855,6 @@ def _merge_section_day_row(
     instructional_periods = sorted(display_columns.keys())
     
     idx = 0
-    overlaps_break = False
-    overlaps_lunch = False
-    for c in break_cols:
-        if worksheet.cell(row=row_idx, column=c).value:
-            overlaps_break = True
-    for c in lunch_cols:
-        if worksheet.cell(row=row_idx, column=c).value:
-            overlaps_lunch = True
-
     while idx < len(instructional_periods):
         p = instructional_periods[idx]
         entry = section_schedule[day].get(p)
@@ -2905,42 +2864,22 @@ def _merge_section_day_row(
         while end_idx + 1 < len(instructional_periods):
             next_p = instructional_periods[end_idx + 1]
             next_entry = section_schedule[day].get(next_p)
-            
-            is_adjacent = display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1
-            is_lab = isinstance(entry, dict) and entry.get("isLab")
-            is_same = _same_section_entry(entry, next_entry)
-            
-            can_merge = False
-            if is_same:
-                if is_adjacent:
-                    can_merge = True
-                elif is_lab:
-                    mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, display_columns[next_p])
-                    if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                        can_merge = True
-            
-            if can_merge:
+            if display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1 and _same_section_entry(entry, next_entry):
                 end_idx += 1
             else:
                 break
         
         if end_idx > idx:
-            start_col = display_columns[p]
-            end_col = display_columns[instructional_periods[end_idx]]
-            for c in break_cols:
-                if start_col <= c <= end_col:
-                    overlaps_break = True
-            for c in lunch_cols:
-                if start_col <= c <= end_col:
-                    overlaps_lunch = True
             worksheet.merge_cells(
                 start_row=row_idx,
-                start_column=start_col,
+                start_column=display_columns[p],
                 end_row=row_idx,
-                end_column=end_col,
+                end_column=display_columns[instructional_periods[end_idx]],
             )
         idx = end_idx + 1
     
+    overlaps_break = any(worksheet.cell(row=row_idx, column=c).value for c in break_cols)
+    overlaps_lunch = any(worksheet.cell(row=row_idx, column=c).value for c in lunch_cols)
     return overlaps_break, overlaps_lunch
 
 
@@ -2950,76 +2889,11 @@ def _normalize_faculty_sheet_name(value: str) -> str:
     return name[:31] or "Faculty"
 
 
-def _ordinal_year(year: str) -> str:
-    y_clean = str(year).strip().lower()
-    if "1st" in y_clean or "first" in y_clean or y_clean.startswith("1") or y_clean.startswith("i ") or y_clean == "i":
-        return "1st Year"
-    if "2nd" in y_clean or "second" in y_clean or y_clean.startswith("2") or y_clean.startswith("ii ") or y_clean == "ii":
-        return "2nd Year"
-    if "3rd" in y_clean or "third" in y_clean or y_clean.startswith("3") or y_clean.startswith("iii ") or y_clean == "iii":
-        return "3rd Year"
-    if "4th" in y_clean or "fourth" in y_clean or y_clean.startswith("4") or y_clean.startswith("iv ") or y_clean == "iv":
-        return "4th Year"
-    return f"{year} Year"
-
-
-def _format_sections_ordinal(year: str, sections: list[str]) -> str:
-    ordinal_yr = _ordinal_year(year)
-    sec_lbls = []
-    for sec in sections:
-        sec_clean = str(sec).strip()
-        if "-" in sec_clean:
-            sec_clean = sec_clean.split("-")[-1].strip()
-        if "[" in sec_clean and "]" in sec_clean:
-            import re
-            m = re.search(r'\[([^]]+)\]', sec_clean)
-            if m:
-                sec_clean = m.group(1).strip()
-                if "-" in sec_clean:
-                    sec_clean = sec_clean.split("-")[-1].strip()
-        sec_lbls.append(f"{ordinal_yr} {sec_clean}")
-    return ", ".join(sec_lbls)
-
-
-def _roman_year(year: str) -> str:
-    y_clean = str(year).strip().lower()
-    if "1st" in y_clean or "first" in y_clean or y_clean.startswith("1") or y_clean.startswith("i "):
-        return "I"
-    if "2nd" in y_clean or "second" in y_clean or y_clean.startswith("2") or y_clean.startswith("ii "):
-        return "II"
-    if "3rd" in y_clean or "third" in y_clean or y_clean.startswith("3") or y_clean.startswith("iii "):
-        return "III"
-    if "4th" in y_clean or "fourth" in y_clean or y_clean.startswith("4") or y_clean.startswith("iv "):
-        return "IV"
-    if "i" in y_clean:
-        if "iii" in y_clean: return "III"
-        if "ii" in y_clean: return "II"
-        if "iv" in y_clean: return "IV"
-        return "I"
-    return year
-
-
-def _load_global_faculty_map() -> dict[str, str]:
-    from storage.memory_store import store
-    faculty_id_to_name = {}
-    fac_map_payload = store.get_scoped_mapping("faculty_id_map", "global")
-    if fac_map_payload:
-        for row in fac_map_payload.get("rows", []):
-            fid = str(row.get("faculty_id") or row.get("faculty id") or row.get("id") or "").strip()
-            if fid.endswith(".0"):
-                fid = fid[:-2]
-            fname = str(row.get("faculty_name") or row.get("faculty name") or row.get("name") or "").strip()
-            if fid:
-                faculty_id_to_name[fid] = fname
-    return faculty_id_to_name
-
-
 def _build_faculty_schedule_details(
     sessions: list[dict],
     faculty_id_to_name: dict[str, str],
     instructional_periods: list[int],
 ) -> dict[str, dict[str, list[list[dict] | None]]]:
-    name_to_id = {v.strip().lower(): k for k, v in faculty_id_to_name.items()}
     workloads: dict[str, dict[str, list[list[dict] | None]]] = {}
     for session in sessions:
         day = str(session.get("day", "")).strip()
@@ -3038,34 +2912,21 @@ def _build_faculty_schedule_details(
             "is_lab": bool(session.get("isLab")),
         }
 
+        faculty_names = [str(name).strip() for name in session.get("faculty_names", []) if str(name).strip()]
         faculty_ids = [str(fid).strip() for fid in session.get("faculty_ids", []) if str(fid).strip()]
+        if not faculty_names:
+            fallback_name = str(session.get("faculty_name", "")).strip()
+            if fallback_name:
+                faculty_names = [part.strip() for part in fallback_name.split(",") if part.strip()]
         if not faculty_ids:
             fallback_id = str(session.get("faculty_id", "")).strip()
             if fallback_id:
                 faculty_ids = [part.strip() for part in fallback_id.split(",") if part.strip()]
 
-        if not faculty_ids:
-            faculty_names = [str(name).strip() for name in session.get("faculty_names", []) if str(name).strip()]
-            if not faculty_names:
-                fallback_name = str(session.get("faculty_name", "")).strip()
-                if fallback_name:
-                    faculty_names = [part.strip() for part in fallback_name.split(",") if part.strip()]
-            for fname in faculty_names:
-                fid = _find_faculty_id(fname, name_to_id)
-                if fid:
-                    faculty_ids.append(fid)
-                else:
-                    faculty_ids.append(fname)
-
-        clean_ids = []
-        for fid in faculty_ids:
-            if fid.endswith(".0"):
-                fid = fid[:-2]
-            clean_ids.append(fid)
-
-        for fid in clean_ids:
+        display_names = faculty_names or [faculty_id_to_name.get(fid, fid) for fid in faculty_ids if fid]
+        for faculty_name in display_names:
             schedule = workloads.setdefault(
-                fid,
+                faculty_name,
                 {day_name: [None] * len(instructional_periods) for day_name in DAYS},
             )
             for period in periods:
@@ -3159,7 +3020,6 @@ def _allocate_classrooms_to_schedule(
     room_capacity_map: dict[str, int | None] | None = None,
     section_strength_map: dict[str, int] | None = None,
     fixed_classroom_blocks: dict[tuple[str, str, int], str] | None = None,
-    section_home_room_map: dict[str, str] | None = None,
 ) -> None:
     normalized_rooms = [str(room).strip() for room in classrooms if str(room).strip()]
     lab_room_names = {str(room).strip() for room in (lab_room_names or set()) if str(room).strip()}
@@ -3170,20 +3030,65 @@ def _allocate_classrooms_to_schedule(
         for (section, day, period), classroom in (fixed_classroom_blocks or {}).items()
         if str(section).strip() and str(day).strip()
     }
-    section_home_room_map = {str(k).strip(): str(v).strip() for k, v in (section_home_room_map or {}).items() if str(k).strip()}
     preferred_rooms = [room for room in normalized_rooms if room not in lab_room_names]
     overflow_rooms = [room for room in normalized_rooms if room in lab_room_names]
 
-    def _section_home_room(section: str) -> str:
-        normalized_section = str(section).strip()
-        if not normalized_section:
-            return ""
-        return (
-            section_home_room_map.get(f"{year}|{normalized_section}")
-            or section_home_room_map.get(normalized_section)
-            or section_home_room_map.get(normalized_section.upper())
-            or ""
-        )
+    def _reserve_room(room_name: str, day: str, periods: list[int]) -> None:
+        if not room_name:
+            return
+        room_usage.setdefault(room_name, set()).update((day, period) for period in periods)
+
+    def _room_can_fit(room_name: str, required_strength: int) -> bool:
+        if required_strength <= 0:
+            return True
+        capacity = room_capacity_map.get(room_name)
+        return capacity is None or capacity >= required_strength
+
+    def _pick_available_room(
+        periods: list[int],
+        required_strength: int,
+        room_groups: list[list[str]] | None = None,
+    ) -> str:
+        for room_group in (room_groups or [preferred_rooms, overflow_rooms]):
+            for room in room_group:
+                if _room_can_fit(room, required_strength) and all((day, p) not in room_usage.setdefault(room, set()) for p in periods):
+                    return room
+        return ""
+
+    def _section_theory_periods(section: str, day: str, academic_session: tuple[int, ...]) -> list[int]:
+        periods: list[int] = []
+        for period in academic_session:
+            cell = schedules[(year, section)][day].get(period)
+            if isinstance(cell, dict) and not cell.get("isLab") and not cell.get("fixedClassroomBlock"):
+                periods.append(period)
+        return periods
+
+    def _bundle_details(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+    ) -> tuple[dict[str, list[int]], list[int], bool, str]:
+        per_section_periods: dict[str, list[int]] = {}
+        union_periods: list[int] = []
+        seen_periods: set[int] = set()
+        has_lab = False
+        lab_venue = ""
+        for bundle_section in bundle_sections:
+            section_periods = _section_theory_periods(bundle_section, day, academic_session)
+            if section_periods:
+                per_section_periods[bundle_section] = section_periods
+                for period in section_periods:
+                    if period not in seen_periods:
+                        seen_periods.add(period)
+                        union_periods.append(period)
+            for period in academic_session:
+                cell = schedules[(year, bundle_section)][day].get(period)
+                if isinstance(cell, dict) and cell.get("isLab"):
+                    has_lab = True
+                    if not lab_venue:
+                        lab_venue = _normalize_id_token(cell.get("labRoom") or cell.get("venue") or "")
+        union_periods.sort()
+        return per_section_periods, union_periods, has_lab, lab_venue
 
     def _section_strength(section: str) -> int:
         normalized_section = str(section).strip()
@@ -3196,17 +3101,140 @@ def _allocate_classrooms_to_schedule(
             or 0
         )
 
-    def _reserve_room(room_name: str, day: str, periods: list[int]) -> None:
+    def _bundle_strength(bundle_sections: list[str]) -> int:
+        return sum(_section_strength(section) for section in bundle_sections)
+
+    def _update_bundle_room_assignment(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        *,
+        target_periods: list[int] | None = None,
+        classroom: str | None = None,
+        fallback_lab: str | None = None,
+    ) -> None:
+        session_periods = set(target_periods or academic_session)
+        for bundle_section in bundle_sections:
+            for period in _section_theory_periods(bundle_section, day, academic_session):
+                if period not in session_periods:
+                    continue
+                cell = schedules[(year, bundle_section)][day].get(period)
+                if isinstance(cell, dict):
+                    if fallback_lab is not None:
+                        cell["fallbackLab"] = fallback_lab
+                    if classroom is not None:
+                        cell["classroom"] = classroom
+        for log_entry in session_log:
+            if log_entry.get("day") != day or log_entry.get("isLab"):
+                continue
+            log_sections = {str(section).strip() for section in log_entry.get("sections", []) if str(section).strip()}
+            if not log_sections.intersection(bundle_sections):
+                continue
+            if not session_periods.intersection(int(period) for period in log_entry.get("periods", [])):
+                continue
+            if fallback_lab is not None:
+                existing = str(log_entry.get("fallbackLab", "")).strip()
+                if existing and fallback_lab and existing != fallback_lab:
+                    log_entry["fallbackLab"] = "/".join(dict.fromkeys([existing, fallback_lab]))
+                else:
+                    log_entry["fallbackLab"] = fallback_lab
+            if classroom is not None:
+                existing = str(log_entry.get("classroom", "")).strip()
+                if existing and classroom and existing != classroom:
+                    log_entry["classroom"] = "/".join(dict.fromkeys([existing, classroom]))
+                else:
+                    log_entry["classroom"] = classroom
+
+    def _assign_lab_for_entire_session(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+    ) -> bool:
+        if len(bundle_sections) != 1:
+            return False
+        _, session_periods, has_lab, lab_venue = _bundle_details(bundle_sections, day, academic_session)
+        if not has_lab or not lab_venue or not session_periods:
+            return False
+        _reserve_room(lab_venue, day, list(academic_session))
+        _update_bundle_room_assignment(
+            bundle_sections,
+            day,
+            academic_session,
+            target_periods=session_periods,
+            fallback_lab=lab_venue,
+            classroom="",
+        )
+        return True
+
+    def _release_room(room_name: str, day: str, periods: list[int]) -> None:
         if not room_name:
             return
-        room_usage.setdefault(room_name, set()).update((day, period) for period in periods)
+        usage = room_usage.setdefault(room_name, set())
+        for period in periods:
+            usage.discard((day, period))
+
+    def _allocate_shared_bundle_across_periods(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        periods: list[int],
+        required_strength: int,
+    ) -> bool:
+        if len(bundle_sections) <= 1 or not periods:
+            return False
+
+        provisional: list[tuple[list[int], str]] = []
+        idx = 0
+        while idx < len(periods):
+            found = False
+            max_size = len(periods) - idx
+            for block_size in range(max_size, 0, -1):
+                block = periods[idx: idx + block_size]
+                if block[-1] - block[0] != len(block) - 1:
+                    continue
+                room = _pick_available_room(block, required_strength)
+                if not room:
+                    continue
+                _reserve_room(room, day, block)
+                provisional.append((block, room))
+                idx += block_size
+                found = True
+                break
+            if not found:
+                for block, room in provisional:
+                    _release_room(room, day, block)
+                return False
+
+        for block, room in provisional:
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                academic_session,
+                target_periods=block,
+                classroom=room,
+            )
+        return True
+
+    # First, handle labs - they already have their room (venue) locked in
+    for session in session_log:
+        if bool(session.get("isLab")):
+            lab_room = _normalize_id_token(session.get("venue", ""))
+            day = str(session.get("day", "")).strip()
+            if lab_room:
+                session["lab_room"] = lab_room
+                # Also ensure grid is updated
+                for section in session.get("sections", []):
+                    for period in session.get("periods", []):
+                        cell = schedules[(year, section)][day].get(period)
+                        if isinstance(cell, dict):
+                            cell["labRoom"] = lab_room
 
     room_usage: dict[str, set[tuple[str, int]]] = {}
     for room in normalized_rooms:
+        # Initialize with prior occupancy if provided
         prior = (prior_room_busy or {}).get(room, set())
         room_usage[room] = prior.copy()
 
-    # First, handle labs - they already have their room (venue) locked in
     for session in session_log:
         if not bool(session.get("isLab")):
             continue
@@ -3214,25 +3242,7 @@ def _allocate_classrooms_to_schedule(
         day = str(session.get("day", "")).strip()
         periods = [int(period) for period in session.get("periods", []) if int(period) in instructional_periods]
         if day in DAYS and periods and room_name:
-            # Check if any period is already reserved
-            for p in periods:
-                if (day, p) in room_usage.setdefault(room_name, set()):
-                    constraint_violations.append({
-                        "year": year,
-                        "sections": list(session.get("sections", [])),
-                        "subject_id": str(session.get("subject_id", "")),
-                        "faculty_id": "",
-                        "constraint": "lab room conflict",
-                        "detail": f"Lab room {room_name} is already occupied.",
-                        "room": room_name,
-                    })
             _reserve_room(room_name, day, periods)
-            # Also ensure schedules grid is updated
-            for section in session.get("sections", []):
-                for period in periods:
-                    cell = schedules[(year, section)][day].get(period)
-                    if isinstance(cell, dict):
-                        cell["labRoom"] = room_name
 
     for (section, day, period), classroom in fixed_classroom_blocks.items():
         cell = schedules.get((year, section), {}).get(day, {}).get(period)
@@ -3256,299 +3266,399 @@ def _allocate_classrooms_to_schedule(
             })
         _reserve_room(classroom, day, [period])
 
-    # Dynamic session-based classroom allocation helper
-    def _allocate_session_rooms(day: str, session_idx: int, academic_session: tuple[int, ...]) -> bool:
-        session_periods = list(academic_session)
-        
-        # Check active sections
-        active_sections: list[str] = []
-        occupied_periods_by_sec: dict[str, list[int]] = {}
-        has_shared_by_sec: dict[str, bool] = {}
-        fixed_rooms_by_sec_p: dict[tuple[str, int], str] = {}
-        
+    # Allocate classrooms per occupied period so partial-session shared classes
+    # only align on the periods they actually share.
+    processed_bundle_keys: set[tuple[str, int, tuple[str, ...]]] = set()
+    bundle_assignments: dict[tuple[str, int, tuple[str, ...]], dict[str, object]] = {}
+    room_period_assignments: dict[tuple[str, str, int], tuple[str, int, tuple[str, ...]]] = {}
+
+    def _store_bundle_assignment(
+        bundle_key: tuple[str, int, tuple[str, ...]],
+        bundle_sections: list[str],
+        day: str,
+        period: int,
+        periods: list[int],
+        required_strength: int,
+        room_name: str,
+    ) -> None:
+        bundle_assignments[bundle_key] = {
+            "bundle_sections": list(bundle_sections),
+            "day": day,
+            "period": period,
+            "periods": list(periods),
+            "required_strength": required_strength,
+            "room": room_name,
+        }
+        for assigned_period in periods:
+            room_period_assignments[(room_name, day, assigned_period)] = bundle_key
+
+    def _move_existing_assignment_for_shared_bundle(
+        bundle_key: tuple[str, int, tuple[str, ...]],
+        bundle_sections: list[str],
+        day: str,
+        period: int,
+        periods: list[int],
+        required_strength: int,
+    ) -> str:
+        if len(bundle_sections) <= 1:
+            return ""
+        for target_room in preferred_rooms:
+            if not _room_can_fit(target_room, required_strength):
+                continue
+            victim_key = room_period_assignments.get((target_room, day, period))
+            if not victim_key:
+                continue
+            victim = bundle_assignments.get(victim_key)
+            if not victim:
+                continue
+            victim_sections = list(victim.get("bundle_sections", []))
+            victim_periods = list(victim.get("periods", []))
+            victim_strength = int(victim.get("required_strength", 0) or 0)
+            victim_day = str(victim.get("day", day))
+            victim_room = _normalize_id_token(victim.get("room", ""))
+            if len(victim_sections) != 1:
+                continue
+            alternate_room = _pick_available_room(
+                victim_periods,
+                victim_strength,
+                [
+                    [room for room in preferred_rooms if room != target_room],
+                    [room for room in overflow_rooms if room != target_room],
+                ],
+            )
+            if not alternate_room:
+                continue
+            _release_room(victim_room, victim_day, victim_periods)
+            for victim_period in victim_periods:
+                room_period_assignments.pop((victim_room, victim_day, victim_period), None)
+            _reserve_room(alternate_room, victim_day, victim_periods)
+            _update_bundle_room_assignment(
+                victim_sections,
+                victim_day,
+                tuple(victim_periods),
+                target_periods=victim_periods,
+                classroom=alternate_room,
+            )
+            victim["room"] = alternate_room
+            for victim_period in victim_periods:
+                room_period_assignments[(alternate_room, victim_day, victim_period)] = victim_key
+
+            _reserve_room(target_room, day, periods)
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                tuple(periods),
+                target_periods=periods,
+                classroom=target_room,
+            )
+            _store_bundle_assignment(
+                bundle_key,
+                bundle_sections,
+                day,
+                period,
+                periods,
+                required_strength,
+                target_room,
+            )
+            return target_room
+        return ""
+
+    def _allocate_bundle_period_by_period(
+        bundle_sections: list[str],
+        day: str,
+        academic_session: tuple[int, ...],
+        periods: list[int],
+        required_strength: int,
+    ) -> tuple[list[int], list[int]]:
+        assigned_periods: list[int] = []
+        missing_periods: list[int] = []
+        preferred_sequence: list[str] = []
+
+        for period in periods:
+            room_groups = None
+            if preferred_sequence:
+                room_groups = [
+                    [room for room in preferred_sequence if room in preferred_rooms],
+                    [room for room in preferred_sequence if room in overflow_rooms],
+                    [room for room in preferred_rooms if room not in preferred_sequence],
+                    [room for room in overflow_rooms if room not in preferred_sequence],
+                ]
+            room_name = _pick_available_room([period], required_strength, room_groups)
+            if not room_name:
+                missing_periods.append(period)
+                continue
+            _reserve_room(room_name, day, [period])
+            _update_bundle_room_assignment(
+                bundle_sections,
+                day,
+                academic_session,
+                target_periods=[period],
+                classroom=room_name,
+            )
+            if room_name not in preferred_sequence:
+                preferred_sequence.insert(0, room_name)
+            assigned_periods.append(period)
+        return assigned_periods, missing_periods
+
+    def _report_unassigned_theory_classrooms() -> None:
         for section in sections:
-            sec_occupied = []
-            has_shared = False
-            for period in session_periods:
-                cell = schedules[(year, section)][day].get(period)
-                if isinstance(cell, dict):
-                    sec_occupied.append(period)
-                    if cell.get("isLab"):
-                        fixed_rooms_by_sec_p[(section, period)] = _normalize_id_token(cell.get("labRoom") or cell.get("venue") or "")
-                    elif cell.get("fixedClassroomBlock"):
-                        fixed_rooms_by_sec_p[(section, period)] = _normalize_id_token(cell.get("classroom") or "")
-                    
-                    shared_secs = [str(s).strip() for s in (cell.get("sharedSections") or []) if str(s).strip() in sections]
-                    if len(shared_secs) > 1 or (len(shared_secs) == 1 and shared_secs[0] != section):
-                        has_shared = True
-                        
-            if sec_occupied:
-                active_sections.append(section)
-                occupied_periods_by_sec[section] = sec_occupied
-                has_shared_by_sec[section] = has_shared
-
-        if not active_sections:
-            return True
-
-        import itertools
-        candidate_rooms = preferred_rooms + overflow_rooms
-        sequences_by_sec: dict[str, list[list[str]]] = {}
-        for section in active_sections:
-            occ = occupied_periods_by_sec[section]
-            has_sh = has_shared_by_sec[section]
-            
-            home_room = _section_home_room(section)
-            sorted_rooms = []
-            if home_room and home_room in candidate_rooms:
-                sorted_rooms.append(home_room)
-            for r in candidate_rooms:
-                if r not in sorted_rooms:
-                    sorted_rooms.append(r)
-            if "" not in sorted_rooms:
-                sorted_rooms.append("")
-                    
-            allowed_rooms = []
-            for period in occ:
-                if (section, period) in fixed_rooms_by_sec_p:
-                    allowed_rooms.append([fixed_rooms_by_sec_p[(section, period)]])
-                else:
-                    allowed_rooms.append(sorted_rooms)
-                    
-            seqs = []
-            for seq in itertools.product(*allowed_rooms):
-                seq_list = list(seq)
-                seqs.append(seq_list)
-            
-            # Sort sequences to prefer physical classrooms first (fewer empty slots)
-            # and then prefer fewer room transitions.
-            def seq_sort_key(s):
-                unassigned = s.count("")
-                non_empty = [r for r in s if r]
-                transitions = 0
-                for idx in range(len(non_empty) - 1):
-                    if non_empty[idx] != non_empty[idx + 1]:
-                        transitions += 1
-                return (unassigned, transitions)
-            
-            seqs.sort(key=seq_sort_key)
-            sequences_by_sec[section] = seqs
-
-        assignment: dict[str, list[str]] = {}
-        room_at_period_secs: dict[tuple[str, int], list[str]] = {}
-        
-        def is_valid_partial(sec: str, seq: list[str]) -> bool:
-            occ = occupied_periods_by_sec[sec]
-            for idx, period in enumerate(occ):
-                r = seq[idx]
-                if not r:
-                    continue
-                cell = schedules[(year, sec)][day].get(period)
-                is_lab = cell.get("isLab") if cell else False
-                
-                # Enforce that shared classes must use the SAME room
-                if cell and not is_lab:
-                    shared_secs = [str(s).strip() for s in (cell.get("sharedSections") or []) if str(s).strip() in active_sections]
-                    for other in shared_secs:
-                        if other == sec:
-                            continue
-                        if other in assignment:
-                            other_occ = occupied_periods_by_sec[other]
-                            if period in other_occ:
-                                other_room = assignment[other][other_occ.index(period)]
-                                if other_room != r:
-                                    return False
-                
-                other_secs = room_at_period_secs.get((r, period), [])
-                if other_secs:
-                    if is_lab:
+            missing_by_day: dict[str, list[int]] = {}
+            for day in DAYS:
+                for period in instructional_periods:
+                    cell = schedules[(year, section)][day].get(period)
+                    if not isinstance(cell, dict) or cell.get("isLab"):
                         continue
-                        
-                    for other in other_secs:
-                        cell_other = schedules[(year, other)][day].get(period)
-                        if not cell or not cell_other:
-                            return False
-                        if cell_other.get("isLab"):
-                            return False
-                        if cell.get("subjectId") != cell_other.get("subjectId") or cell.get("facultyId") != cell_other.get("facultyId"):
-                            return False
-                        
-                        shared_with_other = str(other).strip() in [str(s).strip() for s in (cell.get("sharedSections") or [])]
-                        shared_with_sec = str(sec).strip() in [str(s).strip() for s in (cell_other.get("sharedSections") or [])]
-                        if not shared_with_other or not shared_with_sec:
-                            return False
-                    
-                    strength = _section_strength(sec)
-                    combined_strength = strength + sum(_section_strength(o) for o in other_secs)
-                    capacity = room_capacity_map.get(r)
-                    if capacity is not None and capacity < combined_strength:
-                        return False
-                else:
-                    if is_lab:
+                    if cell.get("fixedClassroomBlock"):
                         continue
-                    is_fixed = (sec, period) in fixed_rooms_by_sec_p
-                    if not is_fixed:
-                        if (day, period) in room_usage.get(r, set()):
-                            return False
-                    
-                    strength = _section_strength(sec)
-                    capacity = room_capacity_map.get(r)
-                    if capacity is not None and capacity < strength:
-                        return False
-            return True
+                    room_label = str(
+                        cell.get("classroom")
+                        or cell.get("fallbackLab")
+                        or cell.get("labRoom")
+                        or cell.get("venue")
+                        or ""
+                    ).strip()
+                    if room_label:
+                        continue
+                    missing_by_day.setdefault(day, []).append(period)
 
-        def register_sequence(sec: str, seq: list[str]):
-            occ = occupied_periods_by_sec[sec]
-            for idx, period in enumerate(occ):
-                r = seq[idx]
-                if r:
-                    room_at_period_secs.setdefault((r, period), []).append(sec)
+            for day, periods in missing_by_day.items():
+                subject_labels = sorted(
+                    {
+                        str(schedules[(year, section)][day][period].get("subjectId") or schedules[(year, section)][day][period].get("subject") or "").strip()
+                        for period in periods
+                        if isinstance(schedules[(year, section)][day].get(period), dict)
+                    }
+                )
+                constraint_violations.append({
+                    "year": year,
+                    "sections": [section],
+                    "subject_id": ", ".join(filter(None, subject_labels)),
+                    "faculty_id": "",
+                    "constraint": "classroom allocation constraint",
+                    "detail": (
+                        f"Section {section} has no classroom assigned on {day} for period(s) "
+                        f"{', '.join(str(period) for period in periods)}."
+                    ),
+                })
 
-        def unregister_sequence(sec: str, seq: list[str]):
-            occ = occupied_periods_by_sec[sec]
-            for idx, period in enumerate(occ):
-                r = seq[idx]
-                if r:
-                    if (r, period) in room_at_period_secs:
-                        if sec in room_at_period_secs[(r, period)]:
-                            room_at_period_secs[(r, period)].remove(sec)
+    def _final_assign_unassigned_theory_rooms() -> None:
+        processed_keys: set[tuple[str, int, tuple[str, ...]]] = set()
+        for day in DAYS:
+            for period in instructional_periods:
+                for section in sections:
+                    cell = schedules[(year, section)][day].get(period)
+                    if not isinstance(cell, dict) or cell.get("isLab") or cell.get("fixedClassroomBlock"):
+                        continue
+                    room_label = str(
+                        cell.get("classroom")
+                        or cell.get("fallbackLab")
+                        or cell.get("labRoom")
+                        or cell.get("venue")
+                        or ""
+                    ).strip()
+                    if room_label:
+                        continue
 
-        capacity_error_flag = [False]
+                    bundle_sections = sorted(
+                        {
+                            str(shared_section).strip()
+                            for shared_section in (cell.get("sharedSections") or [])
+                            if str(shared_section).strip() in sections
+                            and isinstance(schedules[(year, str(shared_section).strip())][day].get(period), dict)
+                            and not schedules[(year, str(shared_section).strip())][day].get(period, {}).get("isLab")
+                        }
+                        | {section}
+                    )
+                    bundle_key = (day, period, tuple(bundle_sections))
+                    if bundle_key in processed_keys:
+                        continue
+                    processed_keys.add(bundle_key)
 
-        def backtrack(sec_idx: int) -> bool:
-            if sec_idx == len(active_sections):
-                return True
-                
-            sec = active_sections[sec_idx]
-            seqs = sequences_by_sec[sec]
-            
-            for seq in seqs:
-                if is_valid_partial(sec, seq):
-                    register_sequence(sec, seq)
-                    assignment[sec] = seq
-                    if backtrack(sec_idx + 1):
-                        return True
-                    unregister_sequence(sec, seq)
-                    assignment.pop(sec, None)
-                else:
-                    occ = occupied_periods_by_sec[sec]
-                    for idx, period in enumerate(occ):
-                        r = seq[idx]
-                        if not r:
-                            continue
-                        capacity = room_capacity_map.get(r)
-                        other_secs = room_at_period_secs.get((r, period), [])
-                        if other_secs:
-                            cell = schedules[(year, sec)][day].get(period)
-                            all_sharing = True
-                            for other in other_secs:
-                                cell_other = schedules[(year, other)][day].get(period)
-                                if not cell or not cell_other or cell.get("subjectId") != cell_other.get("subjectId") or cell.get("facultyId") != cell_other.get("facultyId"):
-                                    all_sharing = False
-                                    break
-                            if all_sharing:
-                                combined_strength = _section_strength(sec) + sum(_section_strength(o) for o in other_secs)
-                                if capacity is not None and capacity < combined_strength:
-                                    capacity_error_flag[0] = True
-            return False
+                    required_strength = _bundle_strength(bundle_sections)
+                    room_name = _pick_available_room([period], required_strength)
+                    if not room_name:
+                        continue
+                    _reserve_room(room_name, day, [period])
+                    _update_bundle_room_assignment(
+                        bundle_sections,
+                        day,
+                        (period,),
+                        target_periods=[period],
+                        classroom=room_name,
+                    )
 
-        if backtrack(0):
-            for sec in active_sections:
-                occ = occupied_periods_by_sec[sec]
-                seq = assignment[sec]
-                
-                # Check if this section has any lab period in this session
-                session_lab_room = None
-                for period in occ:
-                    cell = schedules[(year, sec)][day].get(period)
-                    if isinstance(cell, dict) and cell.get("isLab"):
-                        session_lab_room = _normalize_id_token(cell.get("labRoom") or cell.get("venue") or "")
-                        if session_lab_room:
-                            break
-                            
-                for idx, period in enumerate(occ):
-                    r = seq[idx]
-                    cell = schedules[(year, sec)][day].get(period)
-                    if isinstance(cell, dict):
-                        if cell.get("isLab"):
-                            cell["labRoom"] = r
-                        else:
-                            if session_lab_room:
-                                cell["fallbackLab"] = session_lab_room
-                                if r != session_lab_room:
-                                    cell["classroom"] = r
-                                else:
-                                    cell["classroom"] = ""
-                            else:
-                                cell["classroom"] = r
-                                cell["fallbackLab"] = ""
-                    is_fixed = (sec, period) in fixed_rooms_by_sec_p
-                    if not is_fixed and r:
-                        _reserve_room(r, day, [period])
-                        
-            for log_entry in session_log:
-                if log_entry.get("day") != day or log_entry.get("isLab"):
+    def _period_bundle_sections(section: str, day: str, period: int) -> list[str]:
+        cell = schedules[(year, section)][day].get(period)
+        if not isinstance(cell, dict) or cell.get("isLab"):
+            return []
+
+        period_shared_sections = {
+            str(shared_section).strip()
+            for shared_section in (cell.get("sharedSections") or [])
+            if str(shared_section).strip() in sections
+        }
+        period_shared_sections.add(section)
+        return [
+            bundle_section
+            for bundle_section in sorted(period_shared_sections)
+            if isinstance(schedules[(year, bundle_section)][day].get(period), dict)
+            and not schedules[(year, bundle_section)][day].get(period, {}).get("isLab")
+        ]
+
+    def _session_bundle_sections(section: str, day: str, academic_session: tuple[int, ...]) -> list[str]:
+        shared_sections: set[str] = set()
+        for period in academic_session:
+            cell = schedules[(year, section)][day].get(period)
+            if not isinstance(cell, dict) or cell.get("isLab"):
+                continue
+            shared_sections.update(
+                str(shared_section).strip()
+                for shared_section in cell.get("sharedSections", []) or []
+                if str(shared_section).strip() in sections
+            )
+        shared_sections.add(section)
+        return sorted(shared_sections)
+
+    # Shared classes can change room inside a session; regular classes cannot.
+    for day in DAYS:
+        for session_idx, academic_session in enumerate(academic_sessions):
+            for section in sections:
+                bundle_sections = _session_bundle_sections(section, day, academic_session)
+                session_periods = _section_theory_periods(section, day, academic_session)
+                if not session_periods:
                     continue
-                log_periods = [int(p) for p in log_entry.get("periods", []) if int(p) in session_periods]
-                if log_periods:
-                    log_sec = None
-                    for s in log_entry.get("sections", []):
-                        if str(s).strip() in assignment:
-                            log_sec = str(s).strip()
-                            break
-                    if log_sec:
-                        occ = occupied_periods_by_sec[log_sec]
-                        rooms_for_periods = []
-                        for p in log_periods:
-                            if p in occ:
-                                idx = occ.index(p)
-                                rooms_for_periods.append(assignment[log_sec][idx])
-                        if rooms_for_periods:
-                            log_entry["classroom"] = "/".join(dict.fromkeys(r for r in rooms_for_periods if r))
 
-            # Report constraint violations for periods that ended up with no physical classroom assigned
-            for sec in active_sections:
-                occ = occupied_periods_by_sec[sec]
-                seq = assignment[sec]
-                unassigned_periods = []
-                for idx, period in enumerate(occ):
-                    r = seq[idx]
-                    cell = schedules[(year, sec)][day].get(period)
-                    is_lab = cell.get("isLab") if cell else False
-                    is_fixed = (sec, period) in fixed_rooms_by_sec_p
-                    if not is_lab and not is_fixed and not r:
-                        unassigned_periods.append(period)
-                if unassigned_periods:
-                    periods_str = ", ".join(str(p) for p in unassigned_periods)
-                    detail = f"No classroom can accommodate Section {sec} on {day} for period(s) {periods_str}."
+                if len(bundle_sections) <= 1:
+                    bundle_key = (day, session_idx, tuple(bundle_sections))
+                    if bundle_key in processed_bundle_keys:
+                        continue
+                    processed_bundle_keys.add(bundle_key)
+                    if _assign_lab_for_entire_session(bundle_sections, day, academic_session):
+                        continue
+                    required_strength = _bundle_strength(bundle_sections)
+                    allocated_room = _pick_available_room(session_periods, required_strength)
+                    if allocated_room:
+                        _reserve_room(allocated_room, day, session_periods)
+                        _update_bundle_room_assignment(
+                            bundle_sections,
+                            day,
+                            academic_session,
+                            target_periods=session_periods,
+                            classroom=allocated_room,
+                        )
+                        _store_bundle_assignment(
+                            bundle_key,
+                            bundle_sections,
+                            day,
+                            session_idx,
+                            session_periods,
+                            required_strength,
+                            allocated_room,
+                        )
+                        continue
+
+                    assigned_periods, missing_periods = _allocate_bundle_period_by_period(
+                        bundle_sections,
+                        day,
+                        academic_session,
+                        session_periods,
+                        required_strength,
+                    )
+                    if assigned_periods and not missing_periods:
+                        continue
+
+                    detail = (
+                        f"Unable to allocate stable classroom for section(s) {', '.join(bundle_sections)} "
+                        f"on {day} during session {session_idx + 1} ({session_periods}) with required strength {required_strength}."
+                    )
+                    if assigned_periods:
+                        detail = (
+                            f"{detail} Assigned fallback rooms for period(s) "
+                            f"{', '.join(str(period) for period in assigned_periods)}, but could not assign "
+                            f"period(s) {', '.join(str(period) for period in missing_periods)}."
+                        )
                     constraint_violations.append({
                         "year": year,
-                        "sections": [sec],
+                        "sections": bundle_sections,
                         "subject_id": "",
                         "faculty_id": "",
                         "constraint": "classroom allocation constraint",
                         "detail": detail,
                     })
+                    continue
 
-            return True
-        else:
-            for sec in active_sections:
-                if capacity_error_flag[0] and has_shared_by_sec[sec]:
-                    detail = "Shared class room capacity is insufficient."
-                else:
-                    detail = f"No classroom can accommodate Section {sec}."
-                constraint_violations.append({
-                    "year": year,
-                    "sections": [sec],
-                    "subject_id": "",
-                    "faculty_id": "",
-                    "constraint": "classroom allocation constraint",
-                    "detail": detail,
-                })
-            return False
+                idx = 0
+                while idx < len(session_periods):
+                    period = session_periods[idx]
+                    period_bundle_sections = _period_bundle_sections(section, day, period)
+                    if not period_bundle_sections:
+                        idx += 1
+                        continue
 
-    for day in DAYS:
-        for session_idx, academic_session in enumerate(academic_sessions):
-            _allocate_session_rooms(day, session_idx, academic_session)
+                    target_periods = [period]
+                    next_idx = idx + 1
+                    while next_idx < len(session_periods):
+                        next_period = session_periods[next_idx]
+                        if next_period != target_periods[-1] + 1:
+                            break
+                        if _period_bundle_sections(section, day, next_period) != period_bundle_sections:
+                            break
+                        target_periods.append(next_period)
+                        next_idx += 1
+
+                    bundle_key = (day, period, tuple(period_bundle_sections))
+                    if bundle_key in processed_bundle_keys:
+                        idx = next_idx
+                        continue
+                    processed_bundle_keys.add(bundle_key)
+
+                    required_strength = _bundle_strength(period_bundle_sections)
+                    allocated_room = _pick_available_room(target_periods, required_strength)
+                    if allocated_room:
+                        _reserve_room(allocated_room, day, target_periods)
+                        _update_bundle_room_assignment(
+                            period_bundle_sections,
+                            day,
+                            tuple(target_periods),
+                            target_periods=target_periods,
+                            classroom=allocated_room,
+                        )
+                        _store_bundle_assignment(
+                            bundle_key,
+                            period_bundle_sections,
+                            day,
+                            period,
+                            target_periods,
+                            required_strength,
+                            allocated_room,
+                        )
+                    else:
+                        relocated_room = _move_existing_assignment_for_shared_bundle(
+                            bundle_key,
+                            period_bundle_sections,
+                            day,
+                            period,
+                            target_periods,
+                            required_strength,
+                        )
+                        if relocated_room:
+                            continue
+                        detail = (
+                                f"Unable to allocate stable classroom for section(s) {', '.join(period_bundle_sections)} "
+                                f"on {day} during period block {target_periods} with required strength {required_strength}."
+                            )
+                        constraint_violations.append({
+                            "year": year,
+                            "sections": period_bundle_sections,
+                            "subject_id": "",
+                            "faculty_id": "",
+                            "constraint": "classroom allocation constraint",
+                            "detail": detail,
+                        })
+                    idx = next_idx
+
+    _final_assign_unassigned_theory_rooms()
+    _report_unassigned_theory_classrooms()
 
     if not normalized_rooms:
         return
@@ -3585,22 +3695,8 @@ def _apply_formatted_sheet_layout(
         1,
         max_col,
         alignment=CENTER_ALIGNMENT,
-        border=None,
+        border=MEDIUM_BORDER,
     )
-    
-    grid_start_row = day_start_row - 2
-    grid_end_row = day_start_row + len(DAYS) - 1
-    thin_side = Side(style="thin", color="000000")
-    
-    for row_idx in range(grid_start_row, grid_end_row + 1):
-        for col_idx in range(1, max_col + 1):
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            cell.border = Border(
-                left=thin_side,
-                right=thin_side,
-                top=thin_side,
-                bottom=thin_side,
-            )
     
     # Add Bold Fonts to Headers, Day Column, and Signatures
     _style_range(worksheet, 1, top_rows, 1, max_col, font=BOLD_FONT)
@@ -3608,33 +3704,18 @@ def _apply_formatted_sheet_layout(
         _style_range(worksheet, day_start_row - 2, day_start_row - 1, 1, max_col, font=BOLD_FONT)
     _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
     _style_range(worksheet, worksheet.max_row, worksheet.max_row, 1, max_col, font=BOLD_FONT)
-    
-    for merged_range in list(worksheet.merged_cells.ranges):
+    for merged_range in worksheet.merged_cells.ranges:
         anchor = worksheet.cell(row=merged_range.min_row, column=merged_range.min_col)
         anchor.alignment = CENTER_ALIGNMENT
-        if grid_start_row <= merged_range.min_row <= grid_end_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = worksheet.cell(row=r, column=c)
-                    _clear_cell_border(cell)
-                    
-                    left_side = thin_side if c == merged_range.min_col else None
-                    right_side = thin_side if c == merged_range.max_col else None
-                    
-                    top_side = thin_side if r == merged_range.min_row else None
-                    bottom_side = thin_side if r == merged_range.max_row else None
-                    
-                    _apply_border_sides(
-                        cell,
-                        left=left_side,
-                        right=right_side,
-                        top=top_side,
-                        bottom=bottom_side,
-                    )
-        else:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    worksheet.cell(row=r, column=c).border = Border()
+        anchor.border = MEDIUM_BORDER
+        _apply_merged_range_outline(
+            worksheet,
+            merged_range.min_row,
+            merged_range.max_row,
+            merged_range.min_col,
+            merged_range.max_col,
+            border=MEDIUM_BORDER,
+        )
 
     if legend_row_count > 0:
         for row_idx in range(legend_start_row, legend_start_row + legend_row_count):
@@ -3664,7 +3745,7 @@ def _build_section_timetables_workbook_from_schedule_map(
         worksheet.append([ACADEMIC_METADATA["department"]] + [""] * (max_col - 1))
         worksheet.append([f"ACADEMIC YEAR : {metadata['academicYear']} {metadata['semester']}"] + [""] * (max_col - 1))
         worksheet.append([_class_title(year, section, metadata["semester"])] + [""] * (max_col - 1))
-        worksheet.append([f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * (max_col - 1))
+        worksheet.append(["Room No :"] + [""] * (max_col // 2 - 1) + [f"With effect from : {metadata['withEffectFromDisplay']}"] + [""] * (max_col // 2))
         worksheet.append(["DAY"] + header1)
         worksheet.append([""] + header2)
 
@@ -3703,21 +3784,17 @@ def _build_section_timetables_workbook_from_schedule_map(
                 + [f"{right[0]} : {right[1]}" if right else ""]
                 + [""] * (max_col // 2)
             )
-        for _ in range(3):
-            worksheet.append([""] * max_col)
+        worksheet.append([""] * max_col)
         signature_separator_row = worksheet.max_row
-        sig_row = signature_separator_row + 1
-        worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-        worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-        worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-        worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
 
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
         worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
         worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
         worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=max_col)
         worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col)
-        worksheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=max_col)
+        worksheet.merge_cells(start_row=6, start_column=1, end_row=6, end_column=max_col // 2)
+        worksheet.merge_cells(start_row=6, start_column=max_col // 2 + 1, end_row=6, end_column=max_col)
         worksheet.merge_cells(start_row=7, start_column=1, end_row=8, end_column=1)
 
         def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
@@ -3777,476 +3854,10 @@ def _build_section_timetables_workbook(
     return _build_section_timetables_workbook_from_schedule_map(filtered, timetable_metadata, period_config)
 
 
-def _find_faculty_id(faculty_name: str, name_to_id: dict[str, str]) -> str | None:
-    name_clean = faculty_name.strip()
-    if name_clean in name_to_id:
-        return name_to_id[name_clean]
-    name_lower = name_clean.lower()
-    for fname, fid in name_to_id.items():
-        if fname.lower() == name_lower:
-            return fid
-    for fname, fid in name_to_id.items():
-        if fname.lower() in name_lower or name_lower in fname.lower():
-            return fid
-    return None
-
-
-def _write_single_workload_sheet(
-    worksheet,
-    start_row: int,
-    faculty_id: str,
-    faculty_name: str,
-    schedule: dict,
-    header1: list[str],
-    header2: list[str],
-    max_col: int,
-    display_columns: dict,
-    break_cols: list[int],
-    lunch_cols: list[int],
-    metadata: dict,
-) -> None:
-    # 1. College Header
-    worksheet.cell(row=start_row, column=1, value=ACADEMIC_METADATA["college"])
-    worksheet.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max_col)
-    
-    # 2. Autonomous line
-    worksheet.cell(row=start_row+1, column=1, value="(AUTONOMOUS)")
-    worksheet.merge_cells(start_row=start_row+1, start_column=1, end_row=start_row+1, end_column=max_col)
-    
-    # 3. Department
-    worksheet.cell(row=start_row+2, column=1, value=ACADEMIC_METADATA["department"])
-    worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
-    
-    # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=f"ACADEMIC YEAR : {metadata['academicYear']}")
-    worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
-    
-    # 5. Faculty Workload Title Row
-    worksheet.cell(row=start_row+4, column=1, value="Faculty Workload")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col)
-    
-    # 6. Faculty ID and Name Placement
-    worksheet.cell(row=start_row+5, column=1, value=f"Faculty ID : {faculty_id}")
-    worksheet.cell(row=start_row+5, column=max_col // 2 + 1, value=f"Faculty Name : {faculty_name}")
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+5, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+5, start_column=max_col // 2 + 1, end_row=start_row+5, end_column=max_col)
-    
-    # 7. Headers
-    worksheet.cell(row=start_row+6, column=1, value="DAY")
-    for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
-        worksheet.cell(row=start_row+7, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+6, start_column=1, end_row=start_row+7, end_column=1)
-    
-    # 8. Grid Data
-    day_start_row = start_row + 8
-    break_overlap_rows = []
-    lunch_overlap_rows = []
-    
-    for offset, day in enumerate(DAYS):
-        row_idx = day_start_row + offset
-        worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-        for bc in break_cols:
-            worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
-        for lc in lunch_cols:
-            worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
-        
-        day_data = schedule.get(day, [])
-        instructional_periods = sorted(display_columns.keys())
-        for p_idx, entries in enumerate(day_data):
-            if p_idx < len(instructional_periods) and entries:
-                p_num = instructional_periods[p_idx]
-                col_idx = display_columns[p_num]
-                
-                # Group sections by (subject, room) to combine them into one cell
-                groups = {}
-                for e in entries:
-                    if not e: continue
-                    subj = str(e.get('subject') or '').strip()
-                    room = str(e.get("classroom") or e.get("lab_room") or e.get("fallback_lab") or "").strip()
-                    yr = str(e.get('year', '')).strip()
-                    sec = str(e.get('section', '')).strip()
-                    
-                    key = (subj, room, yr)
-                    groups.setdefault(key, []).append(sec)
-                
-                parts = []
-                for (subj, room, yr), secs in groups.items():
-                    sec_text = _format_sections_ordinal(yr, secs)
-                    cell_text = f"{subj}\n{sec_text}"
-                    room_clean = room.strip().strip("()")
-                    if room_clean:
-                        cell_text += f"\n({room_clean})"
-                    parts.append(cell_text)
-                
-                text = "\n\n".join(parts)
-                worksheet.cell(row=row_idx, column=col_idx, value=text)
-
-        # Run horizontal merge loop
-        idx = 0
-        while idx < len(instructional_periods):
-            p = instructional_periods[idx]
-            col_start = display_columns[p]
-            text = worksheet.cell(row=row_idx, column=col_start).value
-            
-            end_idx = idx
-            while end_idx + 1 < len(instructional_periods):
-                next_p = instructional_periods[end_idx + 1]
-                col_next = display_columns[next_p]
-                next_text = worksheet.cell(row=row_idx, column=col_next).value
-                
-                is_adjacent = col_next == display_columns[instructional_periods[end_idx]] + 1
-                
-                curr_entries = day_data[idx] if idx < len(day_data) else None
-                is_curr_lab = any(e.get("is_lab") for e in curr_entries if e) if curr_entries else False
-                
-                is_same = (text == next_text) and (text is not None)
-                
-                can_merge = False
-                if is_same:
-                    if is_adjacent:
-                        can_merge = True
-                    elif is_curr_lab:
-                        mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, col_next)
-                        if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                            can_merge = True
-                            
-                if can_merge:
-                    end_idx += 1
-                else:
-                    break
-            
-            if end_idx > idx:
-                col_end = display_columns[instructional_periods[end_idx]]
-                for c in break_cols:
-                    if col_start <= c <= col_end:
-                        break_overlap_rows.append(row_idx)
-                for c in lunch_cols:
-                    if col_start <= c <= col_end:
-                        lunch_overlap_rows.append(row_idx)
-                worksheet.merge_cells(start_row=row_idx, start_column=col_start, end_row=row_idx, end_column=col_end)
-            idx = end_idx + 1
-    
-    # Merge breaks/lunches vertically in segments
-    def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
-        all_rows = [day_start_row + i for i in range(len(DAYS))]
-        segments: list[tuple[int, int]] = []
-        segment_start = None
-        for r in all_rows:
-            if r in blocked_rows:
-                if segment_start is not None:
-                    segments.append((segment_start, r - 1))
-                    segment_start = None
-            else:
-                if segment_start is None: segment_start = r
-        if segment_start is not None: segments.append((segment_start, all_rows[-1]))
-
-        for start, end in segments:
-            worksheet.merge_cells(start_row=start, start_column=column, end_row=end, end_column=column)
-            worksheet.cell(row=start, column=column, value=label)
-            worksheet.cell(row=start, column=column).font = BOLD_FONT
-
-    for bc in break_cols:
-        merge_vertical_marker(bc, "BREAK", break_overlap_rows)
-    for lc in lunch_cols:
-        merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
-    
-    # 9. Signatures
-    sig_row = start_row + 15
-    worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-    worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-    worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-    worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
-    
-    grid_s = start_row + 6
-    grid_e = start_row + 13
-    thin_side = Side(style="thin", color="000000")
-    
-    for column_idx in range(1, max_col + 1):
-        worksheet.column_dimensions[chr(64 + column_idx)].width = 16
-    worksheet.column_dimensions["A"].width = 7
-    
-    for r_idx in range(start_row, sig_row + 1):
-        if day_start_row <= r_idx < day_start_row + len(DAYS):
-            worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 5:
-            worksheet.row_dimensions[r_idx].height = 22
-        elif r_idx == sig_row:
-            worksheet.row_dimensions[r_idx].height = 22
-        else:
-            worksheet.row_dimensions[r_idx].height = 20
-    
-    _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 5, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 6, start_row + 7, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
-    _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
-    
-    for r_idx in range(grid_s, grid_e + 1):
-        for c_idx in range(1, max_col + 1):
-            cell = worksheet.cell(row=r_idx, column=c_idx)
-            cell.border = Border(
-                left=thin_side,
-                right=thin_side,
-                top=thin_side,
-                bottom=thin_side,
-            )
-    
-    for merged_range in list(worksheet.merged_cells.ranges):
-        if grid_s <= merged_range.min_row <= grid_e and merged_range.min_row >= start_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = worksheet.cell(row=r, column=c)
-                    _clear_cell_border(cell)
-                    left_s = thin_side if c == merged_range.min_col else None
-                    right_s = thin_side if c == merged_range.max_col else None
-                    top_s = thin_side if r == merged_range.min_row else None
-                    bottom_s = thin_side if r == merged_range.max_row else None
-                    _apply_border_sides(
-                        cell,
-                        left=left_s,
-                        right=right_s,
-                        top=top_s,
-                        bottom=bottom_s,
-                    )
-        elif merged_range.min_row >= start_row and merged_range.max_row <= sig_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    worksheet.cell(row=r, column=c).border = Border()
-
-
-def _write_printable_workload_block(
-    worksheet,
-    start_row: int,
-    faculty_id: str,
-    faculty_name: str,
-    schedule: dict,
-    header1: list[str],
-    header2: list[str],
-    max_col: int,
-    display_columns: dict,
-    break_cols: list[int],
-    lunch_cols: list[int],
-    metadata: dict,
-) -> None:
-    # 1. College Header
-    worksheet.cell(row=start_row, column=1, value=ACADEMIC_METADATA["college"])
-    worksheet.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max_col)
-    
-    # 2. Autonomous line
-    worksheet.cell(row=start_row+1, column=1, value="(AUTONOMOUS)")
-    worksheet.merge_cells(start_row=start_row+1, start_column=1, end_row=start_row+1, end_column=max_col)
-    
-    # 3. Department
-    worksheet.cell(row=start_row+2, column=1, value=ACADEMIC_METADATA["department"])
-    worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
-    
-    # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
-    worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
-    
-    # 5. Name and Date row
-    if faculty_id and faculty_name and faculty_id != faculty_name:
-        name_val = f"Name : {faculty_name}({faculty_id})"
-    else:
-        name_val = f"Name : {faculty_name}"
-    worksheet.cell(row=start_row+4, column=1, value=name_val)
-    worksheet.cell(row=start_row+4, column=max_col // 2 + 1, value=f"With effect from :   {metadata['withEffectFromDisplay']}")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+4, start_column=max_col // 2 + 1, end_row=start_row+4, end_column=max_col)
-    
-    # 6. Headers
-    worksheet.cell(row=start_row+5, column=1, value="DAY")
-    for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+5, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
-        worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+6, end_column=1)
-    
-    # 7. Grid Data
-    day_start_row = start_row + 7
-    break_overlap_rows = []
-    lunch_overlap_rows = []
-    
-    for offset, day in enumerate(DAYS):
-        row_idx = day_start_row + offset
-        worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-        for bc in break_cols:
-            worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
-        for lc in lunch_cols:
-            worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
-        
-        day_data = schedule.get(day, [])
-        instructional_periods = sorted(display_columns.keys())
-        for p_idx, entries in enumerate(day_data):
-            if p_idx < len(instructional_periods) and entries:
-                p_num = instructional_periods[p_idx]
-                col_idx = display_columns[p_num]
-                
-                # Group sections by (subject, room) to combine them into one cell
-                groups = {}
-                for e in entries:
-                    if not e: continue
-                    subj = str(e.get('subject') or '').strip()
-                    room = str(e.get("classroom") or e.get("lab_room") or e.get("fallback_lab") or "").strip()
-                    yr = str(e.get('year', '')).strip()
-                    sec = str(e.get('section', '')).strip()
-                    
-                    key = (subj, room, yr)
-                    groups.setdefault(key, []).append(sec)
-                
-                parts = []
-                for (subj, room, yr), secs in groups.items():
-                    sec_text = _format_sections_ordinal(yr, secs)
-                    cell_text = f"{subj}\n{sec_text}"
-                    room_clean = room.strip().strip("()")
-                    if room_clean:
-                        cell_text += f"\n({room_clean})"
-                    parts.append(cell_text)
-                
-                text = "\n\n".join(parts)
-                worksheet.cell(row=row_idx, column=col_idx, value=text)
-
-        # Run horizontal merge loop
-        idx = 0
-        while idx < len(instructional_periods):
-            p = instructional_periods[idx]
-            col_start = display_columns[p]
-            text = worksheet.cell(row=row_idx, column=col_start).value
-            
-            end_idx = idx
-            while end_idx + 1 < len(instructional_periods):
-                next_p = instructional_periods[end_idx + 1]
-                col_next = display_columns[next_p]
-                next_text = worksheet.cell(row=row_idx, column=col_next).value
-                
-                is_adjacent = col_next == display_columns[instructional_periods[end_idx]] + 1
-                
-                curr_entries = day_data[idx] if idx < len(day_data) else None
-                is_curr_lab = any(e.get("is_lab") for e in curr_entries if e) if curr_entries else False
-                
-                is_same = (text == next_text) and (text is not None)
-                
-                can_merge = False
-                if is_same:
-                    if is_adjacent:
-                        can_merge = True
-                    elif is_curr_lab:
-                        mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, col_next)
-                        if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                            can_merge = True
-                            
-                if can_merge:
-                    end_idx += 1
-                else:
-                    break
-            
-            if end_idx > idx:
-                col_end = display_columns[instructional_periods[end_idx]]
-                for c in break_cols:
-                    if col_start <= c <= col_end:
-                        break_overlap_rows.append(row_idx)
-                for c in lunch_cols:
-                    if col_start <= c <= col_end:
-                        lunch_overlap_rows.append(row_idx)
-                worksheet.merge_cells(start_row=row_idx, start_column=col_start, end_row=row_idx, end_column=col_end)
-            idx = end_idx + 1
-    
-    # Merge breaks/lunches vertically in segments
-    def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
-        all_rows = [day_start_row + i for i in range(len(DAYS))]
-        segments: list[tuple[int, int]] = []
-        segment_start = None
-        for r in all_rows:
-            if r in blocked_rows:
-                if segment_start is not None:
-                    segments.append((segment_start, r - 1))
-                    segment_start = None
-            else:
-                if segment_start is None: segment_start = r
-        if segment_start is not None: segments.append((segment_start, all_rows[-1]))
-
-        for start, end in segments:
-            worksheet.merge_cells(start_row=start, start_column=column, end_row=end, end_column=column)
-            worksheet.cell(row=start, column=column, value=label)
-            worksheet.cell(row=start, column=column).font = BOLD_FONT
-
-    for bc in break_cols:
-        merge_vertical_marker(bc, "BREAK", break_overlap_rows)
-    for lc in lunch_cols:
-        merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
-    
-    # 8. Signatures
-    sig_row = start_row + 15
-    worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-    worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-    worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-    worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
-    
-    grid_s = start_row + 5
-    grid_e = start_row + 12
-    thin_side = Side(style="thin", color="000000")
-    
-    for column_idx in range(1, max_col + 1):
-        worksheet.column_dimensions[chr(64 + column_idx)].width = 16
-    worksheet.column_dimensions["A"].width = 7
-    
-    for r_idx in range(start_row, sig_row + 1):
-        if day_start_row <= r_idx < day_start_row + len(DAYS):
-            worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 4:
-            worksheet.row_dimensions[r_idx].height = 22
-        elif r_idx == sig_row:
-            worksheet.row_dimensions[r_idx].height = 22
-        else:
-            worksheet.row_dimensions[r_idx].height = 20
-    
-    _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 4, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 5, start_row + 6, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
-    _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
-    
-    for r_idx in range(grid_s, grid_e + 1):
-        for c_idx in range(1, max_col + 1):
-            cell = worksheet.cell(row=r_idx, column=c_idx)
-            cell.border = Border(
-                left=thin_side,
-                right=thin_side,
-                top=thin_side,
-                bottom=thin_side,
-            )
-    
-    for merged_range in list(worksheet.merged_cells.ranges):
-        if grid_s <= merged_range.min_row <= grid_e and merged_range.min_row >= start_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = worksheet.cell(row=r, column=c)
-                    _clear_cell_border(cell)
-                    left_s = thin_side if c == merged_range.min_col else None
-                    right_s = thin_side if c == merged_range.max_col else None
-                    top_s = thin_side if r == merged_range.min_row else None
-                    bottom_s = thin_side if r == merged_range.max_row else None
-                    _apply_border_sides(
-                        cell,
-                        left=left_s,
-                        right=right_s,
-                        top=top_s,
-                        bottom=bottom_s,
-                    )
-        elif merged_range.min_row >= start_row and merged_range.max_row <= sig_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    worksheet.cell(row=r, column=c).border = Border()
-
-
 def _build_faculty_workload_workbook_from_details(
     faculty_schedules: dict[str, dict[str, list[list[dict] | None]]],
     timetable_metadata: dict[str, Any] | None = None,
     period_config: list[dict[str, str]] | None = None,
-    faculty_id_to_name: dict[str, str] | None = None,
-    printable: bool = False,
 ) -> Workbook:
     if period_config is None:
         period_config = DEFAULT_PERIOD_CONFIG
@@ -4277,42 +3888,71 @@ def _build_faculty_workload_workbook_from_details(
             lunch_cols.append(col)
         col += 1
 
-    global_map = _load_global_faculty_map()
-    combined_map = {**global_map}
-    if faculty_id_to_name:
-        combined_map.update(faculty_id_to_name)
-    faculty_id_to_name = combined_map
+    for faculty_name, schedule in sorted(faculty_schedules.items()):
+        worksheet = workbook.create_sheet(title=_normalize_faculty_sheet_name(faculty_name))
+        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * (max_col - 1))
+        worksheet.append(["(AUTONOMOUS)"] + [""] * (max_col - 1))
+        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * (max_col - 1))
+        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * (max_col - 1))
+        worksheet.append(
+            [f"Name : {faculty_name}"] + [""] * (max_col // 2 - 1) + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * (max_col // 2)
+        )
+        worksheet.append(["DAY"] + header1)
+        worksheet.append([""] + header2)
 
-    if not printable:
-        for faculty_id in sorted(faculty_schedules.keys()):
-            schedule = faculty_schedules[faculty_id]
-            faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
+        day_start_row = 8
+        for offset, day in enumerate(DAYS):
+            row_idx = day_start_row + offset
+            worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
+            for bc in break_cols:
+                worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
+            for lc in lunch_cols:
+                worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
             
-            sheet_title = _normalize_faculty_sheet_name(faculty_name)[:31]
-            base_title = sheet_title[:28]
-            counter = 1
-            while sheet_title in workbook.sheetnames:
-                sheet_title = f"{base_title}_{counter}"
-                counter += 1
-                
-            worksheet = workbook.create_sheet(title=sheet_title)
-            
-            _write_single_workload_sheet(
-                worksheet, 1, faculty_id, faculty_name, schedule,
-                header1, header2, max_col, display_columns, break_cols, lunch_cols, metadata
-            )
-    else:
-        faculties = sorted(faculty_schedules.keys())
-        worksheet = workbook.create_sheet(title="Printable Workloads")
-        for idx, faculty_id in enumerate(faculties):
-            start_row = 1 + idx * 21
-            faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
-            schedule = faculty_schedules[faculty_id]
-            _write_printable_workload_block(
-                worksheet, start_row, faculty_id, faculty_name, schedule,
-                header1, header2, max_col, display_columns, break_cols, lunch_cols, metadata
-            )
+            day_data = schedule.get(day, [])
+            instructional_periods = sorted(display_columns.keys())
+            for p_idx, entries in enumerate(day_data):
+                if p_idx < len(instructional_periods) and entries:
+                    p_num = instructional_periods[p_idx]
+                    col_idx = display_columns[p_num]
+                    text = "\n".join(
+                        f"{str(e.get('subjectName') or e.get('subject') or '').strip()} ({str(e.get('year', '')).strip()} {str(e.get('section', '')).strip()})"
+                        for e in entries if e
+                    )
+                    worksheet.cell(row=row_idx, column=col_idx, value=text)
 
+        worksheet.append([""] * max_col)
+        legend_separator_row = worksheet.max_row
+        legend = _build_faculty_legend(schedule)
+        for idx in range(0, len(legend), 2):
+            left = legend[idx]
+            right = legend[idx + 1] if idx + 1 < len(legend) else ""
+            worksheet.append([left] + [""] * (max_col // 2 - 1) + [right] + [""] * (max_col // 2))
+        worksheet.append([""] * max_col)
+        signature_separator_row = worksheet.max_row
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
+
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=max_col)
+        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=max_col)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col // 2)
+        worksheet.merge_cells(start_row=5, start_column=max_col // 2 + 1, end_row=5, end_column=max_col)
+        worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
+
+        for bc in break_cols:
+            worksheet.merge_cells(start_row=day_start_row, start_column=bc, end_row=day_start_row + len(DAYS) - 1, end_column=bc)
+        for lc in lunch_cols:
+            worksheet.merge_cells(start_row=day_start_row, start_column=lc, end_row=day_start_row + len(DAYS) - 1, end_column=lc)
+
+        _apply_formatted_sheet_layout(
+            worksheet,
+            legend_row_count=(len(legend) + 1) // 2,
+            legend_start_row=legend_separator_row + 1,
+            day_start_row=day_start_row,
+            top_rows=5,
+            max_col=max_col,
+        )
     return workbook
 
 
@@ -4321,420 +3961,16 @@ def _build_faculty_workload_workbook(
     faculty_id_to_name: dict[str, str],
     timetable_metadata: dict[str, Any] | None = None,
     period_config: list[dict[str, str]] | None = None,
-    printable: bool = False,
 ) -> Workbook:
     instructional_periods = sorted({int(r["period"]) for r in period_config if str(r.get("period", "")).strip().isdigit()})
     faculty_schedules = _build_faculty_schedule_details(sessions, faculty_id_to_name, instructional_periods)
-    return _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata, period_config, faculty_id_to_name, printable=printable)
-
-
-def _write_single_saved_workload_sheet(
-    worksheet,
-    start_row: int,
-    faculty_id: str,
-    faculty_name: str,
-    schedule: dict,
-    header1: list[str],
-    header2: list[str],
-    max_col: int,
-    display_columns: dict,
-    break_cols: list[int],
-    lunch_cols: list[int],
-    metadata: dict,
-) -> None:
-    # 1. College Header
-    worksheet.cell(row=start_row, column=1, value=ACADEMIC_METADATA["college"])
-    worksheet.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max_col)
-    
-    # 2. Autonomous line
-    worksheet.cell(row=start_row+1, column=1, value="(AUTONOMOUS)")
-    worksheet.merge_cells(start_row=start_row+1, start_column=1, end_row=start_row+1, end_column=max_col)
-    
-    # 3. Department
-    worksheet.cell(row=start_row+2, column=1, value=ACADEMIC_METADATA["department"])
-    worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
-    
-    # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=f"ACADEMIC YEAR : {metadata['academicYear']}")
-    worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
-    
-    # 5. Faculty Workload Title Row
-    worksheet.cell(row=start_row+4, column=1, value="Faculty Workload")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col)
-    
-    # 6. Faculty ID and Name Placement
-    worksheet.cell(row=start_row+5, column=1, value=f"Faculty ID : {faculty_id}")
-    worksheet.cell(row=start_row+5, column=max_col // 2 + 1, value=f"Faculty Name : {faculty_name}")
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+5, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+5, start_column=max_col // 2 + 1, end_row=start_row+5, end_column=max_col)
-    
-    # 7. Headers
-    worksheet.cell(row=start_row+6, column=1, value="DAY")
-    for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
-        worksheet.cell(row=start_row+7, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+6, start_column=1, end_row=start_row+7, end_column=1)
-    
-    # 8. Grid Data
-    day_start_row = start_row + 8
-    break_overlap_rows = []
-    lunch_overlap_rows = []
-    
-    for offset, day in enumerate(DAYS):
-        row_idx = day_start_row + offset
-        worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-        for bc in break_cols:
-            worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
-        for lc in lunch_cols:
-            worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
-        
-        day_values = schedule.get(day, [])
-        instructional_periods = sorted(display_columns.keys())
-        for p_idx, val in enumerate(day_values):
-            if p_idx < len(instructional_periods) and val:
-                p_num = instructional_periods[p_idx]
-                col_idx = display_columns[p_num]
-                worksheet.cell(row=row_idx, column=col_idx, value=str(val).strip())
-
-        # Run horizontal merge loop
-        idx = 0
-        while idx < len(instructional_periods):
-            p = instructional_periods[idx]
-            col_start = display_columns[p]
-            text = worksheet.cell(row=row_idx, column=col_start).value
-            
-            end_idx = idx
-            while end_idx + 1 < len(instructional_periods):
-                next_p = instructional_periods[end_idx + 1]
-                col_next = display_columns[next_p]
-                next_text = worksheet.cell(row=row_idx, column=col_next).value
-                
-                is_adjacent = col_next == display_columns[instructional_periods[end_idx]] + 1
-                is_curr_lab = text and ("LAB" in text.upper() or "PRACTICAL" in text.upper() or "PROJECT" in text.upper())
-                is_same = (text == next_text) and (text is not None)
-                
-                can_merge = False
-                if is_same:
-                    if is_adjacent:
-                        can_merge = True
-                    elif is_curr_lab:
-                        mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, col_next)
-                        if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                            can_merge = True
-                            
-                if can_merge:
-                    end_idx += 1
-                else:
-                    break
-            
-            if end_idx > idx:
-                col_end = display_columns[instructional_periods[end_idx]]
-                for c in break_cols:
-                    if col_start <= c <= col_end:
-                        break_overlap_rows.append(row_idx)
-                for c in lunch_cols:
-                    if col_start <= c <= col_end:
-                        lunch_overlap_rows.append(row_idx)
-                worksheet.merge_cells(start_row=row_idx, start_column=col_start, end_row=row_idx, end_column=col_end)
-            idx = end_idx + 1
-    
-    # Merge breaks/lunches vertically in segments
-    def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
-        all_rows = [day_start_row + i for i in range(len(DAYS))]
-        segments: list[tuple[int, int]] = []
-        segment_start = None
-        for r in all_rows:
-            if r in blocked_rows:
-                if segment_start is not None:
-                    segments.append((segment_start, r - 1))
-                    segment_start = None
-            else:
-                if segment_start is None: segment_start = r
-        if segment_start is not None: segments.append((segment_start, all_rows[-1]))
-
-        for start, end in segments:
-            worksheet.merge_cells(start_row=start, start_column=column, end_row=end, end_column=column)
-            worksheet.cell(row=start, column=column, value=label)
-            worksheet.cell(row=start, column=column).font = BOLD_FONT
-
-    for bc in break_cols:
-        merge_vertical_marker(bc, "BREAK", break_overlap_rows)
-    for lc in lunch_cols:
-        merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
-    
-    # 9. Signatures
-    sig_row = start_row + 15
-    worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-    worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-    worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-    worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
-    
-    grid_s = start_row + 6
-    grid_e = start_row + 13
-    thin_side = Side(style="thin", color="000000")
-    
-    for column_idx in range(1, max_col + 1):
-        worksheet.column_dimensions[chr(64 + column_idx)].width = 16
-    worksheet.column_dimensions["A"].width = 7
-    
-    for r_idx in range(start_row, sig_row + 1):
-        if day_start_row <= r_idx < day_start_row + len(DAYS):
-            worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 5:
-            worksheet.row_dimensions[r_idx].height = 22
-        elif r_idx == sig_row:
-            worksheet.row_dimensions[r_idx].height = 22
-        else:
-            worksheet.row_dimensions[r_idx].height = 20
-    
-    _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 5, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 6, start_row + 7, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
-    _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
-    
-    for r_idx in range(grid_s, grid_e + 1):
-        for c_idx in range(1, max_col + 1):
-            cell = worksheet.cell(row=r_idx, column=c_idx)
-            cell.border = Border(
-                left=thin_side,
-                right=thin_side,
-                top=thin_side,
-                bottom=thin_side,
-            )
-    
-    for merged_range in list(worksheet.merged_cells.ranges):
-        if grid_s <= merged_range.min_row <= grid_e and merged_range.min_row >= start_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = worksheet.cell(row=r, column=c)
-                    _clear_cell_border(cell)
-                    left_s = thin_side if c == merged_range.min_col else None
-                    right_s = thin_side if c == merged_range.max_col else None
-                    top_s = thin_side if r == merged_range.min_row else None
-                    bottom_s = thin_side if r == merged_range.max_row else None
-                    _apply_border_sides(
-                        cell,
-                        left=left_s,
-                        right=right_s,
-                        top=top_s,
-                        bottom=bottom_s,
-                    )
-        elif merged_range.min_row >= start_row and merged_range.max_row <= sig_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    worksheet.cell(row=r, column=c).border = Border()
-
-
-def _write_printable_saved_workload_block(
-    worksheet,
-    start_row: int,
-    faculty_id: str,
-    faculty_name: str,
-    schedule: dict,
-    header1: list[str],
-    header2: list[str],
-    max_col: int,
-    display_columns: dict,
-    break_cols: list[int],
-    lunch_cols: list[int],
-    metadata: dict,
-) -> None:
-    # 1. College Header
-    worksheet.cell(row=start_row, column=1, value=ACADEMIC_METADATA["college"])
-    worksheet.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=max_col)
-    
-    # 2. Autonomous line
-    worksheet.cell(row=start_row+1, column=1, value="(AUTONOMOUS)")
-    worksheet.merge_cells(start_row=start_row+1, start_column=1, end_row=start_row+1, end_column=max_col)
-    
-    # 3. Department
-    worksheet.cell(row=start_row+2, column=1, value=ACADEMIC_METADATA["department"])
-    worksheet.merge_cells(start_row=start_row+2, start_column=1, end_row=start_row+2, end_column=max_col)
-    
-    # 4. Academic year metadata
-    worksheet.cell(row=start_row+3, column=1, value=_faculty_workload_academic_line(metadata))
-    worksheet.merge_cells(start_row=start_row+3, start_column=1, end_row=start_row+3, end_column=max_col)
-    
-    # 5. Name and Date row
-    if faculty_id and faculty_name and faculty_id != faculty_name:
-        name_val = f"Name : {faculty_name}({faculty_id})"
-    else:
-        name_val = f"Name : {faculty_name}"
-    worksheet.cell(row=start_row+4, column=1, value=name_val)
-    worksheet.cell(row=start_row+4, column=max_col // 2 + 1, value=f"With effect from :   {metadata['withEffectFromDisplay']}")
-    worksheet.merge_cells(start_row=start_row+4, start_column=1, end_row=start_row+4, end_column=max_col // 2)
-    worksheet.merge_cells(start_row=start_row+4, start_column=max_col // 2 + 1, end_row=start_row+4, end_column=max_col)
-    
-    # 6. Headers
-    worksheet.cell(row=start_row+5, column=1, value="DAY")
-    for c_idx, h in enumerate(header1, start=2):
-        worksheet.cell(row=start_row+5, column=c_idx, value=h)
-    for c_idx, h in enumerate(header2, start=2):
-        worksheet.cell(row=start_row+6, column=c_idx, value=h)
-    worksheet.merge_cells(start_row=start_row+5, start_column=1, end_row=start_row+6, end_column=1)
-    
-    # 7. Grid Data
-    day_start_row = start_row + 7
-    break_overlap_rows = []
-    lunch_overlap_rows = []
-    
-    for offset, day in enumerate(DAYS):
-        row_idx = day_start_row + offset
-        worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
-        for bc in break_cols:
-            worksheet.cell(row=row_idx, column=bc, value="BREAK" if offset == 0 else "")
-        for lc in lunch_cols:
-            worksheet.cell(row=row_idx, column=lc, value="LUNCH" if offset == 0 else "")
-        
-        day_values = schedule.get(day, [])
-        instructional_periods = sorted(display_columns.keys())
-        for p_idx, val in enumerate(day_values):
-            if p_idx < len(instructional_periods) and val:
-                p_num = instructional_periods[p_idx]
-                col_idx = display_columns[p_num]
-                worksheet.cell(row=row_idx, column=col_idx, value=str(val).strip())
-
-        # Run horizontal merge loop
-        idx = 0
-        while idx < len(instructional_periods):
-            p = instructional_periods[idx]
-            col_start = display_columns[p]
-            text = worksheet.cell(row=row_idx, column=col_start).value
-            
-            end_idx = idx
-            while end_idx + 1 < len(instructional_periods):
-                next_p = instructional_periods[end_idx + 1]
-                col_next = display_columns[next_p]
-                next_text = worksheet.cell(row=row_idx, column=col_next).value
-                
-                is_adjacent = col_next == display_columns[instructional_periods[end_idx]] + 1
-                is_curr_lab = text and ("LAB" in text.upper() or "PRACTICAL" in text.upper() or "PROJECT" in text.upper())
-                is_same = (text == next_text) and (text is not None)
-                
-                can_merge = False
-                if is_same:
-                    if is_adjacent:
-                        can_merge = True
-                    elif is_curr_lab:
-                        mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, col_next)
-                        if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                            can_merge = True
-                            
-                if can_merge:
-                    end_idx += 1
-                else:
-                    break
-            
-            if end_idx > idx:
-                col_end = display_columns[instructional_periods[end_idx]]
-                for c in break_cols:
-                    if col_start <= c <= col_end:
-                        break_overlap_rows.append(row_idx)
-                for c in lunch_cols:
-                    if col_start <= c <= col_end:
-                        lunch_overlap_rows.append(row_idx)
-                worksheet.merge_cells(start_row=row_idx, start_column=col_start, end_row=row_idx, end_column=col_end)
-            idx = end_idx + 1
-    
-    # Merge breaks/lunches vertically in segments
-    def merge_vertical_marker(column: int, label: str, blocked_rows: list[int]) -> None:
-        all_rows = [day_start_row + i for i in range(len(DAYS))]
-        segments: list[tuple[int, int]] = []
-        segment_start = None
-        for r in all_rows:
-            if r in blocked_rows:
-                if segment_start is not None:
-                    segments.append((segment_start, r - 1))
-                    segment_start = None
-            else:
-                if segment_start is None: segment_start = r
-        if segment_start is not None: segments.append((segment_start, all_rows[-1]))
-
-        for start, end in segments:
-            worksheet.merge_cells(start_row=start, start_column=column, end_row=end, end_column=column)
-            worksheet.cell(row=start, column=column, value=label)
-            worksheet.cell(row=start, column=column).font = BOLD_FONT
-
-    for bc in break_cols:
-        merge_vertical_marker(bc, "BREAK", break_overlap_rows)
-    for lc in lunch_cols:
-        merge_vertical_marker(lc, "LUNCH", lunch_overlap_rows)
-    
-    # 8. Signatures
-    sig_row = start_row + 15
-    worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-    worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-    worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-    worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
-    
-    grid_s = start_row + 5
-    grid_e = start_row + 12
-    thin_side = Side(style="thin", color="000000")
-    
-    for column_idx in range(1, max_col + 1):
-        worksheet.column_dimensions[chr(64 + column_idx)].width = 16
-    worksheet.column_dimensions["A"].width = 7
-    
-    for r_idx in range(start_row, sig_row + 1):
-        if day_start_row <= r_idx < day_start_row + len(DAYS):
-            worksheet.row_dimensions[r_idx].height = 42
-        elif r_idx <= start_row + 4:
-            worksheet.row_dimensions[r_idx].height = 22
-        elif r_idx == sig_row:
-            worksheet.row_dimensions[r_idx].height = 22
-        else:
-            worksheet.row_dimensions[r_idx].height = 20
-    
-    _style_range(worksheet, start_row, sig_row, 1, max_col, alignment=CENTER_ALIGNMENT)
-    _style_range(worksheet, start_row, start_row + 4, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, start_row + 5, start_row + 6, 1, max_col, font=BOLD_FONT)
-    _style_range(worksheet, day_start_row, day_start_row + len(DAYS) - 1, 1, 1, font=BOLD_FONT)
-    _style_range(worksheet, sig_row, sig_row, 1, max_col, font=BOLD_FONT)
-    
-    for r_idx in range(grid_s, grid_e + 1):
-        for c_idx in range(1, max_col + 1):
-            cell = worksheet.cell(row=r_idx, column=c_idx)
-            cell.border = Border(
-                left=thin_side,
-                right=thin_side,
-                top=thin_side,
-                bottom=thin_side,
-            )
-    
-    for merged_range in list(worksheet.merged_cells.ranges):
-        if grid_s <= merged_range.min_row <= grid_e and merged_range.min_row >= start_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    cell = worksheet.cell(row=r, column=c)
-                    _clear_cell_border(cell)
-                    left_s = thin_side if c == merged_range.min_col else None
-                    right_s = thin_side if c == merged_range.max_col else None
-                    top_s = thin_side if r == merged_range.min_row else None
-                    bottom_s = thin_side if r == merged_range.max_row else None
-                    _apply_border_sides(
-                        cell,
-                        left=left_s,
-                        right=right_s,
-                        top=top_s,
-                        bottom=bottom_s,
-                    )
-        elif merged_range.min_row >= start_row and merged_range.max_row <= sig_row:
-            for r in range(merged_range.min_row, merged_range.max_row + 1):
-                for c in range(merged_range.min_col, merged_range.max_col + 1):
-                    worksheet.cell(row=r, column=c).border = Border()
+    return _build_faculty_workload_workbook_from_details(faculty_schedules, timetable_metadata, period_config)
 
 
 def _build_faculty_workload_workbook_from_saved_workloads(
     faculty_workloads: dict[str, dict[str, list[str | None]]],
     timetable_metadata: dict[str, Any] | None = None,
-    faculty_id_to_name: dict[str, str] | None = None,
-    period_config: list[dict[str, str]] | None = None,
-    printable: bool = False,
 ) -> Workbook:
-    if period_config is None:
-        period_config = DEFAULT_PERIOD_CONFIG
     workbook = Workbook()
     if not faculty_workloads:
         worksheet = workbook.active
@@ -4744,104 +3980,94 @@ def _build_faculty_workload_workbook_from_saved_workloads(
     workbook.remove(workbook.active)
     metadata = _resolve_timetable_metadata(timetable_metadata)
 
-    header1 = [str(row.get("period", "")).strip() for row in period_config]
-    header2 = [str(row.get("time", "")).strip() for row in period_config]
-    max_col = 1 + len(period_config)
-    
-    display_columns = {}
-    col = 2
-    break_cols = []
-    lunch_cols = []
-    for entry in period_config:
-        p = str(entry.get("period", "")).strip()
-        if p.isdigit():
-            display_columns[int(p)] = col
-        elif "break" in p.lower():
-            break_cols.append(col)
-        elif "lunch" in p.lower():
-            lunch_cols.append(col)
-        col += 1
+    for faculty_name, schedule in sorted(faculty_workloads.items()):
+        worksheet = workbook.create_sheet(title=_normalize_faculty_sheet_name(faculty_name))
+        worksheet.append([ACADEMIC_METADATA["college"]] + [""] * 9)
+        worksheet.append(["(AUTONOMOUS)"] + [""] * 9)
+        worksheet.append([ACADEMIC_METADATA["department"]] + [""] * 9)
+        worksheet.append([_faculty_workload_academic_line(metadata)] + [""] * 9)
+        worksheet.append(
+            [f"Name : {faculty_name}"] + [""] * 4 + [f"With effect from :   {metadata['withEffectFromDisplay']}"] + [""] * 4
+        )
+        worksheet.append(["DAY", "1", "2", "", "3", "4", "", "5", "6", "7"])
+        worksheet.append(["", "9.10-10.00", "10.00-10.50", "10.50-11.00", "11.00-11.50", "11.50-12.40", "12.40-1.30", "1.30-2.20", "2.20-3.10", "3.10-4.00"])
 
-    global_map = _load_global_faculty_map()
-    combined_map = {**global_map}
-    if faculty_id_to_name:
-        combined_map.update(faculty_id_to_name)
-    faculty_id_to_name = combined_map
+        legend_values: set[str] = set()
+        day_start_row = 8
+        for offset, day in enumerate(DAYS):
+            row_idx = day_start_row + offset
+            day_values = list(schedule.get(day, [None] * len(PERIODS)))
+            worksheet.cell(row=row_idx, column=1, value=DAY_SHORT_LABELS[day])
+            worksheet.cell(row=row_idx, column=4, value="BREAK" if offset == 0 else "")
+            worksheet.cell(row=row_idx, column=7, value="LUNCH" if offset == 0 else "")
+            for value in day_values:
+                if value:
+                    legend_values.add(str(value).replace("\n", " ").strip())
+            # Populate/merge actual visible ranges using normalized saved strings.
+            for entries, columns in (
+                ([day_values[0], day_values[1]], [2, 3]),
+                ([day_values[2], day_values[3]], [5, 6]),
+                ([day_values[4], day_values[5], day_values[6]], [8, 9, 10]),
+            ):
+                idx = 0
+                while idx < len(entries):
+                    current = str(entries[idx] or "").strip()
+                    worksheet.cell(row=row_idx, column=columns[idx], value=current)
+                    end = idx
+                    while end + 1 < len(entries) and current and current == str(entries[end + 1] or "").strip():
+                        end += 1
+                    if end > idx:
+                        worksheet.merge_cells(
+                            start_row=row_idx,
+                            start_column=columns[idx],
+                            end_row=row_idx,
+                            end_column=columns[end],
+                        )
+                    idx = end + 1
 
-    name_to_id = {}
-    if faculty_id_to_name:
-        for fid, fname in faculty_id_to_name.items():
-            name_to_id[fname.strip().lower()] = fid.strip()
+        worksheet.append([""] * 10)
+        legend_separator_row = worksheet.max_row
+        legend = sorted(legend_values)
+        for idx in range(0, len(legend), 2):
+            left = legend[idx]
+            right = legend[idx + 1] if idx + 1 < len(legend) else ""
+            worksheet.append([left] + [""] * 4 + [right] + [""] * 4)
+        worksheet.append([""] * 10)
+        signature_separator_row = worksheet.max_row
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * 4 + ["PRINCIPAL"] + [""] * 4)
 
-    # Group workloads by faculty_id
-    grouped_workloads = {}
-    for key, schedule in faculty_workloads.items():
-        key_clean = key.strip()
-        if faculty_id_to_name and key_clean in faculty_id_to_name:
-            fid = key_clean
-        else:
-            fid = _find_faculty_id(key_clean, name_to_id) or key_clean
-        
-        if fid not in grouped_workloads:
-            grouped_workloads[fid] = {day: [None] * len(PERIODS) for day in DAYS}
-        
-        for day in DAYS:
-            day_values = schedule.get(day, [])
-            for p_idx, val in enumerate(day_values):
-                if val:
-                    if p_idx < len(grouped_workloads[fid][day]):
-                        curr_val = grouped_workloads[fid][day][p_idx]
-                        if curr_val is None:
-                            grouped_workloads[fid][day][p_idx] = str(val).strip()
-                        else:
-                            val_str = str(val).strip()
-                            curr_str = str(curr_val).strip()
-                            if val_str not in curr_str:
-                                grouped_workloads[fid][day][p_idx] = f"{curr_str}\n{val_str}"
+        worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)
+        worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=10)
+        worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=10)
+        worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=10)
+        worksheet.merge_cells(start_row=5, start_column=1, end_row=5, end_column=10)
+        worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
+        worksheet.merge_cells(start_row=8, start_column=4, end_row=13, end_column=4)
+        worksheet.merge_cells(start_row=8, start_column=7, end_row=13, end_column=7)
 
-    if not printable:
-        for faculty_id in sorted(grouped_workloads.keys()):
-            schedule = grouped_workloads[faculty_id]
-            faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
-            
-            sheet_title = _normalize_faculty_sheet_name(faculty_name)[:31]
-            base_title = sheet_title[:28]
-            counter = 1
-            while sheet_title in workbook.sheetnames:
-                sheet_title = f"{base_title}_{counter}"
-                counter += 1
-                
-            worksheet = workbook.create_sheet(title=sheet_title)
-            
-            _write_single_saved_workload_sheet(
-                worksheet, 1, faculty_id, faculty_name, schedule,
-                header1, header2, max_col, display_columns, break_cols, lunch_cols, metadata
-            )
-    else:
-        faculties = sorted(grouped_workloads.keys())
-        worksheet = workbook.create_sheet(title="Printable Workloads")
-        for idx, faculty_id in enumerate(faculties):
-            start_row = 1 + idx * 21
-            faculty_name = faculty_id_to_name.get(faculty_id, faculty_id)
-            schedule = grouped_workloads[faculty_id]
-            _write_printable_saved_workload_block(
-                worksheet, start_row, faculty_id, faculty_name, schedule,
-                header1, header2, max_col, display_columns, break_cols, lunch_cols, metadata
-            )
+        worksheet.merge_cells(start_row=legend_separator_row, start_column=1, end_row=legend_separator_row, end_column=10)
+        legend_start_row = day_start_row + len(DAYS) + 1
+        for legend_row in range(legend_start_row, legend_start_row + len(legend) // 2 + len(legend) % 2):
+            worksheet.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=5)
+            worksheet.merge_cells(start_row=legend_row, start_column=6, end_row=legend_row, end_column=10)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=1, end_row=signature_separator_row, end_column=5)
+        worksheet.merge_cells(start_row=signature_separator_row, start_column=6, end_row=signature_separator_row, end_column=10)
+        worksheet.merge_cells(start_row=worksheet.max_row, start_column=1, end_row=worksheet.max_row, end_column=5)
+        worksheet.merge_cells(start_row=worksheet.max_row, start_column=6, end_row=worksheet.max_row, end_column=10)
 
+        _apply_formatted_sheet_layout(
+            worksheet,
+            legend_row_count=(len(legend) + 1) // 2,
+            legend_start_row=legend_start_row,
+            day_start_row=day_start_row,
+            top_rows=5,
+        )
     return workbook
 
 
 def _build_faculty_schedule_details_from_section_grids(
     section_grids: dict[tuple[str, str], dict[str, list[dict | None]]],
-) -> tuple[dict[str, dict[str, list[list[dict] | None]]], dict[str, str]]:
-    name_to_id = {}
-    faculty_id_to_name = _load_global_faculty_map()
-    if faculty_id_to_name:
-        for fid, fname in faculty_id_to_name.items():
-            name_to_id[fname.strip().lower()] = fid.strip()
-
-    local_fac_map = {}
+) -> dict[str, dict[str, list[list[dict] | None]]]:
     workloads: dict[str, dict[str, list[list[dict] | None]]] = {}
     for (year, section), grid in section_grids.items():
         for day in DAYS:
@@ -4849,43 +4075,10 @@ def _build_faculty_schedule_details_from_section_grids(
             for idx, cell in enumerate(slots[: len(PERIODS)]):
                 if not isinstance(cell, dict):
                     continue
-                faculty_id = str(cell.get("facultyId") or cell.get("faculty_id") or "").strip()
                 faculty_name = str(cell.get("facultyName") or cell.get("faculty") or "").strip()
                 subject_name = str(cell.get("subjectName") or cell.get("subject") or "").strip()
-                if not subject_name:
+                if not faculty_name or not subject_name:
                     continue
-                if not faculty_id and not faculty_name:
-                    continue
-                
-                if faculty_id and faculty_name:
-                    ids = [fid.strip() for fid in faculty_id.split(",") if fid.strip()]
-                    names = [fname.strip() for fname in faculty_name.split(",") if fname.strip()]
-                    for i, fid in enumerate(ids):
-                        clean_fid = fid[:-2] if fid.endswith(".0") else fid
-                        if i < len(names):
-                            local_fac_map[clean_fid] = names[i]
-                
-                faculty_ids = []
-                if faculty_id:
-                    faculty_ids = [fid.strip() for fid in faculty_id.split(",") if fid.strip()]
-                
-                if not faculty_ids and faculty_name:
-                    faculty_names = [name.strip() for name in faculty_name.split(",") if name.strip()]
-                    for fname in faculty_names:
-                        fid = _find_faculty_id(fname, name_to_id)
-                        if fid:
-                            faculty_ids.append(fid)
-                            local_fac_map[fid] = fname
-                        else:
-                            faculty_ids.append(fname)
-                            local_fac_map[fname] = fname
-                
-                clean_ids = []
-                for fid in faculty_ids:
-                    if fid.endswith(".0"):
-                        fid = fid[:-2]
-                    clean_ids.append(fid)
-                
                 sections = cell.get("sharedSections") or []
                 section_label = ",".join(str(item).strip() for item in sections if str(item).strip()) or section
                 detail = {
@@ -4896,19 +4089,17 @@ def _build_faculty_schedule_details_from_section_grids(
                     "lab_room": str(cell.get("labRoom") or cell.get("venue") or "").strip(),
                     "is_lab": bool(cell.get("isLab")),
                 }
-                
-                for fid in clean_ids:
-                    schedule = workloads.setdefault(
-                        fid,
-                        {day_name: [None] * len(PERIODS) for day_name in DAYS},
-                    )
-                    if schedule[day][idx] is None:
-                        schedule[day][idx] = []
-                    existing = schedule[day][idx] or []
-                    if detail not in existing:
-                        existing.append(detail.copy())
-                    schedule[day][idx] = existing
-    return workloads, local_fac_map
+                schedule = workloads.setdefault(
+                    faculty_name,
+                    {day_name: [None] * len(PERIODS) for day_name in DAYS},
+                )
+                if schedule[day][idx] is None:
+                    schedule[day][idx] = []
+                existing = schedule[day][idx] or []
+                if detail not in existing:
+                    existing.append(detail)
+                schedule[day][idx] = existing
+    return workloads
 
 
 def _build_shared_classes_workbook(shared_sessions: list[dict]) -> Workbook:
@@ -4974,105 +4165,6 @@ def _build_constraint_report_workbook(violations: list[dict], unscheduled: list[
     return workbook
 
 
-def _check_faculty_workload_conflicts(
-    year: str,
-    sections: list[str],
-    schedules: dict[tuple[str, str], dict[str, dict[int, dict | None]]],
-    instructional_periods: list[int],
-    existing_workloads_payload: dict | None,
-    faculty_id_to_name: dict[str, str],
-) -> list[dict]:
-    conflicts = []
-
-    # 1. Double Booking check (same slot, multiple sections, not shared)
-    for day in DAYS:
-        for period in instructional_periods:
-            faculty_assignments = {}  # faculty_id -> list of (section, cell)
-            for section in sections:
-                cell = schedules.get((year, section), {}).get(day, {}).get(period)
-                if not isinstance(cell, dict):
-                    continue
-
-                # Extract faculty IDs
-                faculty_raw = str(cell.get("facultyId") or "").strip()
-                if not faculty_raw:
-                    continue
-
-                # Split multiple faculty tokens
-                faculty_ids = _split_faculty_tokens(faculty_raw) or (faculty_raw,)
-                for fid in faculty_ids:
-                    fid_clean = _normalize_id_token(fid)
-                    if fid_clean:
-                        faculty_assignments.setdefault(fid_clean, []).append((section, cell))
-
-            # Check for conflicts
-            for fid_clean, assignments in faculty_assignments.items():
-                if len(assignments) <= 1:
-                    continue
-
-                # If there are multiple assignments, check if they are shared classes
-                for i in range(len(assignments)):
-                    for j in range(i + 1, len(assignments)):
-                        sec1, cell1 = assignments[i]
-                        sec2, cell2 = assignments[j]
-
-                        # Are they shared?
-                        shared1 = str(sec2).strip() in [str(s).strip() for s in (cell1.get("sharedSections") or [])]
-                        shared2 = str(sec1).strip() in [str(s).strip() for s in (cell2.get("sharedSections") or [])]
-                        same_subject = cell1.get("subjectId") == cell2.get("subjectId")
-
-                        if not (shared1 and shared2 and same_subject):
-                            fac_name = faculty_id_to_name.get(fid_clean, fid_clean)
-                            sub1 = cell1.get("subjectName") or cell1.get("subject") or cell1.get("subjectId")
-                            sub2 = cell2.get("subjectName") or cell2.get("subject") or cell2.get("subjectId")
-                            conflicts.append({
-                                "year": year,
-                                "sections": [sec1, sec2],
-                                "subject_id": cell1.get("subjectId") or "",
-                                "faculty_id": fid_clean,
-                                "faculty_name": fac_name,
-                                "constraint": "faculty workload conflict",
-                                "detail": f"Faculty {fac_name} is double-booked on {day} Period {period} in Section {sec1} ({sub1}) and Section {sec2} ({sub2})."
-                            })
-
-    # 2. Existing Workload collision check
-    if existing_workloads_payload and existing_workloads_payload.get("rows"):
-        name_to_id = {v.strip().lower(): k for k, v in faculty_id_to_name.items() if v.strip()}
-        for row in existing_workloads_payload["rows"]:
-            fid = _normalize_id_token(row.get("faculty_id", ""))
-            fname = str(row.get("faculty_name", "")).strip().lower()
-            if not fid and fname in name_to_id:
-                fid = name_to_id[fname]
-            day = _normalize_day(row.get("day", ""))
-            period = int(row.get("period", 0))
-
-            if fid and day and period in instructional_periods:
-                # Check if this faculty is scheduled in the generated timetable in this slot
-                for section in sections:
-                    cell = schedules.get((year, section), {}).get(day, {}).get(period)
-                    if isinstance(cell, dict):
-                        # Extract faculty IDs from generated cell
-                        faculty_raw = str(cell.get("facultyId") or "").strip()
-                        faculty_ids = _split_faculty_tokens(faculty_raw) or (faculty_raw,)
-                        if any(_normalize_id_token(f) == fid for f in faculty_ids):
-                            fac_name = faculty_id_to_name.get(fid, row.get("faculty_name", fid))
-                            sub_name = cell.get("subjectName") or cell.get("subject") or cell.get("subjectId")
-                            conflicts.append({
-                                "year": year,
-                                "sections": [section],
-                                "subject_id": cell.get("subjectId") or "",
-                                "faculty_id": fid,
-                                "faculty_name": fac_name,
-                                "constraint": "faculty workload conflict",
-                                "detail": (
-                                    f"Faculty {fac_name} is scheduled on {day} Period {period} in Section {section} ({sub_name}) "
-                                    f"but has a conflict with an existing workload mapping value: '{row.get('cell_value', 'Already Scheduled')}'."
-                                )
-                            })
-
-    return conflicts
-
-
 def generate_timetable(
     request_data: GenerateTimetableRequest,
     store: MemoryStore,
@@ -5092,7 +4184,6 @@ def generate_timetable(
     subject_id_to_name, compulsory_continuous = _build_subject_maps(request_data, store)
     room_inventory = _build_room_inventory(request_data, store)
     section_strength_map = _build_section_strength_map(request_data, store)
-    section_home_room_map = _build_section_home_room_map(request_data, store)
     classrooms = [str(item.get("name", "")).strip() for item in room_inventory if str(item.get("name", "")).strip()]
     lab_room_names = {
         str(item.get("name", "")).strip()
@@ -5286,30 +4377,6 @@ def generate_timetable(
     global_lab_room_busy = _build_global_lab_room_occupancy(all_lab_rows, year, instructional_periods)
     for room, slots in global_lab_room_busy.items():
         prior_room_busy.setdefault(room, set()).update(slots)
-
-    # Load and integrate existing faculty workloads from workbook (Requirement 10, 11, 12, 16, 17)
-    existing_workloads_payload = store.get_scoped_mapping("existing_faculty_workloads", "global")
-    if existing_workloads_payload and existing_workloads_payload.get("rows"):
-        name_to_id = {v.strip().lower(): k for k, v in faculty_id_to_name.items() if v.strip()}
-        for row in existing_workloads_payload["rows"]:
-            fid = _normalize_id_token(row.get("faculty_id", ""))
-            fname = str(row.get("faculty_name", "")).strip().lower()
-            if not fid and fname in name_to_id:
-                fid = name_to_id[fname]
-            day = _normalize_day(row.get("day", ""))
-            period = int(row.get("period", 0))
-            if fid and day and period in instructional_periods:
-                faculty_busy.setdefault(fid, set()).add((day, period))
-
-    # Load and integrate existing classroom timetables from workbook (Requirement 10, 13, 14, 15, 16, 17)
-    existing_classrooms_payload = store.get_scoped_mapping("existing_classroom_timetables", "global")
-    if existing_classrooms_payload and existing_classrooms_payload.get("rows"):
-        for row in existing_classrooms_payload["rows"]:
-            room = _normalize_id_token(row.get("classroom", ""))
-            day = _normalize_day(row.get("day", ""))
-            period = int(row.get("period", 0))
-            if room and day and period in instructional_periods:
-                prior_room_busy.setdefault(room, set()).add((day, period))
         
     session_log: list[dict] = []
     constraint_violations: list[dict] = []
@@ -5395,10 +4462,10 @@ def generate_timetable(
             session_adjacency,
         )
         if selected_faculty:
-            faculty_ids_resolved = _split_faculty_tokens(selected_faculty)
+            faculty_ids_resolved = (selected_faculty,)
         else:
             fallback_tokens = _split_faculty_tokens(faculty_id)
-            faculty_ids_resolved = fallback_tokens
+            faculty_ids_resolved = (fallback_tokens[0],) if fallback_tokens else ()
         
         faculty_id_resolved, faculty_name = _resolve_faculty_display(faculty_ids_resolved, faculty_id_to_name)
         
@@ -5484,16 +4551,11 @@ def generate_timetable(
         min_consecutive = max(int(r.get("min_consecutive_hours", 1) or 1) for r in rows if r)
         max_consecutive = min(int(r.get("max_consecutive_hours", 1) or 1) for r in rows if r)
         
-        faculty_team = ()
-        if len(faculty_options) > 1:
-            faculty_team = faculty_options
-            faculty_options = ()
-
         return Requirement(
             subject_id=subject_id,
             faculty_id=faculty_label,
             faculty_options=faculty_options,
-            faculty_team=faculty_team,
+            faculty_team=(),
             sections=sections,
             hours=hours,
             min_consecutive_hours=min_consecutive,
@@ -5739,7 +4801,16 @@ def generate_timetable(
 
     # ── FULL SOLVER (only when precheck_only=False) ───────────────────────
     # Solve
+    feasibility = generate_timetable(request_data, store, precheck_only=True)
+    if not feasibility.get("feasible", False):
+        issues = feasibility.get("issues", [])
+        if not isinstance(issues, list):
+            issues = []
+        message, details = _summarize_generation_blockers(year, issues)
+        raise _validation_error(message, details)
+
     timeout_seconds = _compute_timeout_seconds(len(all_sections), len(requirements))
+    deadline = time.monotonic() + timeout_seconds
     retry_orders = [
         (list(DAYS), list(instructional_periods)),
         (list(DAYS), list(reversed(instructional_periods))),
@@ -5750,10 +4821,14 @@ def generate_timetable(
     strategy_orderings = [("shared-first", lambda item: _requirement_priority(item, faculty_availability, instructional_periods))]
     
     solved = False
+    timed_out = False
     attempt = 0
     attempt_strategy_names = []
     
     while not solved and attempt < len(retry_orders):
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
         strategy_name, strategy_key = strategy_orderings[0]
         attempt_strategy_names.append(strategy_name)
         requirements.sort(key=strategy_key)
@@ -5779,6 +4854,10 @@ def generate_timetable(
         )
 
         def backtrack() -> bool:
+            nonlocal timed_out
+            if time.monotonic() >= deadline:
+                timed_out = True
+                return False
             if _can_greedily_finish_remaining_requirements(requirements, remaining_by_req):
                 return _finish_simple_section_requirements(
                     requirements,
@@ -5869,6 +4948,21 @@ def generate_timetable(
                     "constraint": reason,
                     "detail": f"Subject {subject_name} ({rem}h) could not be scheduled due to {reason}."
                 })
+        if timed_out:
+            raise _validation_error(
+                f"Generation timed out for {year} before a valid timetable could be found.",
+                [{
+                    "year": year,
+                    "hint": "Reduce conflicting constraints or generate fewer linked sections at once, then try again.",
+                    "sections": all_sections,
+                    "taskCount": len(requirements),
+                    "facultyCount": len(all_faculties),
+                    "labEntryCount": len(raw_lab_rows),
+                    "sharedClassCount": len(shared_constraints),
+                }],
+            )
+        message, details = _summarize_generation_blockers(year, constraint_violations)
+        raise _validation_error(message, details)
 
     # Cleanup and Return
     _allocate_classrooms_to_schedule(
@@ -5879,7 +4973,6 @@ def generate_timetable(
         room_capacity_map=room_capacity_map,
         section_strength_map=section_strength_map,
         fixed_classroom_blocks=fixed_classroom_blocks,
-        section_home_room_map=section_home_room_map,
     )
 
     hard_limit_violations = _collect_subject_daily_hard_limit_violations(
@@ -5891,6 +4984,8 @@ def generate_timetable(
     if hard_limit_violations:
         solved = False
         constraint_violations.extend(hard_limit_violations)
+        message, details = _summarize_generation_blockers(year, constraint_violations)
+        raise _validation_error(message, details)
 
     quality_metrics, quality_warnings = _build_timetable_quality_metrics(
         requirements,
@@ -5905,17 +5000,6 @@ def generate_timetable(
             for violation in constraint_violations
             if violation.get("constraint") != "classroom allocation constraint"
         ]
-    
-    # Detect and append faculty workload conflicts
-    workload_conflicts = _check_faculty_workload_conflicts(
-        year,
-        all_sections,
-        schedules,
-        instructional_periods,
-        existing_workloads_payload,
-        faculty_id_to_name,
-    )
-    constraint_violations.extend(workload_conflicts)
     
     all_grids = _serialize_section_grids(year, all_sections, schedules, instructional_periods)
     faculty_workloads = _build_faculty_workloads_from_sessions(session_log, instructional_periods)
@@ -6132,15 +5216,6 @@ def _build_room_timetables_workbook_from_schedule_map(
             instructional_periods = sorted(display_columns.keys())
             
             idx = 0
-            overlaps_break = False
-            overlaps_lunch = False
-            for c in break_cols:
-                if worksheet.cell(row=row_idx, column=c).value:
-                    overlaps_break = True
-            for c in lunch_cols:
-                if worksheet.cell(row=row_idx, column=c).value:
-                    overlaps_lunch = True
-
             while idx < len(instructional_periods):
                 p = instructional_periods[idx]
                 entry = section_schedule[day].get(p)
@@ -6150,61 +5225,37 @@ def _build_room_timetables_workbook_from_schedule_map(
                 while end_idx + 1 < len(instructional_periods):
                     next_p = instructional_periods[end_idx + 1]
                     next_entry = section_schedule[day].get(next_p)
-                    
-                    is_adjacent = display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1
-                    is_lab = isinstance(entry, dict) and entry.get("isLab")
-                    is_same = (
-                        _same_section_entry(entry, next_entry) 
+                    if (
+                        display_columns[next_p] == display_columns[instructional_periods[end_idx]] + 1 
+                        and _same_section_entry(entry, next_entry) 
                         and entry 
                         and next_entry
                         and entry.get("year") == next_entry.get("year") 
                         and entry.get("section") == next_entry.get("section")
-                    )
-                    
-                    can_merge = False
-                    if is_same:
-                        if is_adjacent:
-                            can_merge = True
-                        elif is_lab:
-                            mid_cols = range(display_columns[instructional_periods[end_idx]] + 1, display_columns[next_p])
-                            if all(c in break_cols or c in lunch_cols for c in mid_cols):
-                                can_merge = True
-                    
-                    if can_merge:
+                    ):
                         end_idx += 1
                     else:
                         break
                 
                 if end_idx > idx:
-                    start_col = display_columns[p]
-                    end_col = display_columns[instructional_periods[end_idx]]
-                    for c in break_cols:
-                        if start_col <= c <= end_col:
-                            overlaps_break = True
-                    for c in lunch_cols:
-                        if start_col <= c <= end_col:
-                            overlaps_lunch = True
                     worksheet.merge_cells(
                         start_row=row_idx, 
-                        start_column=start_col, 
+                        start_column=display_columns[p], 
                         end_row=row_idx, 
-                        end_column=end_col
+                        end_column=display_columns[instructional_periods[end_idx]]
                     )
                 idx = end_idx + 1
                 
+            overlaps_break = any(worksheet.cell(row=row_idx, column=c).value for c in break_cols)
+            overlaps_lunch = any(worksheet.cell(row=row_idx, column=c).value for c in lunch_cols)
             if overlaps_break: break_overlap_rows.append(row_idx)
             if overlaps_lunch: lunch_overlap_rows.append(row_idx)
 
         worksheet.append([""] * max_col)
         legend_separator_row = worksheet.max_row
-        for _ in range(3):
-            worksheet.append([""] * max_col)
+        worksheet.append([""] * max_col)
         signature_separator_row = worksheet.max_row
-        sig_row = signature_separator_row + 1
-        worksheet.cell(row=sig_row, column=1, value="HEAD OF THE DEPARTMENT")
-        worksheet.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=max_col // 2)
-        worksheet.cell(row=sig_row, column=max_col // 2 + 1, value="PRINCIPAL")
-        worksheet.merge_cells(start_row=sig_row, start_column=max_col // 2 + 1, end_row=sig_row, end_column=max_col)
+        worksheet.append(["HEAD OF THE DEPARTMENT"] + [""] * (max_col // 2 - 1) + ["PRINCIPAL"] + [""] * (max_col // 2))
 
         worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
         worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
@@ -6255,3 +5306,4 @@ def _build_room_timetables_workbook(
 ) -> Workbook:
     filtered = dict(room_schedules)
     return _build_room_timetables_workbook_from_schedule_map(filtered, timetable_metadata, period_config)
+

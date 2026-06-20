@@ -352,3 +352,167 @@ def create_grouped_main_timetable_template(
     workbook.save(stream)
     stream.seek(0)
     return stream.read()
+
+
+def create_master_workbook_template(
+    template_type: str,
+    subjects_records: list[dict],
+    faculty_records: list[dict],
+    constraints_records: list[dict],
+    labs_records: list[dict],
+    shared_classes_records: list[dict],
+    sessions_records: list[dict],
+    classrooms_records: list[dict],
+    faculty_availability_records: list[dict],
+    continuous_rules_records: list[dict],
+    fixed_classroom_blocks_records: list[dict],
+) -> bytes:
+    workbook = openpyxl.Workbook()
+    # Remove default sheet
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
+
+    include_rows = (template_type == "example")
+
+    # Helper to write standard sheets
+    def write_standard_sheet(sheet_name: str, headers: list[str], records: list[dict]):
+        ws = workbook.create_sheet(title=sheet_name)
+        # Write headers
+        for col_idx, h in enumerate(headers, 1):
+            ws.cell(row=1, column=col_idx, value=h)
+        
+        # Write records if include_rows
+        if include_rows:
+            for row_idx, r in enumerate(records, 2):
+                for col_idx, h in enumerate(headers, 1):
+                    ws.cell(row=row_idx, column=col_idx, value=r.get(h))
+
+        # Formatting
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+
+        for column_index in range(1, ws.max_column + 1):
+            max_length = 0
+            for row_index in range(1, ws.max_row + 1):
+                value = ws.cell(row=row_index, column=column_index).value
+                max_length = max(max_length, len(str(value)) if value is not None else 0)
+            ws.column_dimensions[get_column_letter(column_index)].width = max(max_length + 2, 14)
+
+    # Helper to write Constraints sheet (special grouped header layout)
+    def write_constraints_sheet(sheet_name: str, records: list[dict]):
+        ws = workbook.create_sheet(title=sheet_name)
+        
+        normalized_records = [{str(key).strip().upper(): value for key, value in row.items()} for row in records]
+        section_names: list[str] = []
+        for r in normalized_records:
+            for key in r.keys():
+                if key.endswith("_HOURS") and "CONTINUOUS" not in key:
+                    section_name = key.removesuffix("_HOURS")
+                    if section_name not in section_names:
+                        section_names.append(section_name)
+
+        if not section_names:
+            section_names = ["C1", "C2", "C3"]
+
+        ws.cell(row=1, column=1, value="YEAR")
+        ws.cell(row=1, column=2, value="SUBJECT")
+        ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+        ws.merge_cells(start_row=1, start_column=2, end_row=2, end_column=2)
+
+        current_column = 3
+        for section_name in section_names:
+            ws.cell(row=1, column=current_column, value=section_name)
+            ws.merge_cells(start_row=1, start_column=current_column, end_row=1, end_column=current_column + 2)
+            ws.cell(row=2, column=current_column, value="NO OF HOURS")
+            ws.cell(row=2, column=current_column + 1, value="FACULTY-ID")
+            ws.cell(row=2, column=current_column + 2, value="CONTINUOUS HOURS")
+            current_column += 3
+
+        if include_rows:
+            for row_idx, r in enumerate(normalized_records, start=3):
+                ws.cell(row=row_idx, column=1, value=r.get("YEAR"))
+                ws.cell(row=row_idx, column=2, value=r.get("SUBJECT_ID") or r.get("SUBJECT"))
+
+                current_column = 3
+                for section_name in section_names:
+                    ws.cell(row=row_idx, column=current_column, value=r.get(f"{section_name}_HOURS"))
+                    ws.cell(row=row_idx, column=current_column + 1, value=r.get(f"{section_name}_FACULTY_ID"))
+                    ws.cell(row=row_idx, column=current_column + 2, value=r.get(f"{section_name}_CONTINUOUS_HOURS"))
+                    current_column += 3
+
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+
+        for column_index in range(1, ws.max_column + 1):
+            max_length = 0
+            for row_index in range(1, ws.max_row + 1):
+                value = ws.cell(row=row_index, column=column_index).value
+                max_length = max(max_length, len(str(value)) if value is not None else 0)
+            ws.column_dimensions[get_column_letter(column_index)].width = max(max_length + 2, 14)
+
+    # 1. Subjects
+    write_standard_sheet(
+        "Subjects",
+        ["SUBJECT_ID", "SUBJECT_NAME"],
+        subjects_records,
+    )
+    # 2. Faculty Mapping
+    write_standard_sheet(
+        "Faculty Mapping",
+        ["faculty name", "id assigned"],
+        faculty_records,
+    )
+    # 3. Constraints
+    write_constraints_sheet(
+        "Constraints",
+        constraints_records,
+    )
+    # 4. Labs
+    write_standard_sheet(
+        "Labs",
+        ["YEAR", "SECTION", "SUBJECT_ID", "DAY", "HOURS", "VENUE"],
+        labs_records,
+    )
+    # 5. Shared Classes
+    write_standard_sheet(
+        "Shared Classes",
+        ["year", "sections", "subject"],
+        shared_classes_records,
+    )
+    # 6. Sessions
+    write_standard_sheet(
+        "Sessions",
+        ["period", "time"],
+        sessions_records,
+    )
+    # 7. Classrooms
+    write_standard_sheet(
+        "Classrooms",
+        ["class_number", "room_type", "capacity", "section", "strength"],
+        classrooms_records,
+    )
+    # 8. Faculty Availability
+    write_standard_sheet(
+        "Faculty Availability",
+        ["Faculty ID", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+        faculty_availability_records,
+    )
+    # 9. Continuous Rules
+    write_standard_sheet(
+        "Continuous Rules",
+        ["SUBJECT_ID", "COMPULSORY_CONTINUOUS_HOURS"],
+        continuous_rules_records,
+    )
+    # 10. Fixed Classroom Blocks
+    write_standard_sheet(
+        "Fixed Classroom Blocks",
+        ["year", "section", "day", "periods", "classroom"],
+        fixed_classroom_blocks_records,
+    )
+
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return stream.read()

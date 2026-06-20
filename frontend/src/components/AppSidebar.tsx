@@ -9,6 +9,7 @@ import {
   LogOut,
   ShieldCheck,
   RotateCcw,
+  GitMerge,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -46,6 +47,7 @@ const baseNavItems = [
   { title: "Class Timetables", url: "/timetables", icon: GraduationCap },
   { title: "Room Timetables", url: "/rooms", icon: GraduationCap },
   { title: "Faculty Workload", url: "/workload", icon: Clock },
+  { title: "Merge Workloads", url: "/workload-merger", icon: GitMerge },
   { title: "Generated Outputs", url: "/outputs", icon: FileText },
   { title: "Invisilation Finder", url: "/availability", icon: Users },
 ];
