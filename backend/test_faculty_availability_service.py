@@ -16,6 +16,7 @@ from storage.memory_store import MemoryStore
 class FacultyAvailabilityServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = MemoryStore()
+        self.store._mongo_available = False
 
     def test_bulk_selection_is_fairly_rotated(self) -> None:
         workload_rows = []
@@ -220,7 +221,7 @@ class FacultyAvailabilityServiceTests(unittest.TestCase):
                         "year": "II Year",
                         "section": "C1",
                         "subject": "Maths",
-                        "is_available": False,
+                        "is_available": True,
                     },
                 ],
             },

@@ -45,6 +45,9 @@ import {
   uploadClassrooms,
   uploadPeriodConfig,
   uploadFixedClassroomBlocks,
+  uploadMasterWorkbook,
+  uploadExistingFacultyWorkloads,
+  uploadExistingClassroomTimetables,
   ApiError,
   ManualEntryMode,
   ManualLabEntry,
@@ -130,6 +133,7 @@ const TimetableGenerator = () => {
   const [academicYearInput, setAcademicYearInput] = useState("");
   const [semesterInput, setSemesterInput] = useState<"1" | "2">("2");
   const [withEffectFromInput, setWithEffectFromInput] = useState("");
+  const [routeContinuousToLabs, setRouteContinuousToLabs] = useState(true);
 
   const [manualEntries, setManualEntries] = useState<ManualEntryMode[]>([
     { year: initialYear, section: initialSections[0] ?? "A", subjectId: "", facultyId: "", noOfHours: 4, continuousHours: 1, compulsoryContinuousHours: 1 },
@@ -644,6 +648,7 @@ const TimetableGenerator = () => {
         withEffectFrom: withEffectFromInput,
       },
       priorTimetableIds,
+      routeContinuousToLabs,
       manualEntries: manualEntries
         .filter((m) => m.subjectId && m.facultyId)
         .map(m => ({
@@ -1058,6 +1063,37 @@ const TimetableGenerator = () => {
                     value={withEffectFromInput}
                     onChange={(e) => setWithEffectFromInput(e.target.value)}
                   />
+                </div>
+              </div>
+              <div className="mt-6 border-t border-border/40 pt-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="max-w-xl">
+                    <Label className="text-sm font-semibold text-foreground">Route Continuous Hour Classes to Labs?</Label>
+                    <p className="text-xs text-muted-foreground mt-1 leading-normal">
+                      Yes (Default): Compulsory continuous classes (blocks of 2h or more) are scheduled in Lab classrooms.
+                      No (Old Code): Use standard classroom assignment rules.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 bg-muted/60 p-1 rounded-xl border border-border/80 self-start sm:self-auto">
+                    <Button
+                      type="button"
+                      variant={routeContinuousToLabs ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setRouteContinuousToLabs(true)}
+                      className="rounded-lg h-8 text-xs font-semibold px-4 transition-all"
+                    >
+                      Yes
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={!routeContinuousToLabs ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setRouteContinuousToLabs(false)}
+                      className="rounded-lg h-8 text-xs font-semibold px-4 transition-all"
+                    >
+                      No
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>

@@ -86,23 +86,62 @@ function getMeridiemLabel(slot: ExportSlot): "AM" | "PM" {
   return slot.startMinutes < 12 * 60 ? "AM" : "PM";
 }
 
+function cleanTimeLabel(label: string): string {
+  const cleaned = label.trim().replace(/^from\s+/i, "");
+  const parts = cleaned.split(/\s*-\s*|\s+to\s+/i);
+  if (parts.length === 2) {
+    return `From ${parts[0].trim()} To ${parts[1].trim()}`;
+  }
+  return cleaned.trim();
+}
+
 function buildTimingSummary(groups: ExportDateGroup[]): string {
-  const hasExpandedDays = groups.some((group) => !group.usesMeridiemColumns);
-  const labels = hasExpandedDays
-    ? Array.from(new Set(groups.flatMap((group) => group.slots.map((slot) => slot.label))))
-    : [
-        ...Array.from(
-          new Set(
-            groups.flatMap((group) => group.slots.filter((slot) => getMeridiemLabel(slot) === "AM").map((slot) => slot.label)),
-          ),
-        ),
-        ...Array.from(
-          new Set(
-            groups.flatMap((group) => group.slots.filter((slot) => getMeridiemLabel(slot) === "PM").map((slot) => slot.label)),
-          ),
-        ),
-      ];
-  return labels.map((label) => `(${label})`).join(" & ");
+  let fnLabel = "";
+  let anLabel = "";
+  const customLabels: string[] = [];
+  let hasCustomSlots = false;
+
+  for (const group of groups) {
+    if (group.usesMeridiemColumns) {
+      for (const slot of group.slots) {
+        const label = slot.label.trim();
+        if (!label || label === "AM" || label === "PM") {
+          continue;
+        }
+        if (getMeridiemLabel(slot) === "AM" && !fnLabel) {
+          fnLabel = label;
+        }
+        if (getMeridiemLabel(slot) === "PM" && !anLabel) {
+          anLabel = label;
+        }
+      }
+    } else {
+      hasCustomSlots = true;
+      for (const slot of group.slots) {
+        const label = slot.label.trim();
+        if (label && !customLabels.includes(label)) {
+          customLabels.push(label);
+        }
+      }
+    }
+  }
+
+  if (hasCustomSlots) {
+    const cleanedCustom = customLabels.map(cleanTimeLabel);
+    return "Timings: " + cleanedCustom.join(" | ");
+  }
+
+  const parts: string[] = [];
+  if (fnLabel && anLabel) {
+    parts.push(`AM: ${cleanTimeLabel(fnLabel)}`);
+    parts.push(`PM: ${cleanTimeLabel(anLabel)}`);
+    return "Timings: " + parts.join(" | ");
+  } else if (fnLabel) {
+    return `Timings ${cleanTimeLabel(fnLabel)}`;
+  } else if (anLabel) {
+    return `Timings ${cleanTimeLabel(anLabel)}`;
+  }
+  return "";
 }
 
 function buildExactInputRange(item: BulkFacultyAvailabilityItem): ExportSlot {
@@ -131,22 +170,23 @@ function buildExportDateGroups(items: BulkFacultyAvailabilityItem[]): ExportDate
   }
 
   return Array.from(slotsByDate.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
     .map(([date, slots]) => {
-      const orderedSlots = [...slots].sort((left, right) => left.startMinutes - right.startMinutes || left.label.localeCompare(right.label));
-      const usesMeridiemColumns = orderedSlots.length <= 2;
+      const ordered = [...slots].sort((left, right) => left.startMinutes - right.startMinutes);
+      const usesMeridiem = ordered.length <= 2;
+      const finalSlots = usesMeridiem
+        ? [
+            ordered.find((slot) => getMeridiemLabel(slot) === "AM") ?? { key: "__am__", label: "AM", startMinutes: 0 },
+            ordered.find((slot) => getMeridiemLabel(slot) === "PM") ?? { key: "__pm__", label: "PM", startMinutes: 12 * 60 },
+          ]
+        : ordered;
       return {
         date,
         headerDate: formatExportDate(date),
-        slots: usesMeridiemColumns
-          ? [
-              orderedSlots.find((slot) => getMeridiemLabel(slot) === "AM") ?? { key: "__fn__", label: "FN", startMinutes: 0 },
-              orderedSlots.find((slot) => getMeridiemLabel(slot) === "PM") ?? { key: "__an__", label: "AN", startMinutes: 12 * 60 },
-            ]
-          : orderedSlots,
-        usesMeridiemColumns,
+        slots: finalSlots,
+        usesMeridiemColumns: usesMeridiem,
       };
-    });
+    })
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function getFacultyNamesForMode(item: BulkFacultyAvailabilityItem, mode: ExportMode): string[] {
@@ -165,7 +205,8 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
     new Set(items.flatMap((item) => getFacultyNamesForMode(item, mode))),
   ).sort((left, right) => left.localeCompare(right));
 
-  const totalColumns = 3 + groups.reduce((sum, group) => sum + group.slots.length, 0);
+  const numDateCols = groups.reduce((sum, group) => sum + group.slots.length, 0);
+  const totalColumns = 3 + numDateCols + 1;
   const data: (string | number)[][] = [];
   const merges: XLSX.Range[] = [];
   const padRow = (values: (string | number)[]) => [
@@ -173,36 +214,38 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
     ...Array.from({ length: Math.max(0, totalColumns - values.length) }, () => ""),
   ];
 
-  const departmentShortName = ACADEMIC_METADATA.DEPARTMENT_NAME.includes("Computer Science") ? "CSE" : "Department";
-  data.push(padRow([departmentShortName, "", "", buildTimingSummary(groups)]));
-  data.push(padRow(["S.No", "Faculty Name", "Total"]));
-  data.push(padRow(["", "", ""]));
+  data.push(padRow(["NARASARAOPETA ENGINEERING COLLEGE::NARASARAOPETA"]));
+  data.push(padRow(["AUTONOMOUS"]));
+  data.push(padRow(["DEPARTMENT OF COMPUTER SCIENCE AND ENGINEERING"]));
+  data.push(padRow(["II-II AND III-II MID-2 INVIGILATION DUTIES"]));
+  
+  data.push(padRow(["", "", "", buildTimingSummary(groups)]));
+
+  const h1 = ["S.No", "Name of the Faculty", "Total Invigilations"];
+  for (let i = 0; i < numDateCols; i++) {
+    h1.push("");
+  }
+  h1.push("Signature");
+  data.push(padRow(h1));
+
+  const h2 = ["", "", ""];
+  for (let i = 0; i < numDateCols; i++) {
+    h2.push("");
+  }
+  h2.push("");
+  data.push(padRow(h2));
 
   let columnCursor = 3;
-  for (const group of groups) {
-    data[1][columnCursor] = group.headerDate;
-    for (let slotIndex = 0; slotIndex < group.slots.length; slotIndex += 1) {
-      data[2][columnCursor + slotIndex] = group.usesMeridiemColumns ? (slotIndex === 0 ? "FN" : "AN") : group.slots[slotIndex].label;
-    }
-    merges.push({ s: { r: 1, c: columnCursor }, e: { r: 1, c: columnCursor + group.slots.length - 1 } });
-    columnCursor += group.slots.length;
-  }
-  merges.push({ s: { r: 0, c: 0 }, e: { r: 2, c: 0 } });
-  merges.push({ s: { r: 0, c: 1 }, e: { r: 2, c: 1 } });
-  merges.push({ s: { r: 0, c: 2 }, e: { r: 2, c: 2 } });
-  if (totalColumns > 3) {
-    merges.push({ s: { r: 0, c: 3 }, e: { r: 0, c: totalColumns - 1 } });
-  }
-
   const slotColumnMap = new Map<string, number>();
-  columnCursor = 3;
   for (const group of groups) {
+    data[5][columnCursor] = group.headerDate;
     for (let slotIndex = 0; slotIndex < group.slots.length; slotIndex += 1) {
       const slot = group.slots[slotIndex];
+      data[6][columnCursor + slotIndex] = group.usesMeridiemColumns ? (slotIndex === 0 ? "FN" : "AN") : slot.label;
       const mapKey = group.usesMeridiemColumns ? `${group.date}__${slotIndex === 0 ? "AM" : "PM"}` : `${group.date}__${slot.key}`;
-      slotColumnMap.set(mapKey, columnCursor);
-      columnCursor += 1;
+      slotColumnMap.set(mapKey, columnCursor + slotIndex);
     }
+    columnCursor += group.slots.length;
   }
 
   const facultyTotals = new Map<string, number>();
@@ -218,7 +261,7 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
 
   const facultyRowMap = new Map<string, number>();
   facultyNames.forEach((facultyName, index) => {
-    facultyRowMap.set(facultyName, index + 3);
+    facultyRowMap.set(facultyName.trim(), index + 7);
   });
 
   const slotTotals = new Map<number, number>();
@@ -230,11 +273,11 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
     const columnIndex = slotColumnMap.get(lookupKey);
     if (columnIndex === undefined) continue;
     const currentNames = getFacultyNamesForMode(item, mode);
-    slotTotals.set(columnIndex, currentNames.length);
+    slotTotals.set(columnIndex, (slotTotals.get(columnIndex) ?? 0) + currentNames.length);
     for (const facultyName of currentNames) {
       const rowIndex = facultyRowMap.get(facultyName.trim());
       if (rowIndex === undefined) continue;
-      data[rowIndex][columnIndex] = "X";
+      data[rowIndex][columnIndex] = "v";
     }
   }
 
@@ -244,15 +287,72 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
   }
   data.push(totalRow);
 
+  data.push(padRow([]));
+  data.push(padRow([]));
+  data.push(padRow([]));
+  
+  const sigRow = Array.from({ length: totalColumns }, () => "");
+  sigRow[totalColumns - 2] = "Signature of HOD";
+  data.push(sigRow);
+
   const worksheet = XLSX.utils.aoa_to_sheet(data);
+
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: totalColumns - 1 } });
+  merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: totalColumns - 1 } });
+  merges.push({ s: { r: 2, c: 0 }, e: { r: 2, c: totalColumns - 1 } });
+  merges.push({ s: { r: 3, c: 0 }, e: { r: 3, c: totalColumns - 1 } });
+
+  if (totalColumns > 3) {
+    merges.push({ s: { r: 4, c: 3 }, e: { r: 4, c: totalColumns - 1 } });
+  }
+
+  merges.push({ s: { r: 5, c: 0 }, e: { r: 6, c: 0 } });
+  merges.push({ s: { r: 5, c: 1 }, e: { r: 6, c: 1 } });
+  merges.push({ s: { r: 5, c: 2 }, e: { r: 6, c: 2 } });
+  merges.push({ s: { r: 5, c: totalColumns - 1 }, e: { r: 6, c: totalColumns - 1 } });
+
+  columnCursor = 3;
+  for (const group of groups) {
+    const numSlots = group.slots.length;
+    if (numSlots > 1) {
+      merges.push({ s: { r: 5, c: columnCursor }, e: { r: 5, c: columnCursor + numSlots - 1 } });
+    } else {
+      merges.push({ s: { r: 5, c: columnCursor }, e: { r: 6, c: columnCursor } });
+    }
+    columnCursor += numSlots;
+  }
+
+  const sigRowIdx = data.length - 1;
+  merges.push({ s: { r: sigRowIdx, c: totalColumns - 2 }, e: { r: sigRowIdx, c: totalColumns - 1 } });
+
   worksheet["!merges"] = merges;
+
   worksheet["!cols"] = [
     { wch: 8 },
     { wch: 30 },
-    { wch: 12 },
-    ...groups.flatMap((group) => group.slots.map((slot, index) => ({ wch: Math.max(12, (group.usesMeridiemColumns ? (index === 0 ? "FN" : "AN") : slot.label).length + 2) }))),
+    { wch: 20 },
+    ...groups.flatMap((group) =>
+      group.slots.map((slot, index) => ({
+        wch: Math.max(12, (group.usesMeridiemColumns ? (index === 0 ? "FN" : "AN") : slot.label).length + 2)
+      }))
+    ),
+    { wch: 18 }
   ];
-  worksheet["!rows"] = [{ hpt: 28 }, { hpt: 24 }, { hpt: 24 }, ...facultyNames.map(() => ({ hpt: 21 })), { hpt: 22 }];
+
+  const rowHeights = [];
+  for (let r = 0; r < data.length; r++) {
+    if (r <= 3) {
+      rowHeights.push({ hpt: 24 });
+    } else if (r === 4) {
+      rowHeights.push({ hpt: 20 });
+    } else {
+      rowHeights.push({ hpt: 22 });
+    }
+  }
+  worksheet["!rows"] = rowHeights;
+
+  const tableStartRow = 5;
+  const tableEndRow = 7 + facultyNames.length + 1;
 
   const sheetRange = XLSX.utils.decode_range(worksheet["!ref"] ?? `A1:${XLSX.utils.encode_cell({ r: data.length - 1, c: totalColumns - 1 })}`);
   for (let rowIndex = sheetRange.s.r; rowIndex <= sheetRange.e.r; rowIndex += 1) {
@@ -261,24 +361,36 @@ function buildInvigilationWorkbook(items: BulkFacultyAvailabilityItem[], mode: E
       if (!worksheet[cellAddress]) {
         worksheet[cellAddress] = { t: "s", v: "" };
       }
-      worksheet[cellAddress].s = {
-        alignment: {
-          horizontal: "center",
-          vertical: "center",
-          wrapText: true,
-        },
-        border: {
+      
+      const s: any = {};
+      if (rowIndex <= 3) {
+        s.font = { name: "Calibri", sz: rowIndex === 0 ? 14 : 11, bold: true };
+        s.alignment = { horizontal: "center", vertical: "center" };
+      } else if (rowIndex === 4) {
+        s.font = { name: "Calibri", sz: 11, bold: true };
+        s.alignment = { horizontal: "right", vertical: "center" };
+      } else if (rowIndex >= tableStartRow && rowIndex <= tableEndRow) {
+        s.border = {
           top: { style: "thin", color: { rgb: "000000" } },
           bottom: { style: "thin", color: { rgb: "000000" } },
           left: { style: "thin", color: { rgb: "000000" } },
           right: { style: "thin", color: { rgb: "000000" } },
-        },
-        font: {
-          bold: rowIndex <= 2 || rowIndex === data.length - 1,
-          name: "Calibri",
-          sz: 11,
-        },
-      };
+        };
+        const isHeader = (rowIndex === 5 || rowIndex === 6);
+        const isTotal = (rowIndex === tableEndRow);
+        s.font = { name: "Calibri", sz: 11, bold: isHeader || isTotal };
+        if (columnIndex === 1 && !isHeader) {
+          s.alignment = { horizontal: "left", vertical: "center" };
+        } else {
+          s.alignment = { horizontal: "center", vertical: "center" };
+        }
+      } else {
+        if (rowIndex === data.length - 1) {
+          s.font = { name: "Calibri", sz: 11, bold: true };
+          s.alignment = { horizontal: "right", vertical: "center" };
+        }
+      }
+      worksheet[cellAddress].s = s;
     }
   }
 

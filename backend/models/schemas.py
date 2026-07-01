@@ -171,6 +171,7 @@ class MappingFileIds(BaseModel):
     subjectContinuousRules: str | None = None
     classrooms: str | None = None
     periodConfiguration: str | None = None
+    periodConfig: str | None = None
     fixedClassroomBlocks: str | None = None
 
 
@@ -231,6 +232,7 @@ class GenerateTimetableRequest(BaseModel):
     timetableMetadata: TimetableMetadata = Field(default_factory=TimetableMetadata)
     dailySubjectLimit: int = 2
     labsOnly: bool = False
+    routeContinuousToLabs: bool = False
     priorTimetableIds: list[str] = Field(default_factory=list)
     manualEntries: list[ManualEntryMode] = Field(default_factory=list)
     subjects: list[SubjectEntry] = Field(default_factory=list)

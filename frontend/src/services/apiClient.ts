@@ -127,6 +127,7 @@ export interface GenerateTimetableRequest {
   section: string;
   timetableMetadata: TimetableMetadata;
   labsOnly?: boolean;
+  routeContinuousToLabs?: boolean;
   priorTimetableIds?: string[];
   manualEntries?: ManualEntryMode[];
   subjects?: { subject: string; faculty: string }[];

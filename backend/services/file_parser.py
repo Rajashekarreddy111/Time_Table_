@@ -81,9 +81,12 @@ def _looks_like_grouped_main_timetable_header(rows: list[tuple]) -> bool:
     return False
 
 
-def _parse_grouped_main_timetable_excel(file_bytes: bytes) -> pd.DataFrame:
+def _parse_grouped_main_timetable_excel(file_bytes: bytes, sheet_name: str | None = None) -> pd.DataFrame:
     workbook = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
-    worksheet = workbook.active
+    if sheet_name and sheet_name in workbook.sheetnames:
+        worksheet = workbook[sheet_name]
+    else:
+        worksheet = workbook.active
     rows = list(worksheet.iter_rows(values_only=True))
 
     if not _looks_like_grouped_main_timetable_header(rows):

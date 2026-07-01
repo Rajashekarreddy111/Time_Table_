@@ -492,7 +492,12 @@ def _is_faculty_free_for_period(
     if day_mode is None:
         faculty_modes = schedule_modes.get(faculty, {})
         if not faculty_modes:
-            return False
+            has_any_availability = any(
+                m == "availability"
+                for fac_modes in schedule_modes.values()
+                for m in fac_modes.values()
+            )
+            return not has_any_availability
         if any(mode == "availability" for mode in faculty_modes.values()):
             return False
         return True
@@ -771,6 +776,14 @@ def _build_export_groups(items: list[dict]) -> list[dict]:
     return groups
 
 
+def _clean_time_label(label: str) -> str:
+    label = re.sub(r'^from\s+', '', label.strip(), flags=re.IGNORECASE)
+    parts = re.split(r'\s*-\s*|\s+to\s+', label, flags=re.IGNORECASE)
+    if len(parts) == 2:
+        return f"From {parts[0].strip()} To {parts[1].strip()}"
+    return label.strip()
+
+
 def _build_timing_summary(groups: list[dict]) -> str:
     fn_label = ""
     an_label = ""
@@ -795,14 +808,19 @@ def _build_timing_summary(groups: list[dict]) -> str:
                     custom_labels.append(label)
 
     if has_custom_slots:
-        return " & ".join(f"({label})" for label in custom_labels)
+        cleaned_custom = [_clean_time_label(label) for label in custom_labels]
+        return "Timings: " + " | ".join(cleaned_custom)
 
-    labels: list[str] = []
-    if fn_label:
-        labels.append(f"FN : {fn_label}")
-    if an_label:
-        labels.append(f"AN : {an_label}")
-    return " & ".join(f"({label})" for label in labels)
+    parts = []
+    if fn_label and an_label:
+        parts.append(f"AM: {_clean_time_label(fn_label)}")
+        parts.append(f"PM: {_clean_time_label(an_label)}")
+        return "Timings: " + " | ".join(parts)
+    elif fn_label:
+        return f"Timings {_clean_time_label(fn_label)}"
+    elif an_label:
+        return f"Timings {_clean_time_label(an_label)}"
+    return ""
 
 
 def _build_report_template(results: list[dict]) -> tuple[list[dict], list[str]]:
@@ -857,23 +875,37 @@ def _populate_bulk_faculty_availability_sheet(
     if template_faculty_names:
         faculty_names = list(template_faculty_names)
 
-    total_columns = 3 + sum(len(group["slots"]) for group in groups)
+    num_date_cols = sum(len(group["slots"]) for group in groups)
+    total_columns = 3 + num_date_cols + 1
     rows: list[list[object]] = []
 
     def pad_row(values: list[object]) -> list[object]:
         return values + [""] * max(0, total_columns - len(values))
 
-    department_short_name = "CSE"
-    rows.append(pad_row([department_short_name, "", "", _build_timing_summary(groups)]))
-    rows.append(pad_row(["S.No", "Faculty Name", "Total"]))
-    rows.append(pad_row(["", "", ""]))
+    # Top institutional metadata (Rows 1-4)
+    rows.append(pad_row(["NARASARAOPETA ENGINEERING COLLEGE::NARASARAOPETA"]))
+    rows.append(pad_row(["AUTONOMOUS"]))
+    rows.append(pad_row(["DEPARTMENT OF COMPUTER SCIENCE AND ENGINEERING"]))
+    rows.append(pad_row(["II-II AND III-II MID-2 INVIGILATION DUTIES"]))
+    
+    # Timings row (Row 5)
+    rows.append(pad_row(["", "", "", _build_timing_summary(groups)]))
 
+    # Column header 1 (Row 6)
+    h1 = ["S.No", "Name of the Faculty", "Total Invigilations"] + [""] * num_date_cols + ["Signature"]
+    rows.append(pad_row(h1))
+
+    # Column header 2 (Row 7)
+    h2 = ["", "", ""] + [""] * num_date_cols + [""]
+    rows.append(pad_row(h2))
+
+    # Fill in dates and slot labels in Row 6 and Row 7
     column_cursor = 4
     slot_column_map: dict[str, int] = {}
     for group in groups:
-        rows[1][column_cursor - 1] = group["header_date"]
+        rows[5][column_cursor - 1] = group["header_date"]
         for slot_index, slot in enumerate(group["slots"]):
-            rows[2][column_cursor + slot_index - 1] = ("FN" if slot_index == 0 else "AN") if group["uses_meridiem"] else slot["label"]
+            rows[6][column_cursor + slot_index - 1] = ("FN" if slot_index == 0 else "AN") if group["uses_meridiem"] else slot["label"]
             map_key = f"{group['date']}__{('AM' if slot_index == 0 else 'PM') if group['uses_meridiem'] else slot['key']}"
             slot_column_map[map_key] = column_cursor + slot_index
         column_cursor += len(group["slots"])
@@ -898,7 +930,7 @@ def _populate_bulk_faculty_availability_sheet(
                     index,
                     faculty_name,
                     template_faculty_totals.get(faculty_name, 0)
-                    if template_faculty_names
+                    if (template_faculty_names and mode == "available")
                     else faculty_totals.get(faculty_name, 0),
                 ]
             )
@@ -920,42 +952,105 @@ def _populate_bulk_faculty_availability_sheet(
         for faculty_name in current_names:
             row_index = faculty_row_map.get(faculty_name)
             if row_index:
-                rows[row_index - 1][column_index - 1] = "X"
+                rows[row_index - 1][column_index - 1] = "v"
 
+    # Add Total row at bottom of table
     total_row = pad_row(["", "Total", sum(slot_totals.values())])
     for column_index, total in slot_totals.items():
         total_row[column_index - 1] = total
     rows.append(total_row)
 
-    for row in rows:
-        worksheet.append(row)
+    # Add 3 blank rows and HOD signature block
+    rows.append(pad_row([]))
+    rows.append(pad_row([]))
+    rows.append(pad_row([]))
+    
+    sig_row = [""] * total_columns
+    sig_row[-2] = "Signature of HOD"
+    rows.append(sig_row)
+
+    # Write all rows to the worksheet
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, val in enumerate(row, start=1):
+            worksheet.cell(row=r_idx, column=c_idx, value=val)
+
+    # Apply cell merging
+    worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_columns)
+    worksheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_columns)
+    worksheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=total_columns)
+    worksheet.merge_cells(start_row=4, start_column=1, end_row=4, end_column=total_columns)
+    
+    if total_columns > 3:
+        worksheet.merge_cells(start_row=5, start_column=4, end_row=5, end_column=total_columns)
+
+    worksheet.merge_cells(start_row=6, start_column=1, end_row=7, end_column=1)
+    worksheet.merge_cells(start_row=6, start_column=2, end_row=7, end_column=2)
+    worksheet.merge_cells(start_row=6, start_column=3, end_row=7, end_column=3)
+    worksheet.merge_cells(start_row=6, start_column=total_columns, end_row=7, end_column=total_columns)
 
     column_cursor = 4
     for group in groups:
-        worksheet.merge_cells(start_row=2, start_column=column_cursor, end_row=2, end_column=column_cursor + len(group["slots"]) - 1)
-        column_cursor += len(group["slots"])
-    worksheet.merge_cells(start_row=1, start_column=1, end_row=3, end_column=1)
-    worksheet.merge_cells(start_row=1, start_column=2, end_row=3, end_column=2)
-    worksheet.merge_cells(start_row=1, start_column=3, end_row=3, end_column=3)
-    if total_columns > 3:
-        worksheet.merge_cells(start_row=1, start_column=4, end_row=1, end_column=total_columns)
+        num_slots = len(group["slots"])
+        if num_slots > 1:
+            worksheet.merge_cells(start_row=6, start_column=column_cursor, end_row=6, end_column=column_cursor + num_slots - 1)
+        else:
+            worksheet.merge_cells(start_row=6, start_column=column_cursor, end_row=7, end_column=column_cursor)
+        column_cursor += num_slots
 
-    widths = [8, 30, 12] + [
+    worksheet.merge_cells(start_row=worksheet.max_row, start_column=total_columns - 1, end_row=worksheet.max_row, end_column=total_columns)
+
+    # Column widths setup
+    widths = [8, 30, 20] + [
         max(12, len(("FN" if group["uses_meridiem"] and idx == 0 else "AN" if group["uses_meridiem"] else slot["label"])) + 2)
         for group in groups
         for idx, slot in enumerate(group["slots"])
-    ]
+    ] + [18]
     for idx, width in enumerate(widths, start=1):
         worksheet.column_dimensions[get_column_letter(idx)].width = width
 
+    # Cell styling and borders
+    thin_side = Side(border_style="thin", color="000000")
+    thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    
+    font_college = Font(name="Calibri", size=14, bold=True)
+    font_header_bold = Font(name="Calibri", size=11, bold=True)
+    font_data = Font(name="Calibri", size=11, bold=False)
+    
+    table_start_row = 6
+    table_end_row = 8 + len(faculty_names)
+
     for row_idx in range(1, worksheet.max_row + 1):
-        worksheet.row_dimensions[row_idx].height = 22
-        for col_idx in range(1, total_columns + 1):
-            cell = worksheet.cell(row=row_idx, column=col_idx)
-            cell.alignment = CENTER_ALIGNMENT
-            cell.border = THIN_BORDER
-            if row_idx <= 3 or row_idx == worksheet.max_row:
-                cell.font = Font(bold=True)
+        if row_idx <= 4:
+            worksheet.row_dimensions[row_idx].height = 24
+            for col_idx in range(1, total_columns + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                cell.font = font_college if row_idx == 1 else font_header_bold
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+        elif row_idx == 5:
+            worksheet.row_dimensions[row_idx].height = 20
+            for col_idx in range(1, total_columns + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                cell.font = font_header_bold
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+        elif table_start_row <= row_idx <= table_end_row:
+            worksheet.row_dimensions[row_idx].height = 22
+            is_header = (row_idx == 6 or row_idx == 7)
+            is_total = (row_idx == table_end_row)
+            for col_idx in range(1, total_columns + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                cell.border = thin_border
+                cell.font = font_header_bold if (is_header or is_total) else font_data
+                if col_idx == 2 and not is_header:
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                else:
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+        else:
+            worksheet.row_dimensions[row_idx].height = 22
+            for col_idx in range(1, total_columns + 1):
+                cell = worksheet.cell(row=row_idx, column=col_idx)
+                if row_idx == worksheet.max_row:
+                    cell.font = font_header_bold
+                    cell.alignment = Alignment(horizontal="right", vertical="center")
 
 def build_bulk_faculty_availability_workbook(results: list[dict], *, mode: str) -> dict:
     workbook = Workbook()

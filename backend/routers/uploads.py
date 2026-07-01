@@ -1,5 +1,8 @@
 from io import BytesIO
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 import openpyxl
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -140,6 +143,7 @@ def _normalize_faculty_id_rows(rows: list[dict]) -> list[dict]:
         )
         faculty_id = (
             _to_text(row.get("faculty_id"))
+            or _to_text(row.get("faculty id"))
             or _to_text(row.get("id assigned"))
             or _to_text(row.get("id"))
         )
@@ -274,7 +278,13 @@ def _normalize_continuous_rules(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
         sub_id = _to_text(row.get("subject_id")) or _to_text(row.get("subject id"))
-        compulsory = _to_text(row.get("compulsory_continuous_hours")) or _to_text(row.get("continuous"))
+        compulsory = (
+            _to_text(row.get("compulsory_continuous_hours"))
+            or _to_text(row.get("compulsory continuous hours"))
+            or _to_text(row.get("compulsory_continuous"))
+            or _to_text(row.get("compulsory continuous"))
+            or _to_text(row.get("continuous"))
+        )
         if sub_id and compulsory:
             try:
                 c_val = int(float(compulsory))
@@ -290,30 +300,43 @@ def _normalize_classroom_rows(rows: list[dict]) -> list[dict]:
     for row in rows:
         classroom = (
             _normalize_room_or_section_text(row.get("class_number"))
+            or _normalize_room_or_section_text(row.get("class number"))
             or _normalize_room_or_section_text(row.get("classroom"))
             or _normalize_room_or_section_text(row.get("room"))
+            or _normalize_room_or_section_text(row.get("room_name"))
+            or _normalize_room_or_section_text(row.get("room name"))
         )
         room_type = (
             _to_text(row.get("room_type"))
+            or _to_text(row.get("room type"))
             or _to_text(row.get("type"))
             or _to_text(row.get("category"))
         ).lower()
-        is_lab_value = _to_text(row.get("is_lab")).lower()
+        is_lab_value = (
+            _to_text(row.get("is_lab"))
+            or _to_text(row.get("is lab"))
+        ).lower()
         is_lab = room_type == "lab" or is_lab_value in {"1", "true", "yes", "y"}
         capacity_text = (
             _to_text(row.get("capacity"))
             or _to_text(row.get("room_capacity"))
+            or _to_text(row.get("room capacity"))
             or _to_text(row.get("class_capacity"))
+            or _to_text(row.get("class capacity"))
         )
         section_name = (
             _normalize_room_or_section_text(row.get("section"))
             or _normalize_room_or_section_text(row.get("section_name"))
+            or _normalize_room_or_section_text(row.get("section name"))
             or _normalize_room_or_section_text(row.get("section_names"))
+            or _normalize_room_or_section_text(row.get("section names"))
         )
         strength_text = (
             _to_text(row.get("strength"))
             or _to_text(row.get("section_strength"))
+            or _to_text(row.get("section strength"))
             or _to_text(row.get("student_strength"))
+            or _to_text(row.get("student strength"))
         )
         capacity = None
         strength = None
@@ -362,8 +385,14 @@ def _normalize_shared_class_rows(rows: list[dict]) -> list[dict]:
     normalized: list[dict] = []
     for row in rows:
         year = normalize_year(_to_text(row.get("year")))
-        sections_raw = _to_text(row.get("sections"))
-        subject = _to_text(row.get("subject")) or _to_text(row.get("subject_id"))
+        sections_raw = _to_text(row.get("sections")) or _to_text(row.get("section"))
+        subject = (
+            _to_text(row.get("subject"))
+            or _to_text(row.get("subject_id"))
+            or _to_text(row.get("subject id"))
+            or _to_text(row.get("subject_name"))
+            or _to_text(row.get("subject name"))
+        )
         
         if not year or not sections_raw or not subject:
             continue
@@ -426,9 +455,16 @@ def _normalize_fixed_classroom_block_rows(rows: list[dict]) -> list[dict]:
     for row_index, row in enumerate(rows, start=2):
         raw_year = row.get("year")
         raw_section = row.get("section")
-        raw_day = row.get("day") or row.get("day_number")
-        raw_periods = row.get("periods") or row.get("period_numbers") or row.get("period_numbers_list")
-        raw_classroom = row.get("classroom") or row.get("classroom_name") or row.get("room")
+        raw_day = row.get("day") or row.get("day_number") or row.get("day number")
+        raw_periods = row.get("periods") or row.get("period_numbers") or row.get("period numbers") or row.get("period_numbers_list")
+        raw_classroom = (
+            row.get("classroom")
+            or row.get("classroom_name")
+            or row.get("classroom name")
+            or row.get("room")
+            or row.get("class_number")
+            or row.get("class number")
+        )
 
         has_any_value = any(_to_text(value) for value in [raw_year, raw_section, raw_day, raw_periods, raw_classroom])
         if not has_any_value:
@@ -1346,26 +1382,46 @@ def _detect_mapping_type_from_sheet_name(sheet_name: str) -> str | None:
     name = "".join(c for c in name if c.isalnum() or c.isspace())
     name = " ".join(name.split())
     
-    if "subject id mapping" in name or "subject mapping" in name or name == "subjects" or name == "subject":
-        return "subject_id_mapping"
-    if "faculty id map" in name or "faculty mapping" in name or name == "faculty map" or name == "faculty":
-        return "faculty_id_map"
-    if "constraint" in name or "main timetable config" in name or "main config" in name:
-        return "main_timetable_config"
-    if "lab timetable" in name or name == "labs" or name == "lab":
-        return "lab_timetable_config"
-    if "shared class" in name or name == "shared" or name == "shared classes":
-        return "shared_classes"
-    if "session" in name or "period" in name or "time slot" in name:
-        return "period_config"
-    if "classroom" in name or "section strength" in name or name == "strength" or name == "section":
-        return "classrooms"
-    if "availability" in name or "faculty avail" in name:
-        return "faculty_availability"
+    # 1. Specific classroom blocks mapping (contains 'fixed')
+    if "fixed classroom" in name or "fixed block" in name or "fixed room" in name:
+        return "fixed_classroom_blocks"
+        
+    # 2. Subject Continuous Rules (contains 'continuous')
     if "continuous rule" in name or "continuous" in name:
         return "subject_continuous_rules"
-    if "fixed classroom" in name or "fixed block" in name:
-        return "fixed_classroom_blocks"
+        
+    # 3. Faculty Availability (contains 'avail')
+    if "availability" in name or "avail" in name:
+        return "faculty_availability"
+        
+    # 4. Period Configuration (contains 'session', 'period', 'slot')
+    if "session" in name or "period" in name or "time slot" in name or "slot" in name:
+        return "period_config"
+        
+    # 5. Shared Classes (contains 'shared')
+    if "shared class" in name or "shared" in name:
+        return "shared_classes"
+        
+    # 6. Lab Timetable (contains 'lab')
+    if "lab timetable" in name or "lab" in name:
+        return "lab_timetable_config"
+        
+    # 7. Main Timetable Config (contains 'constraint' or 'main' or 'config')
+    if "constraint" in name or "main timetable config" in name or "main config" in name or "timetable config" in name:
+        return "main_timetable_config"
+        
+    # 8. Faculty ID Map (contains 'faculty')
+    if "faculty id map" in name or "faculty mapping" in name or "faculty map" in name or "faculty" in name:
+        return "faculty_id_map"
+        
+    # 9. Subject ID Map (contains 'subject')
+    if "subject id mapping" in name or "subject mapping" in name or "subject" in name or "subjects" in name:
+        return "subject_id_mapping"
+        
+    # 10. Classrooms/Rooms (contains 'classroom', 'room', 'strength', 'section')
+    if "classroom" in name or "class room" in name or "room" in name or "section strength" in name or name == "strength" or name == "section":
+        return "classrooms"
+        
     return None
 
 
@@ -1644,14 +1700,24 @@ async def upload_master_workbook(file: UploadFile = File(...)):
         if mapping_type:
             detected_sheets[mapping_type] = sheet_name
 
+    logger.info(f"Detected sheets in master workbook: {detected_sheets}")
+
     if not detected_sheets:
         raise _validation_error("No valid sheets found in the master workbook.", [])
 
     parsed_counts = {}
     for mapping_type, sheet_name in detected_sheets.items():
         try:
-            df = xls.parse(sheet_name)
             from services.file_parser import _normalize_dataframe, dataframe_rows
+            if mapping_type == "main_timetable_config":
+                from services.file_parser import _parse_grouped_main_timetable_excel
+                try:
+                    df = _parse_grouped_main_timetable_excel(file_bytes, sheet_name=sheet_name)
+                except ValueError:
+                    df = xls.parse(sheet_name)
+            else:
+                df = xls.parse(sheet_name)
+                
             df_clean = _normalize_dataframe(df)
             rows_raw = dataframe_rows(df_clean)
             
@@ -1691,8 +1757,15 @@ async def upload_master_workbook(file: UploadFile = File(...)):
                 store.save_scoped_mapping("period_configuration", "global", payload, allow_overwrite=True)
                 
             parsed_counts[sheet_name] = len(rows)
+            logger.info(f"Successfully parsed sheet '{sheet_name}' as mapping type '{mapping_type}' with {len(rows)} rows.")
         except Exception as ex:
-            raise _validation_error(f"Error parsing sheet '{sheet_name}': {str(ex)}", [])
+            mandatory_types = {"subject_id_mapping", "faculty_id_map", "main_timetable_config"}
+            if mapping_type in mandatory_types:
+                logger.error(f"Failed to parse mandatory sheet '{sheet_name}' as mapping type '{mapping_type}': {str(ex)}")
+                raise _validation_error(f"Error parsing sheet '{sheet_name}': {str(ex)}", [])
+            else:
+                logger.warning(f"Skipping optional sheet '{sheet_name}' due to parsing error: {str(ex)}")
+                continue
 
     return UploadResponse(
         fileId="master_workbook",
